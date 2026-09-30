@@ -3,6 +3,15 @@
 openGym — Copyright (C) 2026 Duarte Santos.
 openGym's own code is licensed under the **GNU AGPL v3.0** (see [LICENSE](LICENSE)).
 
+## Modified version
+
+This repository, <https://github.com/anisotton/opengym>, is a **modified version** of openGym,
+forked from <https://github.com/DuarteSantos8/openGym> on 2026-09-29 and maintained by
+Anderson Isotton (Isotton Corp). It remains under the **GNU AGPL v3.0**; the original copyright
+and every notice below are kept unchanged. As required by section 5(a) of the AGPL, changes made
+in this fork are recorded in its git history (commits after upstream `e88062e`), and the complete
+source of the version running on any instance is published here.
+
 ## App store exception
 
 As an additional permission under section 7 of the AGPL v3.0, the copyright holder permits
