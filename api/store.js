@@ -460,9 +460,11 @@ export async function createDeviceLink(pool, userId, ttlMs = DEVICE_LINK_TTL_MS)
 
 // The live link a code belongs to, or null — a wrong code, a used one and an expired one all look
 // the same from outside. Finding a link does not use it up; burnDeviceLink does. A fresh call
-// with the same code is also how a caller re-checks a link is still the one it read earlier
-// (routes/server.js): two different live links can never hash to the same code, so "still finds
-// it" is equivalent to "still the same link, unburned and unreplaced" without comparing rows.
+// with the same code answering non-null again only ever proves the link was *still there when
+// this query ran* — not that it will still be there once whatever runs after it gets around to
+// burning it. A second call racing in between can find the exact same "still there" answer, so
+// checking existence again is not a substitute for claiming the row atomically (burnDeviceLink's
+// own rowCount) before doing anything the claim is meant to gate.
 export async function findDeviceLink(pool, code) {
   const { rows } = await pool.query(
     'SELECT * FROM device_links WHERE hash = $1 AND expires_at > now()', [hashLinkCode(code)]
@@ -470,8 +472,13 @@ export async function findDeviceLink(pool, code) {
   return rows.length ? rowToDeviceLink(rows[0]) : null;
 }
 
+// The atomic single-use claim: whether *this* call was the one that deleted the row, same
+// DELETE-and-check-rowCount shape as revokeInvite. A caller that burns before doing the work the
+// burn is meant to gate (not after) is the only way two requests racing the same code can ever
+// be told apart — the row is gone for the second one before it does anything with what it found.
 export async function burnDeviceLink(pool, hash) {
-  await pool.query('DELETE FROM device_links WHERE hash = $1', [hash]);
+  const { rowCount } = await pool.query('DELETE FROM device_links WHERE hash = $1', [hash]);
+  return rowCount > 0;
 }
 
 // Every unused link of a profile, for the moments its sessions end: an unused link is a way in

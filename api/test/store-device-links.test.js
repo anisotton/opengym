@@ -74,10 +74,29 @@ test('findDeviceLink: is single use once burned', async t => {
   const pool = await withPool(t);
   await createUser(pool, { id: 'user-a', name: 'Ana', created: iso() });
   const { code, link } = await createDeviceLink(pool, 'user-a', 60000);
-  await burnDeviceLink(pool, link.h);
+  assert.equal(await burnDeviceLink(pool, link.h), true, 'this call claimed the row');
   assert.equal(await findDeviceLink(pool, code), null);
   const { rows } = await pool.query('SELECT * FROM device_links');
   assert.equal(rows.length, 0);
+});
+
+test('burnDeviceLink: burning an already-burned (or never-existed) hash claims nothing', async t => {
+  const pool = await withPool(t);
+  await createUser(pool, { id: 'user-a', name: 'Ana', created: iso() });
+  const { link } = await createDeviceLink(pool, 'user-a', 60000);
+  await burnDeviceLink(pool, link.h);
+  assert.equal(await burnDeviceLink(pool, link.h), false, 'nothing left to burn a second time');
+  assert.equal(await burnDeviceLink(pool, 'never-issued'), false);
+});
+
+// The real race POST /api/device-link/verify relies on: two requests redeeming the same code
+// side by side — only the one whose DELETE actually matches a row may go on to create a passkey.
+test('burnDeviceLink: two concurrent burns of the same link — exactly one claims it', async t => {
+  const pool = await withPool(t);
+  await createUser(pool, { id: 'user-a', name: 'Ana', created: iso() });
+  const { link } = await createDeviceLink(pool, 'user-a', 60000);
+  const [a, b] = await Promise.all([burnDeviceLink(pool, link.h), burnDeviceLink(pool, link.h)]);
+  assert.deepEqual([a, b].sort(), [false, true]);
 });
 
 test('findDeviceLink: refuses an expired link', async t => {

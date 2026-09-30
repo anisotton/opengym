@@ -125,11 +125,15 @@ can no longer turn into an unhandled rejection that takes the process down — t
 pruned again next time a send to it fails. Device links (`device_links`, `device-link.js` +
 `store.js`) moved too: `device-link.js` now holds only the pure code math (generating one,
 hashing it) — the row itself, one per profile, is `createDeviceLink`/`findDeviceLink`/
-`burnDeviceLink`/`dropDeviceLinks` in `store.js`. `POST /api/device-link/verify` re-checks a link
-is still live by re-running `findDeviceLink` and testing for a non-null result, not by comparing
-the row to the one read earlier (`sessionStillValid`'s idiom again: every read is its own row, but
-two different live links can never hash to the same code, so "still finds one" already means
-"still this same link"). Passkey credentials (`passkeys`, `passkeys-store.js` + `store.js`) are the
+`burnDeviceLink`/`dropDeviceLinks` in `store.js`. `burnDeviceLink` returns whether *that* call
+actually deleted the row — the atomic single-use claim, same DELETE-and-check-rowCount shape as
+`revokeInvite`. `POST /api/device-link/verify` burns before it creates the passkey, not after,
+inside one `withTransaction`: a re-run of `findDeviceLink` right before the insert (checking the
+link was still *findable*) looks equivalent but is not — two requests racing the same code can
+both find it live, right up until whichever runs its own burn second, so only claiming the row
+itself (not re-reading it) tells them apart. A failed `insertPasskey` (a colliding credential id)
+rolls the burn back too, so a genuine failure doesn't strand the owner with no code left to retry.
+Passkey credentials (`passkeys`, `passkeys-store.js` + `store.js`) are the
 last db.json collection, also moved: `passkeys-store.js` holds only the pure shaping rules
 (`passkeyName`, `transportsOf`, `MAX_PASSKEYS`) now, same split as `device-link.js`; the rows,
 the count, and the "never lose the last way in" rule are `store.js`'s `insertPasskey`/

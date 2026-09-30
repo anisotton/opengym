@@ -662,6 +662,9 @@ class HttpError extends Error {
 // user row that was about to be created on top of an invite another request consumed first — see
 // consumeInvite in store.js. Caught right outside the transaction, never anywhere else.
 class InviteRaceError extends Error {}
+// Same idea, for POST /api/device-link/verify: thrown when burnDeviceLink claims zero rows —
+// another request already burned this code — to roll back before insertPasskey ever runs.
+class DeviceLinkRaceError extends Error {}
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0, over = false; const chunks = [];
@@ -1659,8 +1662,9 @@ const passkeyRoutes = {
   },
 
   // Step two: the new passkey is stored, the code is burned, and this device is signed in by the
-  // passkey it just made — the same cookie a passkey sign-in sets. Of two requests racing with one
-  // code, the first to finish wins and the other finds it gone.
+  // passkey it just made — the same cookie a passkey sign-in sets. Of two requests racing with
+  // one code, only the one whose DELETE inside the transaction below actually claims the row
+  // ever reaches insertPasskey; the other is told the code is gone before it creates anything.
   'POST /api/device-link/verify': async (req, res) => {
     const body = await readBody(req);
     if (addressPaused(req, res, 'link')) return;
@@ -1679,26 +1683,42 @@ const passkeyRoutes = {
     const owner = await getUserById(pool, link.userId);
     const cred = await newPasskey(req, res, c, body, 'auth.link.fail', owner || { id: link.userId });
     if (!cred) return;
-    // Everything above awaited: the code may have been used, replaced or dropped since (a sign-out
-    // everywhere, a new password, a disable), and the profile may be gone or locked. Re-checked by
-    // existence, not object identity — every read is its own row now, but a live link is found by
-    // its code's hash, and two different live links can never hash to the same code, so "still
-    // finds one" already means "still this same link, unburned and unreplaced" (sessionStillValid
-    // above uses the same idea for a session).
+    // Everything above awaited: the profile may be gone or locked since (a sign-out everywhere,
+    // a new password, a disable) — checked fresh, not against `owner` from before the ceremony.
     const user = await getUserById(pool, link.userId);
-    if (!(await findDeviceLink(pool, code)) || !user || user.disabled) {
+    if (!user || user.disabled) {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'link-invalid' });
       return json(res, 400, LINK_INVALID);
     }
     // Redeeming the link is itself a first use, same as the credential this profile signed up
     // with — created and lastUsed together, not left unset until a later sign-in.
+    //
+    // The burn and the insert commit together, burn first: burning without a passkey to show
+    // for it would strand the owner with no code left to retry, so a failed insertPasskey (a
+    // colliding credential id) rolls the burn back too, leaving the code usable again. Burning
+    // first, rather than after, is what makes the burn the actual single-use gate — a second
+    // request racing the same code finds nothing left to claim and never reaches insertPasskey
+    // at all, rather than both requests re-checking the link is "still there" (true of both,
+    // right up until whichever of them runs its own DELETE second) and both getting in.
     const now = new Date().toISOString();
-    const added = await insertPasskey(pool, user.id, { ...cred, created: now, lastUsed: now });
-    if (added.error) {
-      audit(req, 'auth.link.fail', { ok: false, user, msg: added.code });
-      return json(res, 409, { error: added.error, code: added.code });
+    let added;
+    try {
+      await withTransaction(pool, async client => {
+        if (!(await burnDeviceLink(client, link.h))) throw new DeviceLinkRaceError();
+        added = await insertPasskey(client, user.id, { ...cred, created: now, lastUsed: now });
+        if (added.error) throw new HttpError(409, added.error);
+      });
+    } catch (e) {
+      if (e instanceof DeviceLinkRaceError) {
+        audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'link-invalid' });
+        return json(res, 400, LINK_INVALID);
+      }
+      if (e instanceof HttpError) {
+        audit(req, 'auth.link.fail', { ok: false, user, msg: added.code });
+        return json(res, e.status, { error: e.message, code: added.code });
+      }
+      throw e;
     }
-    await burnDeviceLink(pool, link.h);
     audit(req, 'auth.link.ok', { user, msg: added.row.name || null });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   }
