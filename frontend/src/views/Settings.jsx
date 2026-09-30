@@ -5,7 +5,7 @@ import { workoutControls } from '../lib/workout-controls.js'
 import { speedUnitOf } from '../lib/speed.js'
 import { copyText } from '../lib/clipboard.js'
 import { useUI } from '../store/useUI.js'
-import { ACCENTS, ACCENT_NAMES, todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate } from '../lib/format.js'
+import { todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate } from '../lib/format.js'
 import { inventoryFor, ownsPlates } from '../lib/plates.js'
 import { effortOf } from '../lib/history.js'
 import { unlock, playOnSilentSupported, vibrateSupported } from '../lib/sound.js'
@@ -21,7 +21,6 @@ import { mediaStore } from '../lib/media-store.js'
 import { syncMedia, fetchToStore } from '../lib/media-sync.js'
 import { getMediaStatus, subscribeMediaStatus, pendingRefCount } from '../lib/media-owed.js'
 import { limitsFrom, fmtMB, MB } from '../lib/media-limits.js'
-import { setRestAccent } from '../lib/rest-alert.js'
 import { checkForUpdate, downloadAndInstall } from '../lib/update.js'
 import { forgetCoach } from '../lib/coach-api.js'
 import { starterPlanSheet, confirmSheet, importFromApp, importFromHevy, equipmentProfileSheet, plateInventorySheet, menuSheet } from '../sheets.jsx'
@@ -517,7 +516,7 @@ export default function Settings() {
             { value: 'light', icon: 'sun', label: t('Light') },
             { value: 'system', icon: 'gear', label: t('System') },
           ]}
-          value={S.theme || 'dark'}
+          value={S.theme || 'light'}
           onChange={v => update(s => { s.theme = v })}
         />
       </Row>
@@ -530,15 +529,6 @@ export default function Settings() {
           onChange={v => update(s => { s.body = v })}
         />
       </Row>
-      <div className="lrow" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 12, paddingTop: 13, paddingBottom: 14 }}>
-        <span className="lrow-t">{t('Accent color')}</span>
-        <div className="swatches">
-          {Object.entries(ACCENTS).map(([k, c]) => (
-            <button key={k} className={'swatch' + ((S.accent || 'lime') === k ? ' on' : '')}
-              style={{ background: c }} onClick={() => { update(s => { s.accent = k }); setRestAccent(k) }} aria-label={t(ACCENT_NAMES[k] || k)} />
-          ))}
-        </div>
-      </div>
     </Section>
 
     {/* ---------- data: fill it, bring things over, back it up, wipe it ---------- */}

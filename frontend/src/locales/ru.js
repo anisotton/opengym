@@ -1663,4 +1663,6 @@ export default {
   'Teal': 'Бирюзовый',
   'Yellow': 'Жёлтый',
   'Enter how long it took — at least 1 minute.': 'Укажите, сколько это длилось — не меньше 1 минуты.',
+  'Conditioning for ballet.': 'Физическая подготовка для балета.',
+  'Today’s strength is tomorrow’s lightness.': 'Сила сегодня — лёгкость завтра.',
 }

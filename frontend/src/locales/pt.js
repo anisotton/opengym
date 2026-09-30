@@ -1663,4 +1663,6 @@ export default {
   'Teal': 'Turquesa',
   'Yellow': 'Amarelo',
   'Enter how long it took — at least 1 minute.': 'Indica quanto tempo demorou — pelo menos 1 minuto.',
+  'Conditioning for ballet.': 'Condicionamento físico para o ballet.',
+  'Today’s strength is tomorrow’s lightness.': 'A força de hoje é a leveza de amanhã.',
 }

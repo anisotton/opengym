@@ -1666,4 +1666,6 @@ export default {
   'Teal': 'Türkiz',
   'Yellow': 'Sárga',
   'Enter how long it took — at least 1 minute.': 'Add meg, meddig tartott — legalább 1 perc.',
+  'Conditioning for ballet.': 'Erőnléti edzés balettosoknak.',
+  'Today’s strength is tomorrow’s lightness.': 'A mai erő a holnapi könnyedség.',
 }

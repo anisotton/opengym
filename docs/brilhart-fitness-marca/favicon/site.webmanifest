@@ -1,0 +1,32 @@
+{
+  "name": "Brilhart Fitness",
+  "short_name": "Brilhart Fit",
+  "description": "Condicionamento físico e planejamento de aulas para o balé",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "lang": "pt-BR",
+  "background_color": "#F7F3F1",
+  "theme_color": "#4A284D",
+  "icons": [
+    {
+      "src": "android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

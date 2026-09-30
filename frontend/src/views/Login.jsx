@@ -6,11 +6,11 @@ import { t } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { guestAllowed } from '../lib/guest.js'
 import { useState, useRef, useEffect } from 'react'
-import Icon from '../components/Icon.jsx'
 import { Button, Segmented } from '../components/ui.jsx'
 import { askAddDeviceData } from '../sheets.jsx'
 import { passwordOn, PasswordRegisterForm, openPasswordSignIn } from '../components/PasswordAuth.jsx'
-import { openDeviceLinkRedeem } from '../components/Passkeys.jsx'
+import logoColor from '../assets/brand/brilhart-fitness-vertical-cor.svg'
+import logoNegative from '../assets/brand/brilhart-fitness-vertical-negativo.svg'
 
 function RegisterSheet({ close }) {
   const { setUser, pushState, pullState, loadConfig } = useStore()
@@ -76,8 +76,11 @@ export default function Login() {
     catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') useUI.getState().toast(e.message || t('Sign-in failed')) }
   }
   const head = <>
-    <div style={{ fontSize: 54, display: 'flex', justifyContent: 'center', color: 'var(--acc)' }}><Icon name="dumbbell" /></div>
-    <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-.028em', margin: '10px 0 4px' }}>openGym</h1>
+    {/* The brand guide's vertical logo: the colour version on the light theme, the negative on dark. */}
+    <h1 className="brand-logo">
+      <img className="on-light" src={logoColor} alt="Brilhart Fitness" />
+      <img className="on-dark" src={logoNegative} alt="Brilhart Fitness" />
+    </h1>
   </>
   const wrap = { display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '78vh', textAlign: 'center' }
 
@@ -99,17 +102,16 @@ export default function Login() {
   return (
     <div className="narrow" style={wrap}>
       {head}
-      <div className="muted" style={{ marginBottom: 34 }}>{t('Your workouts. Your weights. Your profile.')}</div>
+      <div className="muted" style={{ marginBottom: 34 }}>{t('Conditioning for ballet.')}</div>
       {webauthnOK() ? <>
         <Button variant="primary" icon="person" onClick={signIn}>{t('Sign in with passkey')}</Button>
         <div style={{ height: 10 }} />
         {pwOn && <><Button icon="key" onClick={() => openPasswordSignIn()}>{t('Sign in with password')}</Button><div style={{ height: 10 }} /></>}
         <Button icon="sparkles" onClick={register}>{t('Create new profile')}</Button>
-        {/* Already signed in on another device: a code from there gives this one a passkey of
-            its own (#95), instead of a new, empty profile. */}
-        <div style={{ height: 10 }} />
-        <Button variant="ghost" className="dim" icon="qr" onClick={openDeviceLinkRedeem}>{t('Use a code from your other device')}</Button>
-        {canGuest && <div style={{ height: 4 }} />}
+        {/* Brilhart Fitness: no "Use a code from your other device" button here. Passkeys sync
+            across a person's devices, and the QR code from Settings → Add a device still opens
+            the redeem sheet by itself (App.jsx, linkCode). */}
+        {canGuest && <div style={{ height: 10 }} />}
       </> : pwOn ? <>
         {/* Plain http on a LAN address, or a browser without passkey support: the password is
             the way in, and the only way to create a profile from here. */}
@@ -124,7 +126,7 @@ export default function Login() {
         // so say that plainly instead of offering a local profile that cannot be created.
         : t("This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.")}</div>}
       {canGuest && <Button variant="ghost" className="dim" onClick={() => setGuest(true)}>{t('Continue without account')}</Button>}
-      <div className="dim small" style={{ marginTop: 26, lineHeight: 1.5 }}>{pwOn ? t('Passkeys use {0}. A password works too, where passkeys do not.', bio()) : t('Passkeys use {0} — no passwords.', bio())}<br />{t('Each profile keeps its own plan, workouts & body weight.')}</div>
+      <div className="dim small" style={{ marginTop: 26, lineHeight: 1.5 }}>{t('Today’s strength is tomorrow’s lightness.')}</div>
     </div>
   )
 }

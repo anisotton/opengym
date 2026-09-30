@@ -1674,4 +1674,6 @@ export default {
   'Teal': 'เขียวน้ำทะเล',
   'Yellow': 'เหลือง',
   'Enter how long it took — at least 1 minute.': 'ใส่ระยะเวลาที่ใช้ — อย่างน้อย 1 นาที',
+  'Conditioning for ballet.': 'การฝึกสมรรถภาพร่างกายสำหรับบัลเลต์',
+  'Today’s strength is tomorrow’s lightness.': 'ความแข็งแรงวันนี้คือความพลิ้วไหวในวันพรุ่งนี้',
 }

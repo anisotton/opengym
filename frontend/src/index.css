@@ -17,34 +17,41 @@
    ========================================================================== */
 
 /* ---------------------------------------------------------------- tokens -- */
+/* Brilhart Fitness: the palette is the Brilhart brand guide's (docs/brilhart-fitness-marca/).
+   Light "papel" is the default theme (store + the pre-paint script in index.html); these :root
+   values are the dark theme, re-toned from neutral grey to the guide's dark plum. */
 :root {
-  /* surfaces — dark is the default */
-  --bg:        #000000;
-  --bg-el:     #0e0e10;   /* elevated backdrop (sheets, bars) */
-  --surface:   #1c1c1e;   /* card / grouped-list fill */
-  --surface-2: #2c2c2e;   /* pressed + nested fill */
-  --surface-3: #3a3a3c;   /* controls (segmented track, switch off) */
+  /* surfaces — dark plum */
+  --bg:        #150F17;
+  --bg-el:     #1C141E;   /* elevated backdrop (sheets, bars) */
+  --surface:   #271C2A;   /* card / grouped-list fill */
+  --surface-2: #33253A;   /* pressed + nested fill */
+  --surface-3: #3B2D3E;   /* controls (segmented track, switch off) */
 
   /* text */
-  --label:     #ffffff;
-  --label-2:   rgba(235,235,245,.60);
-  --label-3:   rgba(235,235,245,.32);
-  --label-4:   rgba(235,235,245,.18);
+  --label:     #EFE4F2;
+  --label-2:   rgba(239,228,242,.64);
+  --label-3:   rgba(239,228,242,.36);
+  --label-4:   rgba(239,228,242,.18);
 
   /* lines */
-  --sep:       rgba(84,84,88,.60);
-  --sep-op:    rgba(84,84,88,.34);   /* for edges sitting over blur */
+  --sep:       rgba(183,154,214,.26);
+  --sep-op:    rgba(183,154,214,.16);   /* for edges sitting over blur */
   --hair:      .5px;
+
+  /* brand type */
+  --font-sans:Nunito,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-serif:'Cormorant Garamond',Georgia,serif;
 
   /* system palette (iOS dark values) */
   --blue:#0a84ff; --green:#30d158; --red:#ff453a; --orange:#ff9f0a;
   --yellow:#ffd60a; --teal:#40c8e0; --indigo:#5e5ce6; --pink:#ff375f;
   --purple:#bf5af2; --mint:#63e6e2; --brown:#ac8e68; --grey:#8e8e93;
 
-  /* accent (per-account, synced) */
-  --acc:  var(--green);
-  --acc-2:#248a3d;
-  --on-acc:#000000;
+  /* accent: the brand's, fixed (the per-account accent picker is gone). Lilac on dark. */
+  --acc:  #C7AEE3;
+  --acc-2:#B79AD6;
+  --on-acc:#2A1A2D;
   --acc-soft: color-mix(in srgb, var(--acc) 16%, transparent);
   --acc-line: color-mix(in srgb, var(--acc) 38%, transparent);
 
@@ -70,48 +77,28 @@
 }
 
 :root[data-theme="light"] {
-  --bg:        #f2f2f7;
-  --bg-el:     #f7f7fa;
+  --bg:        #F7F3F1;   /* papel */
+  --bg-el:     #FBF8F7;
   --surface:   #ffffff;
-  --surface-2: #ececef;
-  --surface-3: #e3e3e8;
+  --surface-2: #F1EAF0;
+  --surface-3: #E6DDE8;
 
-  --label:     #000000;
-  --label-2:   rgba(60,60,67,.60);
-  --label-3:   rgba(60,60,67,.30);
-  --label-4:   rgba(60,60,67,.16);
+  --label:     #4A284D;   /* ameixa */
+  --label-2:   rgba(95,85,96,.92);   /* texto #5F5560 */
+  --label-3:   rgba(95,85,96,.52);
+  --label-4:   rgba(95,85,96,.22);
 
-  --sep:       rgba(60,60,67,.29);
-  --sep-op:    rgba(60,60,67,.20);
+  --sep:       rgba(74,40,77,.20);
+  --sep-op:    rgba(74,40,77,.13);
+
 
   --blue:#007aff; --green:#34c759; --red:#ff3b30; --orange:#ff9500;
   --yellow:#ffcc00; --teal:#30b0c7; --indigo:#5856d6; --pink:#ff2d55;
   --purple:#af52de; --mint:#00c7be; --brown:#a2845e; --grey:#8e8e93;
-  --acc-2:#248a3d;
+  --acc:#4A284D;
+  --acc-2:#6B3A70;
   --on-acc:#ffffff;
 }
-
-/* accents — Apple's system colours, so a recolour never looks off-system */
-:root[data-accent="lime"]  { --acc:var(--green);  --acc-2:#248a3d; --on-acc:#000 }
-:root[data-accent="sky"]   { --acc:var(--blue);   --acc-2:#0060df; --on-acc:#fff }
-:root[data-accent="orange"]{ --acc:var(--orange); --acc-2:#c76b00; --on-acc:#000 }
-:root[data-accent="violet"]{ --acc:var(--purple); --acc-2:#8944ab; --on-acc:#fff }
-:root[data-accent="pink"]  { --acc:var(--pink);   --acc-2:#d70036; --on-acc:#fff }
-:root[data-accent="red"]   { --acc:var(--red);    --acc-2:#d70015; --on-acc:#fff }
-:root[data-accent="teal"]  { --acc:var(--teal);   --acc-2:#0071a4; --on-acc:#000 }
-:root[data-accent="gold"]  { --acc:var(--yellow); --acc-2:#b25000; --on-acc:#000 }
-/* Label colour on a filled accent button is picked per accent by measured contrast,
-   not by taste. Button text is 17px/600, so the AA bar is 3:1 (large text). White on
-   the light-theme green is 2.22:1 and on teal 2.57:1 — both fail, and green is the
-   DEFAULT accent, so every primary button in light mode was failing. Black scores
-   9.46 / 8.16 there. Blue, purple, pink and red keep white (3.5–4.1:1), which both
-   passes and matches the platform convention. */
-:root[data-theme="light"][data-accent="lime"],
-:root[data-theme="light"][data-accent="teal"]  { --on-acc:#000 }
-:root[data-theme="light"][data-accent="sky"],
-:root[data-theme="light"][data-accent="violet"],
-:root[data-theme="light"][data-accent="pink"],
-:root[data-theme="light"][data-accent="red"]   { --on-acc:#fff }
 
 /* ---------------------------------------------------------------- reset -- */
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -121,8 +108,8 @@ html{
 }
 body{
   background:var(--bg);color:var(--label);
-  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','SF Pro Display','Segoe UI',Roboto,system-ui,sans-serif;
-  font-size:17px;line-height:1.29;letter-spacing:-.01em;
+  font-family:var(--font-sans);
+  font-size:17px;line-height:1.29;letter-spacing:0;
   min-height:100vh;min-height:100dvh;overscroll-behavior-y:none;overflow-x:clip;
   -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
   touch-action:manipulation;
@@ -134,7 +121,7 @@ img{max-width:100%}
 a{color:var(--acc);text-decoration:none}
 :focus{outline:none}
 :focus-visible{outline:2.5px solid var(--acc);outline-offset:2px;border-radius:6px}
-button,.chip,.tile,.item,.wday,.cal-d,.swatch,.hm-c,.lrow,.seg button,.stp button,.sld
+button,.chip,.tile,.item,.wday,.cal-d,.hm-c,.lrow,.seg button,.stp button,.sld
 {-webkit-user-select:none;user-select:none}
 
 /* icons inherit colour and optical size from their context */
@@ -147,8 +134,8 @@ button,.chip,.tile,.item,.wday,.cal-d,.swatch,.hm-c,.lrow,.seg button,.stp butto
 @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 
 /* ------------------------------------------------------------ type scale -- */
-.t-large  {font-size:34px;line-height:1.06;font-weight:700;letter-spacing:-.028em}
-.t-title  {font-size:28px;line-height:1.12;font-weight:700;letter-spacing:-.024em}
+.t-large  {font-family:var(--font-serif);font-size:38px;line-height:1.02;font-weight:600;letter-spacing:-.01em}
+.t-title  {font-family:var(--font-serif);font-size:31px;line-height:1.08;font-weight:600;letter-spacing:-.01em}
 .t-title2 {font-size:22px;line-height:1.18;font-weight:700;letter-spacing:-.021em}
 .t-head   {font-size:17px;line-height:1.29;font-weight:600;letter-spacing:-.012em}
 .t-body   {font-size:17px;line-height:1.29;font-weight:400;letter-spacing:-.012em}
@@ -232,7 +219,7 @@ button.conn:active{filter:brightness(1.12)}
    a box this tight, and that is what turned "Упражнения" into "Упра / жнен / ия". */
 .hdr>div{min-width:0}
 .hdr>.btn{flex:none}
-.hdr h1{font-size:34px;line-height:1.06;font-weight:700;letter-spacing:-.028em;overflow-wrap:break-word}
+.hdr h1{font-family:var(--font-serif);font-size:38px;line-height:1.02;font-weight:600;letter-spacing:-.01em;overflow-wrap:break-word}
 @media (max-width:420px){.hdr h1{font-size:30px}}
 .hdr .sub{color:var(--label-2);font-size:15px;letter-spacing:-.006em;margin-top:4px}
 
@@ -354,7 +341,7 @@ h4.sec{
 /* -------------------------------------------------------------- buttons -- */
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:7px;width:100%;
-  padding:14px 18px;border-radius:var(--r);font-size:17px;font-weight:600;
+  padding:14px 18px;border-radius:99px;font-size:17px;font-weight:700;
   letter-spacing:-.012em;background:var(--surface-2);color:var(--label);
   transition:transform var(--fast) var(--ease),background var(--fast),opacity var(--fast);
 }
@@ -386,7 +373,7 @@ h4.sec{
   -webkit-backdrop-filter:saturate(180%) blur(10px);backdrop-filter:saturate(180%) blur(10px);
   border-top:var(--hair) solid var(--sep-op);
 }
-:root[data-theme="light"] #tabbar{background:rgba(249,249,251,.94)}
+:root[data-theme="light"] #tabbar{background:rgba(251,248,247,.94)}
 #tabbar button{
   flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
   color:var(--label-3);font-size:10px;font-weight:500;letter-spacing:.005em;padding-top:3px;
@@ -433,7 +420,7 @@ h4.sec{
    fully opaque instead. Keep this in sync with the rules above. */
 @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
   #tabbar{background:var(--bg-el)}
-  :root[data-theme="light"] #tabbar{background:#f9f9fb}
+  :root[data-theme="light"] #tabbar{background:#FBF8F7}
   #timer{background:var(--surface)}
   #toast{background:var(--surface-2)}
 }
@@ -1494,11 +1481,12 @@ body.chips-dragging *{cursor:inherit}
 .cal-legend{display:flex;gap:14px;justify-content:center;margin-top:12px;font-size:12px;color:var(--label-3)}
 .cal-legend i{display:inline-block;width:6px;height:6px;border-radius:50%;margin-inline-end:5px}
 
-/* --- accent swatches --- */
-.swatches{display:flex;gap:12px;flex-wrap:wrap}
-.swatch{width:32px;height:32px;border-radius:50%;flex:none;position:relative;transition:transform var(--fast)}
-.swatch:active{transform:scale(.9)}
-.swatch.on::after{content:'';position:absolute;inset:-4px;border-radius:50%;box-shadow:0 0 0 2px var(--label)}
+/* --- brand logo (Login): the guide's minimum for the vertical logo is 72px wide --- */
+.brand-logo{display:flex;justify-content:center;margin:0 0 14px}
+.brand-logo img{width:min(220px,62vw);height:auto}
+.brand-logo .on-dark,:root[data-theme="dark"] .brand-logo .on-light{display:none}
+:root[data-theme="dark"] .brand-logo .on-dark{display:block}
+
 
 /* --- supersets --- */
 .ss-label{
