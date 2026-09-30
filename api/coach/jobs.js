@@ -27,6 +27,7 @@ import { handleFor } from './handle.js';
 import { fetchFor } from './node-fetch.js';
 import { canDropPrivileges, unprivilegedIds } from './adapters/spawn.js';
 import { cohortForPayload, invalidate as invalidateCohort } from './cohort.js';
+import { getUserState, getAllUsers } from '../store.js';
 
 // The prompt assembly, the plan fingerprint and the invoke→parse→validate→repair loop all
 // live in ./core now, where the phone can import them too. Re-exported so nothing that
@@ -35,6 +36,12 @@ export { hashPlan, buildPrompt };
 
 const DATA = process.env.DATA_DIR || '/data';
 const COACH_DIR = path.join(DATA, 'coach');
+
+// Set once by server.js after PostgreSQL connects (same idea as setProposalHook below: avoids
+// this module reaching for a connection before one exists, and keeps every test that never
+// calls readState/listUserIds free of needing a database at all).
+let pool = null;
+export function setPool(p) { pool = p; }
 
 // Five minutes by default. A local model on a small CPU box can legitimately need more; a
 // cloud API that needs more has a problem. COACH_JOB_TIMEOUT_MS overrides, never below one minute.
@@ -82,11 +89,13 @@ export function clearUser(uid) {
   invalidateCohort();
 }
 
-/** Every profile with a state file — the population a cohort is drawn from. */
-export function listUserIds() {
-  try {
-    return fs.readdirSync(DATA).filter(f => /^state-[a-zA-Z0-9_-]+\.json$/.test(f)).map(f => f.slice(6, -5));
-  } catch { return []; }
+/** Every profile with a users row — the population a cohort is drawn from. */
+export async function listUserIds() {
+  // setPool runs after connectAndMigrate, but cadence.js's own tick is registered at module
+  // load — the same gap server.js's reminder tick guards for the same reason. Empty is the
+  // right answer for "no pool yet", the same as it is for "no rows".
+  if (!pool) return [];
+  return (await getAllUsers(pool)).map(u => u.id);
 }
 
 /* ---------- "compare with others" opt-in ----------
@@ -100,9 +109,9 @@ export function setShare(uid, share) {
   return !!share;
 }
 
-export function readState(uid) {
-  try { return JSON.parse(fs.readFileSync(path.join(DATA, 'state-' + safe(uid) + '.json'), 'utf8')); }
-  catch { return null; }
+export async function readState(uid) {
+  if (!pool) return null;  // see listUserIds above
+  return (await getUserState(pool, uid)).state;
 }
 
 /* ---------- caps ---------- */
@@ -194,66 +203,76 @@ export function clampMessage(text) {
  * Enqueue a job. Throws CoachError with a code the routes layer maps to an HTTP status:
  * `off`, `busy`, `cap`, `consent`.
  */
-export function enqueue(uid, opts) {
+export async function enqueue(uid, opts) {
   if (!cfgStore.isEnabled() || !cfgStore.isConnected()) throw new CoachError('off', 'the Coach is not set up on this instance');
   if (inflight.has(uid)) throw new CoachError('busy', 'the Coach is already thinking about your training');
-
-  const S = readState(uid);
-  // Consent is enforced here, server-side, not by the screen that collects it: a UI-only gate
-  // is not a gate (FR-08/13).
-  if (!S?.coach?.consent?.agreedAt) throw new CoachError('consent', 'the Coach needs your go-ahead first');
-
-  // Whose account pays. In instance mode the credential binds to the first profile that spends
-  // it and every other profile is refused outright — not warned. A warning would move the
-  // decision onto whoever clicks past it, and the decision is about spending somebody else's
-  // personal subscription.
-  const cred = cfgStore.credentialFor(uid);
-  if (!cred.ok) {
-    if (cred.reason === 'shared-account') throw new CoachError('shared', cred.message);
-    throw new CoachError('off', 'this profile has no provider account connected');
-  }
-  // Spending is what binds: a personal credential (setup token, OAuth) belongs to the first
-  // profile that runs a job on it from here on; an API key binds to nobody and is shared.
-  cfgStore.bindInstanceCredential(uid);
-
-  // The privilege drop is what keeps a provider runtime out of ./data. If it cannot be
-  // performed, there is no job — see canDropPrivileges for why this is not a warning either.
-  // A provider that spawns nothing has no process to drop, and is not refused for it.
-  if (adapterFor(cfgStore.load().provider)?.spawns !== false) {
-    const priv = canDropPrivileges();
-    if (!priv.ok) throw new CoachError('unprivileged', `Coach jobs are disabled: ${priv.why}`);
-  }
-
-  const caps = cfgStore.load().caps || {};
-  const { used, limit } = capState(uid);
-  if (limit > 0 && used >= limit) throw new CoachError('cap', 'daily limit reached');
-  if (caps.instanceDaily > 0 && instanceUsedToday() >= caps.instanceDaily) throw new CoachError('cap', 'this instance has reached its daily limit');
-
-  // Counted at enqueue, not at completion: the cap exists to bound what one profile can spend
-  // of the owner's provider account, and queueing twenty jobs spends it whether or not the
-  // twentieth ever finishes.
-  bumpDaily(uid);
-  bumpInstanceDaily();
-
-  const job = {
-    id: crypto.randomBytes(8).toString('hex'),
-    uid,
-    forgetSeq: forgetSeq.get(uid) || 0,
-    kind: opts.kind,                                  // 'create' | 'review' | 'debrief'
-    trigger: opts.trigger || 'manual',                // 'manual' | 'scheduled'
-    workoutId: opts.workoutId ? String(opts.workoutId).slice(0, 40) : null,
-    intake: opts.intake || null,
-    note: clampMessage(opts.note),
-    refine: clampMessage(opts.refine),
-    lang: payloadLib.langTag(opts.lang),              // the language the app was showing (#303)
-    state: 'queued',
-    startedAt: Date.now()
-  };
+  // Claimed here, synchronously, before the first await below: this whole function used to run
+  // to completion in one tick, so the busy-check above and the old inflight.add() near the end
+  // were effectively atomic for free. readState is a real query now — two requests for the same
+  // profile arriving together could both pass the check above before either claimed the slot.
+  // Released on every path that throws out of the try below; kept on success, same as before,
+  // for execute()'s own finally to release once the job actually finishes.
   inflight.add(uid);
-  patchUser(uid, { current: { id: job.id, kind: job.kind, state: 'queued', startedAt: job.startedAt } });
-  queue.push(job);
-  pump();
-  return { id: job.id };
+  try {
+    const S = await readState(uid);
+    // Consent is enforced here, server-side, not by the screen that collects it: a UI-only gate
+    // is not a gate (FR-08/13).
+    if (!S?.coach?.consent?.agreedAt) throw new CoachError('consent', 'the Coach needs your go-ahead first');
+
+    // Whose account pays. In instance mode the credential binds to the first profile that spends
+    // it and every other profile is refused outright — not warned. A warning would move the
+    // decision onto whoever clicks past it, and the decision is about spending somebody else's
+    // personal subscription.
+    const cred = cfgStore.credentialFor(uid);
+    if (!cred.ok) {
+      if (cred.reason === 'shared-account') throw new CoachError('shared', cred.message);
+      throw new CoachError('off', 'this profile has no provider account connected');
+    }
+    // Spending is what binds: a personal credential (setup token, OAuth) belongs to the first
+    // profile that runs a job on it from here on; an API key binds to nobody and is shared.
+    cfgStore.bindInstanceCredential(uid);
+
+    // The privilege drop is what keeps a provider runtime out of ./data. If it cannot be
+    // performed, there is no job — see canDropPrivileges for why this is not a warning either.
+    // A provider that spawns nothing has no process to drop, and is not refused for it.
+    if (adapterFor(cfgStore.load().provider)?.spawns !== false) {
+      const priv = canDropPrivileges();
+      if (!priv.ok) throw new CoachError('unprivileged', `Coach jobs are disabled: ${priv.why}`);
+    }
+
+    const caps = cfgStore.load().caps || {};
+    const { used, limit } = capState(uid);
+    if (limit > 0 && used >= limit) throw new CoachError('cap', 'daily limit reached');
+    if (caps.instanceDaily > 0 && instanceUsedToday() >= caps.instanceDaily) throw new CoachError('cap', 'this instance has reached its daily limit');
+
+    // Counted at enqueue, not at completion: the cap exists to bound what one profile can spend
+    // of the owner's provider account, and queueing twenty jobs spends it whether or not the
+    // twentieth ever finishes.
+    bumpDaily(uid);
+    bumpInstanceDaily();
+
+    const job = {
+      id: crypto.randomBytes(8).toString('hex'),
+      uid,
+      forgetSeq: forgetSeq.get(uid) || 0,
+      kind: opts.kind,                                  // 'create' | 'review' | 'debrief'
+      trigger: opts.trigger || 'manual',                // 'manual' | 'scheduled'
+      workoutId: opts.workoutId ? String(opts.workoutId).slice(0, 40) : null,
+      intake: opts.intake || null,
+      note: clampMessage(opts.note),
+      refine: clampMessage(opts.refine),
+      lang: payloadLib.langTag(opts.lang),              // the language the app was showing (#303)
+      state: 'queued',
+      startedAt: Date.now()
+    };
+    patchUser(uid, { current: { id: job.id, kind: job.kind, state: 'queued', startedAt: job.startedAt } });
+    queue.push(job);
+    pump();
+    return { id: job.id };
+  } catch (e) {
+    inflight.delete(uid);
+    throw e;
+  }
 }
 
 function pump() {
@@ -306,7 +325,7 @@ export function setProposalHook(fn) { onProposal = fn; }
 async function execute(job) {
   patchUser(job.uid, { current: { id: job.id, kind: job.kind, state: 'running', startedAt: job.startedAt } });
 
-  const S = readState(job.uid);
+  const S = await readState(job.uid);
   if (!S) return finish(job, { outcome: 'failed', errorClass: 'nostate' });
   // Checked again here, not only at enqueue: a job can wait behind two others, and consent
   // withdrawn or the Coach switched off in the meantime means no payload leaves for it.
@@ -322,6 +341,9 @@ async function execute(job) {
   }
 
   const pendingCreate = job.refine ? readUser(job.uid).pending : null;
+  // The room's medians ride along on a review or a debrief when the admin allows it and this
+  // person opted in; null otherwise, and the payload then carries no `cohort` at all.
+  const cohort = (job.kind === 'review' || job.kind === 'debrief') ? await cohortForPayload(job.uid) : null;
   const payload = payloadLib.build(S, {
     handle: handleFor(job.uid),
     kind: job.kind,
@@ -333,9 +355,7 @@ async function execute(job) {
     // The app says which language it is in. A scheduled review has no app behind it: a profile
     // that never picked a language then gets the instance's DEFAULT_LANG, like its screens do.
     lang: job.lang || (S.langAuto === true ? payloadLib.langTag(process.env.DEFAULT_LANG) : null),
-    // The room's medians ride along on a review or a debrief when the admin allows it and
-    // this person opted in; null otherwise, and the payload then carries no `cohort` at all.
-    cohort: (job.kind === 'review' || job.kind === 'debrief') ? cohortForPayload(job.uid) : null
+    cohort
   });
   // The payload is paid for with the instance's key, and it is built from state the client
   // wrote. The builder bounds each field; a payload that is still bigger than any real training

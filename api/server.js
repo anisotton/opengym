@@ -45,11 +45,10 @@ import {
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
 // Phase 1b (ISO-1403): db.json and a profile's training data (state-<uid>.json) have both moved
-// onto PostgreSQL (store.js) — mandatory from here on. db.json itself is read exactly once more,
-// at boot (readBootDb below), to migrate whatever an instance upgrading from before this phase
-// still has on disk; nothing after that reads or writes it again. api/coach/jobs.js's own
-// state-<uid>.json reader is the one piece this phase does not reach — see the issue's final
-// comment.
+// onto PostgreSQL (store.js) — mandatory from here on, including api/coach/jobs.js's own
+// readState/listUserIds (jobs.setPool(pool), in listen() below). db.json itself is read exactly
+// once more, at boot (readBootDb below), to migrate whatever an instance upgrading from before
+// this phase still has on disk; nothing after that reads or writes it again.
 const DATABASE_URL = process.env.DATABASE_URL || '';
 if (!DATABASE_URL) {
   console.error('DATABASE_URL is required (PostgreSQL holds profile state — see docs/SELF_HOSTING.md)');
@@ -58,10 +57,12 @@ if (!DATABASE_URL) {
 let pool; // set once connectAndMigrate() resolves, in listen() below
 // A snapshot of every user, refreshed each reminder tick (below) — the one thing left that reads
 // the account list synchronously: the account-lockout backoff's `keep` predicate (ACCOUNT_FAILS)
-// and coach/cadence.js's tick, which predates this migration and reads state-<uid>.json directly
-// regardless (a separate, already-flagged gap), so giving it fresher data here would not fix it.
-// Up to one tick stale (REMINDER_TICK_MS, 10s in production) — fine for both: a lockout entry
-// that lingers a beat past a password removal, a weekly cadence check.
+// and coach/cadence.js's tick, handed this as `deps.users()`. Up to one tick stale
+// (REMINDER_TICK_MS, 10s in production) — fine for both: a lockout entry that lingers a beat past
+// a password removal, a weekly cadence check against a user list a few seconds old. Everything
+// cadence.js reads *about* a user (their state, their Coach record) is read fresh on every tick
+// regardless, through jobs.js's own Postgres-backed readState — only the list of who to check is
+// this snapshot.
 let usersCache = [];
 const RP_ID = process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
@@ -2569,6 +2570,10 @@ async function listen() {
   try {
     const r = await connectAndMigrate(DATABASE_URL);
     pool = r.pool;
+    // jobs.js's own readState/listUserIds (used by cohort.js and cadence.js too) need this —
+    // same idea as setProposalHook above: a setter, since jobs.js is imported (and its own
+    // setInterval-driven callers may already be ticking) before any pool exists.
+    coachJobs.setPool(pool);
     console.log(`postgres ready (${r.count} migration${r.count === 1 ? '' : 's'} applied)`);
   } catch (e) {
     console.error('postgres connection/migration failed:', e.message);

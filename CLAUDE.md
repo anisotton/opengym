@@ -144,13 +144,21 @@ With passkeys moved, `db.json` itself is retired: `server.js` no longer has a mo
 object or a `saveDb()` — the "remove the global `db` variable, `saveDb()` and `stateFile()`" the
 issue opened with. `db.json` is still read once, at boot (`readBootDb()`, a local variable scoped
 to `listen()`), to carry over whatever an instance upgrading from before ISO-1403 still has on
-disk; nothing after that boot pass reads or writes it again. `api/coach/jobs.js` is the one piece
-outside `server.js` this phase does not reach: it still reads `state-<uid>.json` directly (its own
-`readState`/`listUserIds`, used by `coach/cohort.js` and `coach/cadence.js` too), a real gap until
-a later run threads `pool` through the Coach subsystem the same way — see the issue's final
-comment: Coach stops seeing data for anyone who syncs after this ships, until it does. Auth is
-WebAuthn passkeys (`@simplewebauthn/server`) plus a signed session cookie (HMAC'd with a
-`DATA_DIR/secret` generated on first boot) — no JWT/session-store dependency.
+disk; nothing after that boot pass reads or writes it again. The Coach (`api/coach/`) is on
+PostgreSQL too now: `jobs.js`'s own `readState`/`listUserIds` (also used by `cohort.js`'s "compare
+with others" and `cadence.js`'s scheduled-review tick) take `getUserState`/`getAllUsers` from
+`store.js`, reached through `jobs.setPool(pool)` — a setter server.js calls once after
+`connectAndMigrate`, the same idea as `setProposalHook`, since `jobs.js` (and cadence.js's own
+`setInterval`, armed at import time) may already be live before any pool exists. `enqueue()`
+claims its single-flight slot (`inflight`) synchronously, before its first `await`, and releases
+it on any path that doesn't reach the queue: the whole function used to run to completion in one
+JS tick, so two requests for the same profile arriving together were serialized for free; once
+`readState` became a real query, that gap had to be closed by hand or both could pass the busy
+check before either claimed it. `jobs.js`'s own per-profile job/consent/history record
+(`data/coach/<uid>.json`) and the instance's own `data/coach.json` are unaffected — deliberately
+still on disk, per the epic's own rule for this phase. Auth is WebAuthn passkeys
+(`@simplewebauthn/server`) plus a signed session cookie (HMAC'd with a `DATA_DIR/secret` generated
+on first boot) — no JWT/session-store dependency.
 Optional pieces
 gated by env vars: `ADMIN_UIDS` (admin dashboard), `INVITE_ONLY` (signup needs a code),
 `ALLOW_GUEST` (client-only guest mode never hits the server at all), plus a rotating

@@ -53,13 +53,6 @@ export function tempData() {
   return dir;
 }
 
-// Coach (api/coach/jobs.js) still reads state-<uid>.json directly — untouched by ISO-1403 Phase
-// 1b, which only moved server.js's own GET/PUT /api/data onto PostgreSQL's user_state table (see
-// seedUserState below). Coach test fixtures keep using this.
-export function writeState(dir, uid, S) {
-  fs.writeFileSync(path.join(dir, 'state-' + uid + '.json'), JSON.stringify(S));
-}
-
 /* Spawning server.js for a test (ISO-1403). DATABASE_URL is mandatory now — GET/PUT /api/data has
  * nothing else to read or write — so every test that starts a real server needs a database, not
  * just the ones that previously cared about PostgreSQL. `spawnApi` is the one place that does

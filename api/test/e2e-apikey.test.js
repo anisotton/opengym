@@ -7,10 +7,12 @@
  * This is the test that says "if somebody puts in an API key it actually works", short of
  * spending money against the real endpoint.
  */
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { tempData, writeState, sampleState } from './helpers.mjs';
+import { tempData, seedUserState, sampleState, provisionTestDatabase } from './helpers.mjs';
+import { connectAndMigrate } from '../db.js';
+import { createUser } from '../store.js';
 
 const DIR = tempData();
 const cfg = await import('../coach/config.js');
@@ -18,6 +20,18 @@ const jobs = await import('../coach/jobs.js');
 const { coachRoutes } = await import('../coach/routes.js');
 const { forcePrivilegeVerdict } = await import('../coach/adapters/spawn.js');
 forcePrivilegeVerdict({ ok: true, dropped: false, why: 'pinned by the test suite' });
+
+// jobs.js's own readState (used by enqueue/execute) is PostgreSQL now (ISO-1403).
+const { databaseUrl, cleanup } = await provisionTestDatabase();
+const { pool } = await connectAndMigrate(databaseUrl);
+jobs.setPool(pool);
+after(() => pool.end());
+after(cleanup);
+const seeded = new Set();
+async function seedProfile(uid, state) {
+  if (!seeded.has(uid)) { await createUser(pool, { id: uid, name: uid, created: new Date().toISOString() }); seeded.add(uid); }
+  await seedUserState(databaseUrl, uid, state);
+}
 
 /* ---------- a provider on localhost ---------- */
 const seen = [];
@@ -88,8 +102,8 @@ async function runReview(provider, key, uid) {
   assert.ok(r.body.models.length >= 1);
   r = await call('POST /api/admin/coach/config', { model: r.body.models[0] });
   assert.equal(r.status, 200);
-  writeState(DIR, uid, sampleState());
-  jobs.enqueue(uid, { kind: 'review' });
+  await seedProfile(uid, sampleState());
+  await jobs.enqueue(uid, { kind: 'review' });
   await settle(uid);
   return jobs.readUser(uid);
 }
@@ -111,8 +125,8 @@ test('Anthropic: the pasted key travels as x-api-key, the rules are the cached s
   assert.equal(rec.pending.changes.length, 1);
   assert.equal(rec.pending.changes[0].type, 'sets');
   // Every profile may use an API key: a second profile is not refused.
-  writeState(DIR, 'u-anthropic-2', sampleState());
-  assert.doesNotThrow(() => jobs.enqueue('u-anthropic-2', { kind: 'review' }));
+  await seedProfile('u-anthropic-2', sampleState());
+  await assert.doesNotReject(jobs.enqueue('u-anthropic-2', { kind: 'review' }));
   await settle('u-anthropic-2');
   assert.equal(jobs.readUser('u-anthropic-2').history.at(-1).outcome, 'ready');
 });

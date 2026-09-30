@@ -69,12 +69,12 @@ function participant(S) {
 let cache = null;   // { at, rows: Map<uid, participant> }
 export function invalidate() { cache = null; }
 
-function rows() {
+async function rows() {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache.rows;
   const out = new Map();
-  for (const uid of listUserIds()) {
+  for (const uid of await listUserIds()) {
     if (!isSharing(uid)) continue;
-    const S = readState(uid);
+    const S = await readState(uid);
     if (!S) continue;
     const p = participant(S);
     if (p) out.set(uid, p);
@@ -84,14 +84,14 @@ function rows() {
 }
 
 /** Everything the sheet shows, in the requester's unit. */
-export function computeCohort(uid) {
+export async function computeCohort(uid) {
   if (!isSharing(uid)) return { ok: false, enabled: true, sharing: false };
-  const all = rows();
+  const all = await rows();
   const people = all.size;
   if (people < MIN_PEOPLE) return { ok: false, enabled: true, sharing: true, people, minPeople: MIN_PEOPLE };
 
   const me = all.get(uid) || null;
-  const S = readState(uid);
+  const S = await readState(uid);
   const unit = S?.unit === 'lb' ? 'lb' : 'kg';
   const out = v => (v == null ? null : round1(unit === 'lb' ? v / LB_TO_KG : v));
 
@@ -127,10 +127,10 @@ export function computeCohort(uid) {
 }
 
 /** The compact form a prompt gets — kg regardless of the requester's unit, or null. */
-export function cohortForPayload(uid) {
+export async function cohortForPayload(uid) {
   try {
     if (!cfgStore.load().community || !isSharing(uid)) return null;
-    const all = rows();
+    const all = await rows();
     if (all.size < MIN_PEOPLE) return null;
     const me = all.get(uid) || null;
     const byEx = new Map();
