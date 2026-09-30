@@ -34,8 +34,13 @@
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <meta property="og:title" content="Brilhart Fitness">
 <meta property="og:description" content="Condicionamento físico para o balé">
-<meta property="og:image" content="https://fit.brilhart.com.br/og-image.png">
-<meta property="og:url" content="https://fit.brilhart.com.br">
+<!-- __APP_URL__ is a plain marker, substituted at container start-up by the web image's
+     entrypoint (web/40-substitute-app-url.sh) from the APP_URL env var — same mechanism as
+     nginx.conf.template, so one built image serves every environment's own domain. In dev
+     (vite serving this file directly) it is left as-is, which is harmless: og: tags only
+     matter when a link to the deployed site is shared. -->
+<meta property="og:image" content="__APP_URL__/og-image.png">
+<meta property="og:url" content="__APP_URL__">
 </head>
 <body>
 <div id="root"></div>

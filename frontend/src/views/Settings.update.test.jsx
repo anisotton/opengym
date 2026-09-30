@@ -9,9 +9,11 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 // The updater downloads an .apk and hands it to the Android package installer, so its row
 // may only ever show on the native Android build: never on the web, never on iOS. Each test
 // flips the two gates (MOBILE flag, Capacitor platform) and watches whether Settings even
-// asks gitlab.com for the latest release.
+// asks the release feed for the latest version. UPDATE_FEED itself is mocked truthy by
+// default (a real build ships it null — no feed of its own yet — which is covered directly in
+// update.test.js) so this file keeps testing the row/section behavior once a feed exists.
 const mocks = vi.hoisted(() => {
-  const state = { S: null, MOBILE: false, android: false }
+  const state = { S: null, MOBILE: false, android: false, UPDATE_FEED: 'https://example.com/releases' }
   state.snapshot = () => ({
     S: state.S,
     user: null,
@@ -53,6 +55,7 @@ vi.mock('../lib/mobile.js', () => ({
 vi.mock('../lib/update.js', () => ({
   checkForUpdate: (...a) => mocks.checkForUpdate(...a),
   downloadAndInstall: vi.fn(),
+  get UPDATE_FEED() { return mocks.UPDATE_FEED },
 }))
 vi.mock('./MobileOnboarding.jsx', () => ({ ConnectSheet: () => null }))
 vi.mock('../sheets.jsx', () => ({
@@ -70,6 +73,7 @@ beforeEach(() => {
   }
   mocks.MOBILE = false
   mocks.android = false
+  mocks.UPDATE_FEED = 'https://example.com/releases'
   mocks.checkForUpdate.mockClear()
   mocks.confirmSheet.mockClear()
   host = document.createElement('div')
@@ -86,17 +90,15 @@ const mount = async () => {
   await act(async () => { root.render(<Settings />) })
   await act(async () => { await Promise.resolve(); await Promise.resolve() })
 }
-const updateRow = () => [...host.querySelectorAll('.lrow')].find(r => r.textContent.includes('Update to openGym v9.9.9'))
+const updateRow = () => [...host.querySelectorAll('.lrow')].find(r => r.textContent.includes('Update to Brilhart Fitness v9.9.9'))
 const checkRow = () => [...host.querySelectorAll('.lrow')].find(r => r.textContent.includes('Check for updates'))
-const webRow = () => [...host.querySelectorAll('.lrow')].find(r => r.textContent.includes('Get the Android app'))
 
 describe('Settings — in-app update check', () => {
-  it('web build: never asks for releases; the Updates section points at the APK instead', async () => {
+  it('web build: no Updates section at all (no APK distribution on the web)', async () => {
     await mount()
     expect(mocks.checkForUpdate).not.toHaveBeenCalled()
     expect(updateRow()).toBeUndefined()
     expect(checkRow()).toBeUndefined()
-    expect(webRow()).toBeTruthy()
   })
 
   it('mobile build on iOS: no check, no row, no section', async () => {
@@ -105,7 +107,16 @@ describe('Settings — in-app update check', () => {
     expect(mocks.checkForUpdate).not.toHaveBeenCalled()
     expect(updateRow()).toBeUndefined()
     expect(checkRow()).toBeUndefined()
-    expect(webRow()).toBeUndefined()
+  })
+
+  it('Android with no release feed configured (this fork\'s default): no check, no section', async () => {
+    mocks.MOBILE = true
+    mocks.android = true
+    mocks.UPDATE_FEED = null
+    await mount()
+    expect(mocks.checkForUpdate).not.toHaveBeenCalled()
+    expect(updateRow()).toBeUndefined()
+    expect(checkRow()).toBeUndefined()
   })
 
   it('mobile build on Android: checks once and shows the row, tapping it asks before downloading', async () => {
@@ -133,7 +144,7 @@ describe('Settings — in-app update check', () => {
     expect(updateRow()).toBeTruthy()   // the second (default) answer had 9.9.9 — the row now offers it
   })
 
-  it('Android when gitlab.com is unreachable: stays quiet, keeps the row', async () => {
+  it('Android when the release feed is unreachable: stays quiet, keeps the row', async () => {
     mocks.MOBILE = true
     mocks.android = true
     mocks.checkForUpdate.mockRejectedValueOnce(new Error('offline'))

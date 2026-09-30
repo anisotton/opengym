@@ -77,7 +77,7 @@ describe('import', () => {
     expect(read.state.customEx[1].media.mime).toBe('image/jpeg')
   })
 
-  it('refuses what is not an openGym backup, zipped or not', async () => {
+  it('refuses what is not a Brilhart Fitness backup, zipped or not', async () => {
     await expect(readBackupFile(new File(['{"hello":1}'], 'x.json'))).rejects.toThrow()
     const zip = await zipStore([{ name: 'something.txt', blob: new Blob(['x']) }])
     await expect(readBackupFile(new File([zip], 'x.zip'))).rejects.toThrow()

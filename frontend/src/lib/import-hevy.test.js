@@ -256,7 +256,7 @@ describe('parseHevyRoutines', () => {
     ],
   }
 
-  it('builds openGym routine configs from Hevy sets', () => {
+  it('builds Brilhart Fitness routine configs from Hevy sets', () => {
     const parsed = parseHevyRoutines([ROUTINE], TEMPLATES, { unit: 'kg' })
     expect(parsed.routines).toHaveLength(1)
     expect(parsed.routines[0].name).toBe('Oberkörper 2')

@@ -1,5 +1,5 @@
 // Mobile build only, first launch: the choice useStore.boot() couldn't make on its own — keep
-// everything on this device, or connect to a self-hosted openGym server instead. See
+// everything on this device, or connect to a self-hosted Brilhart Fitness server instead. See
 // lib/remote.js for the pairing flow this hands off to.
 import { useState, useRef, useEffect } from 'react'
 import { useStore } from '../store/useStore.js'
@@ -31,8 +31,8 @@ export function ConnectSheet({ close, initialUrl = '', again = false }) {
     <h3>{again ? t('Pair again') : t('Connect to my server')}</h3>
     <div className="muted small" style={{ marginBottom: 14 }}>
       {again
-        ? t('Open Settings → “Pair the mobile app” on your openGym site in a browser and enter the new code shown there. What this phone kept is merged into your account.')
-        : t('Open Settings → “Pair the mobile app” on the openGym site you’re already signed into, then enter its address and the code shown there.')}
+        ? t('Open Settings → “Pair the mobile app” on your Brilhart Fitness site in a browser and enter the new code shown there. What this phone kept is merged into your account.')
+        : t('Open Settings → “Pair the mobile app” on the Brilhart Fitness site you’re already signed into, then enter its address and the code shown there.')}
     </div>
     <input ref={ref} className="input" placeholder={t('Server address (e.g. gym.example.com)')} value={url}
       onChange={e => setUrl(e.target.value)} autoCapitalize="none" autoCorrect="off" inputMode="url" />
@@ -48,18 +48,18 @@ export default function MobileOnboarding() {
   const { chooseLocalMode } = useStore()
   const head = <>
     <div style={{ fontSize: 54, display: 'flex', justifyContent: 'center', color: 'var(--acc)' }}><Icon name="dumbbell" /></div>
-    <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-.028em', margin: '10px 0 4px' }}>openGym</h1>
+    <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-.028em', margin: '10px 0 4px' }}>Brilhart Fitness</h1>
   </>
   const wrap = { display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '78vh', textAlign: 'center' }
   return (
     <div className="narrow" style={wrap}>
       {head}
-      <div className="muted" style={{ marginBottom: 34 }}>{t('How do you want to use openGym?')}</div>
+      <div className="muted" style={{ marginBottom: 34 }}>{t('How do you want to use Brilhart Fitness?')}</div>
       <Button variant="primary" icon="lock" onClick={() => chooseLocalMode()}>{t('Use on this device')}</Button>
       <div style={{ height: 10 }} />
       <Button icon="rocket" onClick={() => useUI.getState().openSheet(close => <ConnectSheet close={close} />)}>{t('Connect to my server')}</Button>
       <div className="dim small" style={{ marginTop: 26, lineHeight: 1.5 }}>
-        {t('Local keeps everything on this phone. Connecting syncs to your own openGym server instead — you can switch later in Settings.')}
+        {t('Local keeps everything on this phone. Connecting syncs to your own Brilhart Fitness server instead — you can switch later in Settings.')}
       </div>
     </div>
   )

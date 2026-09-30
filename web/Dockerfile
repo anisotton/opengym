@@ -48,10 +48,19 @@ COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 # exercise media (img/gif) is mounted at runtime from the media volume
 
+# Substitutes __APP_URL__ in the served index.html at start-up — nginx.conf.template's own
+# envsubst (20-envsubst-on-templates.sh, part of this base image) only covers /etc/nginx/templates,
+# not files already in the webroot.
+COPY web/40-substitute-app-url.sh /docker-entrypoint.d/40-substitute-app-url.sh
+RUN chmod +x /docker-entrypoint.d/40-substitute-app-url.sh
+
 # Set Default ENVs for nginx
 ENV NGINX_PORT=80
 ENV BACKEND=api
 ENV PORT=3000
+# The public address of this instance, substituted into index.html's og:url/og:image (see
+# 40-substitute-app-url.sh). Empty leaves the __APP_URL__ marker blank rather than broken.
+ENV APP_URL=""
 # The DNS nginx asks about BACKEND on every /api request. Docker's embedded resolver by
 # default, which is correct for compose. Nothing listens on it elsewhere, and an unreachable
 # resolver makes every /api request hang rather than fail, so any other runtime has to say

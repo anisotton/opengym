@@ -59,7 +59,7 @@ describe('Login with password sign-in', () => {
     expect(page.textContent).toContain('Today’s strength is tomorrow’s lightness.')
     mocks.webauthn = false
     const noPasskeys = mount(<Login />)
-    expect(noPasskeys.textContent).toContain("This browser doesn't support passkeys — you can still use openGym locally on this device.")
+    expect(noPasskeys.textContent).toContain("This browser doesn't support passkeys — you can still use Brilhart Fitness locally on this device.")
     expect(buttons(noPasskeys)).not.toContain('Sign in with password')
   })
 
