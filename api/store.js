@@ -1,13 +1,16 @@
 /* PostgreSQL-backed access for the pieces of db.json / state-<uid>.json converted so far
- * (ISO-1403, Phase 1b). Everything else (auth, passkeys, invites, push subscriptions, device
- * links, sessions) is still db.json/in-memory for now — a later run of the same issue finishes
- * that half and this module grows with it.
+ * (ISO-1403, Phase 1b). Everything else (passkeys, invites, push subscriptions, device links,
+ * sessions) is still db.json/in-memory for now — a later run of the same issue finishes that
+ * half and this module grows with it.
  *
- * `user_state.user_id` carries a foreign key to `users(id)` (migrations/001_init.sql), so writing
- * a profile's state needs a matching row there first. Since `users` itself has not moved to
- * Postgres yet, `syncUser` keeps a minimal mirror (id + name only — nothing here reads it back)
- * just so that constraint holds; the row becomes the real thing, untouched, once a future run
- * migrates users for real.
+ * The `users` functions below (createUser onward) are not wired into server.js yet — that is
+ * the next slice, a careful rewrite of the auth routes and the helpers they share (loginTarget,
+ * setPassword, nameTaken/emailTaken and friends all close over db.users synchronously and call
+ * each other, so switching the source under them touches most of the registration/login/password
+ * surface at once). Landing the data-access layer on its own first, fully tested against real
+ * PostgreSQL, means that rewrite starts from a store that already works rather than debugging
+ * both at the same time. `syncUser` (the minimal id+name mirror) stays in use by server.js until
+ * that wiring lands and `createUser` takes over as the one place a user row is ever written.
  */
 
 // Mirrors one db.json user into the Postgres `users` table — id and name only, enough to satisfy
@@ -65,4 +68,119 @@ export async function putUserState(pool, userId, decide) {
     }
     return { conflict: false, rev: nextRev, state: decision.state };
   }
+}
+
+/* ---------- users (not wired into server.js yet — see the module comment above) ---------- */
+
+// Maps a `users` row back to the same shape server.js has always built from db.json: `pw`/
+// `pwReset` as the nested objects hasPassword()/resetCodeMatches() expect, epoch-ms numbers for
+// `lastPull`/`pwReset.exp` (the columns are timestamptz; db.json always held these as numbers),
+// an ISO string for `created` (db.json's own format), and optional fields only present when set
+// — `'email' in user` and friends are exactly as meaningful as they were on the file-backed
+// object. `extra` holds the one field with no dedicated column, `lastReminder`.
+function rowToUser(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    created: row.created_at.toISOString(),
+    admin: row.admin,
+    disabled: row.disabled,
+    sv: row.session_version,
+    ...(row.email ? { email: row.email } : {}),
+    ...(row.invited_by ? { invitedBy: row.invited_by } : {}),
+    ...(row.password_hash
+      ? { pw: { h: row.password_hash, set: row.password_set_at.toISOString() } }
+      : {}),
+    ...(row.password_reset_hash
+      ? { pwReset: { h: row.password_reset_hash, exp: row.password_reset_expires_at.getTime(), by: row.password_reset_by } }
+      : {}),
+    ...(row.last_pull_at ? { lastPull: row.last_pull_at.getTime() } : {}),
+    ...(row.extra?.lastReminder ? { lastReminder: row.extra.lastReminder } : {})
+  };
+}
+
+export async function getUserById(pool, id) {
+  const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+  return rows.length ? rowToUser(rows[0]) : null;
+}
+
+// Every user, oldest first — db.json's own array order, since nothing ever sorted it. Small
+// instances only: callers that today do `db.users.find(...)`/`.some(...)` (name/e-mail
+// uniqueness, sign-in lookup) call this once and reuse the same predicates against the array,
+// rather than this module re-deriving nameKey()'s normalisation in SQL.
+export async function getAllUsers(pool) {
+  const { rows } = await pool.query('SELECT * FROM users ORDER BY created_at');
+  return rows.map(rowToUser);
+}
+
+// `user`: { id, name, created, email?, pw?: { h, set }, invitedBy? } — the exact shape
+// registration already builds. A duplicate id or e-mail is the caller's to have ruled out first
+// (both are real constraints here too, as a backstop, and surface as a thrown error).
+export async function createUser(pool, user) {
+  await pool.query(
+    `INSERT INTO users (id, name, email, password_hash, password_set_at, invited_by, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [user.id, user.name, user.email || null, user.pw?.h || null, user.pw?.set || null, user.invitedBy || null, user.created]
+  );
+}
+
+// setPassword's `delete user.pwReset` alongside `user.pw = {...}` in one statement: a fresh
+// password and a pending reset can never both be live.
+export async function setPassword(pool, id, pw) {
+  await pool.query(
+    `UPDATE users SET password_hash = $1, password_set_at = $2,
+       password_reset_hash = NULL, password_reset_expires_at = NULL, password_reset_by = NULL
+     WHERE id = $3`,
+    [pw.h, pw.set, id]
+  );
+}
+
+export async function removePassword(pool, id) {
+  await pool.query('UPDATE users SET password_hash = NULL, password_set_at = NULL WHERE id = $1', [id]);
+}
+
+// The admin reset route's `delete u.pw; u.pwReset = {...}` — same one-statement guarantee as
+// setPassword, the other direction: issuing a reset code always drops whatever password was live.
+export async function setPasswordReset(pool, id, reset) {
+  await pool.query(
+    `UPDATE users SET password_hash = NULL, password_set_at = NULL,
+       password_reset_hash = $1, password_reset_expires_at = $2, password_reset_by = $3
+     WHERE id = $4`,
+    [reset.h, new Date(reset.exp), reset.by, id]
+  );
+}
+
+// Returns the new value, the way `user.sv = sessionVersion(user) + 1` always left it on hand —
+// computed in SQL rather than read-then-write, so two concurrent bumps (a password change and a
+// "sign out everywhere" landing together) both count instead of one clobbering the other.
+export async function bumpSessionVersion(pool, id) {
+  const { rows } = await pool.query(
+    'UPDATE users SET session_version = session_version + 1 WHERE id = $1 RETURNING session_version',
+    [id]
+  );
+  return rows[0]?.session_version;
+}
+
+export async function setEmail(pool, id, email) {
+  await pool.query('UPDATE users SET email = $1 WHERE id = $2', [email, id]);
+}
+
+export async function setDisabled(pool, id, disabled) {
+  await pool.query('UPDATE users SET disabled = $1 WHERE id = $2', [disabled, id]);
+}
+
+export async function touchLastPull(pool, id, whenMs) {
+  await pool.query('UPDATE users SET last_pull_at = $1 WHERE id = $2', [new Date(whenMs), id]);
+}
+
+export async function setLastReminder(pool, id, date) {
+  await pool.query(
+    "UPDATE users SET extra = jsonb_set(extra, '{lastReminder}', to_jsonb($1::text)) WHERE id = $2",
+    [date, id]
+  );
+}
+
+// CASCADEs to user_state (and, once they move here too, passkeys/sessions/push_subscriptions).
+export async function deleteUser(pool, id) {
+  await pool.query('DELETE FROM users WHERE id = $1', [id]);
 }
