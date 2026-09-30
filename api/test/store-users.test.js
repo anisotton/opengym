@@ -50,6 +50,17 @@ test('createUser with a password and an e-mail carries both, in the shape hasPas
   assert.equal(u.email, 'bo@example.com');
 });
 
+// invited_by has a foreign key on invites(code), and invites have not moved to PostgreSQL yet
+// (a later slice) — a real invite code from db.json cannot be referenced from a Postgres row
+// today. createUser has to carry it some other way rather than violate that FK the first time a
+// real invite code is used.
+test('createUser with an invitedBy code that exists only in db.json does not violate the invites FK', async t => {
+  const pool = await withPool(t);
+  await createUser(pool, { id: 'u1', name: 'Ana', created: iso(), invitedBy: 'CODE-NOT-IN-PG' });
+  const u = await getUserById(pool, 'u1');
+  assert.equal(u.invitedBy, 'CODE-NOT-IN-PG');
+});
+
 test('getUserById: no such user is null, not a throw', async t => {
   const pool = await withPool(t);
   assert.equal(await getUserById(pool, 'nobody'), null);

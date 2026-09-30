@@ -77,7 +77,8 @@ export async function putUserState(pool, userId, decide) {
 // `lastPull`/`pwReset.exp` (the columns are timestamptz; db.json always held these as numbers),
 // an ISO string for `created` (db.json's own format), and optional fields only present when set
 // — `'email' in user` and friends are exactly as meaningful as they were on the file-backed
-// object. `extra` holds the one field with no dedicated column, `lastReminder`.
+// object. `extra` holds `lastReminder` (no dedicated column) and, for now, `invitedBy` too — see
+// createUser for why.
 function rowToUser(row) {
   return {
     id: row.id,
@@ -87,7 +88,7 @@ function rowToUser(row) {
     disabled: row.disabled,
     sv: row.session_version,
     ...(row.email ? { email: row.email } : {}),
-    ...(row.invited_by ? { invitedBy: row.invited_by } : {}),
+    ...(row.invited_by || row.extra?.invitedBy ? { invitedBy: row.invited_by || row.extra.invitedBy } : {}),
     ...(row.password_hash
       ? { pw: { h: row.password_hash, set: row.password_set_at.toISOString() } }
       : {}),
@@ -116,11 +117,19 @@ export async function getAllUsers(pool) {
 // `user`: { id, name, created, email?, pw?: { h, set }, invitedBy? } — the exact shape
 // registration already builds. A duplicate id or e-mail is the caller's to have ruled out first
 // (both are real constraints here too, as a backstop, and surface as a thrown error).
+//
+// `invitedBy` goes into `extra`, not the `invited_by` column: that column has a foreign key on
+// invites(code), and invites have not moved to PostgreSQL yet (a later slice) — an invite code
+// that is only ever in db.json cannot be referenced from a Postgres row. `extra` holds it until
+// then, same as `lastReminder`; rowToUser reads either place.
 export async function createUser(pool, user) {
   await pool.query(
-    `INSERT INTO users (id, name, email, password_hash, password_set_at, invited_by, created_at)
+    `INSERT INTO users (id, name, email, password_hash, password_set_at, created_at, extra)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [user.id, user.name, user.email || null, user.pw?.h || null, user.pw?.set || null, user.invitedBy || null, user.created]
+    [
+      user.id, user.name, user.email || null, user.pw?.h || null, user.pw?.set || null, user.created,
+      user.invitedBy ? { invitedBy: user.invitedBy } : {}
+    ]
   );
 }
 
