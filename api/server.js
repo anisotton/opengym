@@ -31,13 +31,14 @@ import {
 } from './passkeys-store.js';
 import { createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks } from './device-link.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
-import { connectAndMigrate } from './db.js';
+import { connectAndMigrate, withTransaction } from './db.js';
 import {
   getUserState, getUserStateRev, putUserState,
   getUserById, getAllUsers, createUser, setPassword, removePassword, rehashPassword,
   setPasswordReset, bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder,
   deleteUser, upsertUser, backfillPasswordResetBy,
-  createSession, getSession, revokeSession
+  createSession, getSession, revokeSession,
+  createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite
 } from './store.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -653,6 +654,10 @@ function json(res, code, obj, extraHeaders) {
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
+// Thrown inside withTransaction(pool, ...) by either registration route below to roll back a
+// user row that was about to be created on top of an invite another request consumed first — see
+// consumeInvite in store.js. Caught right outside the transaction, never anywhere else.
+class InviteRaceError extends Error {}
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0, over = false; const chunks = [];
@@ -1208,9 +1213,8 @@ const passwordRoutes = {
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required', code: 'missing' });
     const code = text(body.code).trim().toUpperCase();
-    const invite = () => db.invites.find(i => i.code === code && !i.usedBy && !i.revoked);
     if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
-    if (INVITE_ONLY && !invite()) {
+    if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
       audit(req, 'auth.register.denied', { ok: false, name, msg: 'invite-rejected' });
       strikeAddress(req, 'signup');
       return json(res, 403, { error: 'a valid invite code is required', code: 'invite' });
@@ -1233,34 +1237,36 @@ const passwordRoutes = {
     };
     if (email && addressPaused(req, res, 'email')) return;
     const h = await hashPassword(body.password);
-    let inv = null;
-    if (INVITE_ONLY) {
-      inv = invite();
-      if (!inv) {
-        audit(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
-        return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
-      }
+    // Re-checked once more right before the insert: everything since the first nameTaken/
+    // emailTaken awaited (the invite check, the hash), and a second request could have landed.
+    if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
+      audit(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
+      return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
     }
     if (await nameTaken(name)) return taken();
-    // A real await now sits between this and the create (createUser, below) — unlike the file-
-    // backed version's comment here used to promise. Re-checked once more right before the insert.
     if (email && await emailTaken(email)) return emailRefused();
     const created = new Date().toISOString();
     const user = { id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}) };
-    if (inv) { user.invitedBy = inv.code; inv.usedBy = user.id; inv.usedAt = created; }
-    // Last check right at the insert: the two above raced nothing themselves, but everything since
-    // the first nameTaken/emailTaken did (the invite lookup, the hash). createUser's own UNIQUE
-    // constraint on email is the actual backstop if two requests still land together.
-    if (await nameTaken(name)) return taken();
-    if (email && await emailTaken(email)) return emailRefused();
+    if (INVITE_ONLY) user.invitedBy = code;
+    // createUser and consumeInvite commit or fail together: an invite consumed by a request whose
+    // user row then never landed (the unique-name/e-mail race below) would be burned for nothing,
+    // and a user row created on top of an invite another request consumed first (InviteRaceError)
+    // has to be undone, not left behind with no invite to show for it. createUser's own UNIQUE
+    // constraint on email is the actual backstop if two requests still land together on that.
     try {
-      await createUser(pool, user);
+      await withTransaction(pool, async client => {
+        await createUser(client, user);
+        if (INVITE_ONLY && !(await consumeInvite(client, code, user.id))) throw new InviteRaceError();
+      });
     } catch (e) {
+      if (e instanceof InviteRaceError) {
+        audit(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
+        return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
+      }
       if (e.code === '23505') return email ? emailRefused() : taken(); // unique_violation
       throw e;
     }
-    saveDb(); // the invite's usedBy/usedAt, still db.json's for now
-    audit(req, 'auth.register.ok', { user, msg: inv ? inv.code + ' · password' : 'password' });
+    audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? code + ' · password' : 'password' });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
@@ -1874,7 +1880,7 @@ const routes = {
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required' });
     const code = text(body.code).trim().toUpperCase();
-    if (INVITE_ONLY && !db.invites.some(i => i.code === code && !i.usedBy && !i.revoked)) {
+    if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
       // The rejected code itself is never recorded — a near-miss guess in the log is a liability.
       audit(req, 'auth.register.denied', { ok: false, name, msg: 'invite-rejected' });
       return json(res, 403, { error: 'a valid invite code is required' });
@@ -1921,18 +1927,27 @@ const routes = {
       audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'credential-exists' });
       return json(res, 409, { error: 'credential already registered' });
     }
-    // Re-check the invite at the last moment (it may have been used/revoked since options), then burn it.
-    let invite = null;
-    if (INVITE_ONLY) {
-      invite = db.invites.find(i => i.code === c.code && !i.usedBy && !i.revoked);
-      if (!invite) {
+    // Re-check the invite at the last moment (it may have been used/revoked since options).
+    if (INVITE_ONLY && !(await inviteIsValid(pool, c.code))) {
+      audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'invite-invalid' });
+      return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
+    }
+    const user = { id: c.uid, name: c.name, created: new Date().toISOString() };
+    if (INVITE_ONLY) user.invitedBy = c.code;
+    // createUser and consumeInvite commit or fail together — see POST /api/register/password for
+    // why (same InviteRaceError, same shape).
+    try {
+      await withTransaction(pool, async client => {
+        await createUser(client, user);
+        if (INVITE_ONLY && !(await consumeInvite(client, c.code, user.id))) throw new InviteRaceError();
+      });
+    } catch (e) {
+      if (e instanceof InviteRaceError) {
         audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'invite-invalid' });
         return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
       }
+      throw e;
     }
-    const user = { id: c.uid, name: c.name, created: new Date().toISOString() };
-    if (invite) { user.invitedBy = invite.code; invite.usedBy = user.id; invite.usedAt = user.created; }
-    await createUser(pool, user);
     db.creds.push({
       id: credential.id, userId: user.id,
       publicKey: Buffer.from(credential.publicKey).toString('base64url'),
@@ -1941,8 +1956,8 @@ const routes = {
       // What Settings → Passkeys shows (#95); a passkey from before then has neither.
       created: user.created, lastUsed: user.created
     });
-    saveDb(); // the credential, and the invite's usedBy/usedAt — both still db.json's for now
-    audit(req, 'auth.register.ok', { user, msg: invite ? invite.code : null });
+    saveDb(); // the credential — db.json's for now
+    audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? c.code : null });
     json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
@@ -2359,11 +2374,11 @@ const routes = {
   'GET /api/admin/invites': async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
     // resolve usedBy uid → name for display
-    const users = await getAllUsers(pool);
-    const invites = db.invites.map(i => ({
+    const [users, invites] = await Promise.all([getAllUsers(pool), getAllInvites(pool)]);
+    const withNames = invites.map(i => ({
       ...i, usedByName: i.usedBy ? (users.find(u => u.id === i.usedBy) || {}).name || null : null
     }));
-    json(res, 200, { invites, invite_only: INVITE_ONLY });
+    json(res, 200, { invites: withNames, invite_only: INVITE_ONLY });
   },
 
   'POST /api/admin/invites/new': async (req, res) => {
@@ -2373,25 +2388,27 @@ const routes = {
     // 16 hex chars = 64 bits, up from 8 chars / 32 bits. Passkey signup has no rate limiting by
     // design (that's the reverse proxy's job) and /api/register/options tells a caller whether a
     // code is good, so the code itself has to be the thing that isn't worth guessing. Codes already
-    // in db.json keep working — validation is an exact string compare, never a length or format check.
-    do { code = crypto.randomBytes(8).toString('hex').toUpperCase(); } while (db.invites.some(i => i.code === code));
-    const invite = { code, note: text(body.note).slice(0, 60), createdBy: admin.id, created: new Date().toISOString() };
-    db.invites.push(invite);
-    saveDb();
+    // issued keep working — validation is an exact string compare, never a length or format check.
+    do { code = crypto.randomBytes(8).toString('hex').toUpperCase(); } while (await codeExists(pool, code));
+    const note = text(body.note).slice(0, 60);
+    await createInvite(pool, { code, note, createdBy: admin.id });
     audit(req, 'admin.invite.create', { user: admin, msg: code });
-    json(res, 200, { invite });
+    json(res, 200, { invite: { code, ...(note ? { note } : {}), createdBy: admin.id, created: new Date().toISOString() } });
   },
 
   'POST /api/admin/invites/revoke': async (req, res) => {
     const admin = await requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
-    const inv = db.invites.find(i => i.code === text(body.code).toUpperCase());
-    if (!inv) return json(res, 404, { error: 'no such code' });
-    if (inv.usedBy) return json(res, 400, { error: 'already used — cannot revoke' });
-    db.invites = db.invites.filter(i => i.code !== inv.code);
-    saveDb();
-    audit(req, 'admin.invite.revoke', { user: admin, msg: inv.code });
-    json(res, 200, { ok: true });
+    const code = text(body.code).toUpperCase();
+    if (await revokeInvite(pool, code)) {
+      audit(req, 'admin.invite.revoke', { user: admin, msg: code });
+      return json(res, 200, { ok: true });
+    }
+    // revokeInvite doesn't distinguish "no such code" from "already used" — both are 0 rows
+    // deleted — so a cheap follow-up read picks the right answer. A code used between the delete
+    // attempt and this read is exactly "already used": the response is still correct.
+    const stillThere = await codeExists(pool, code);
+    return json(res, stillThere ? 400 : 404, stillThere ? { error: 'already used — cannot revoke' } : { error: 'no such code' });
   },
 
   /* ---------- activity log ---------- */
@@ -2581,6 +2598,17 @@ async function listen() {
   }
   delete db.users;
   usersCache = await getAllUsers(pool);
+  // Same one-time migration, for invites — after the users pass above, so created_by/used_by
+  // (both foreign keys on users(id)) have something to reference. `db.invites` is dropped from
+  // memory afterwards for the same reason `db.users` is. A `.revoked` invite is skipped rather
+  // than imported: the live routes only ever revoke by deleting the row (there is no `revoked`
+  // column — see migrations/001), so a code already flagged that way in old db.json is gone,
+  // the same as if it had been revoked through the app itself.
+  for (const i of db.invites) {
+    if (i.revoked) continue;
+    try { await upsertInvite(pool, i); } catch (e) { console.error('could not migrate invite into postgres', i.code, e.message); process.exit(1); }
+  }
+  delete db.invites;
   // The port is read back off the listener rather than echoed from PORT, so the line states the
   // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose
   // it (the tests spawn the server that way, and so does anyone running two instances on one

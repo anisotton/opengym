@@ -45,11 +45,16 @@ async function startServer(t, { twoAdmins = false } = {}) {
     try { return (await pool.query('SELECT 1 FROM user_state WHERE user_id = $1', [uid])).rows[0] || null; }
     finally { await pool.end(); }
   };
-  // users moved off db.json onto PostgreSQL's users table (ISO-1403) — creds/subs/invites have
-  // not moved yet and still read straight off h.db().
+  // users/invites moved off db.json onto PostgreSQL (ISO-1403) — creds/subs have not moved yet
+  // and still read straight off h.db().
   h.users = async () => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
     try { return (await pool.query('SELECT id FROM users ORDER BY created_at')).rows.map(r => r.id); }
+    finally { await pool.end(); }
+  };
+  h.invites = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT code, used_by FROM invites ORDER BY created_at')).rows; }
     finally { await pool.end(); }
   };
   h.stackFrames = () => h.log.split('\n').filter(l => /^\s+at /.test(l)).length;
@@ -69,7 +74,8 @@ test('removes the account and everything attached to it', async t => {
   assert.equal(await h.stateRow(VICTIM), null, 'their history is gone');
   // The code they joined with stays burned: it was used, and freeing it would quietly widen
   // an invite-only instance.
-  assert.equal(db.invites[0].usedBy, VICTIM);
+  const [invite] = await h.invites();
+  assert.equal(invite.used_by, VICTIM);
   assert.equal(h.stackFrames(), 0, `no stack traces:\n${h.log}`);
 });
 

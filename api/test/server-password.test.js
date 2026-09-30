@@ -83,9 +83,9 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
   };
   h.db = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'db.json'), 'utf8'));
   h.audit = () => { try { return fs.readFileSync(path.join(dataDir, 'audit.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };
-  // users moved off db.json onto PostgreSQL's users table (ISO-1403); creds/invites have not
-  // moved yet and still read straight off h.db(). Shaped like the file-backed user object used
-  // to be (`pw: {h, set}` or absent, `sv`), since that is what these tests already assert on.
+  // users/invites moved off db.json onto PostgreSQL (ISO-1403); creds have not moved yet and
+  // still read straight off h.db(). Shaped like the file-backed user object used to be
+  // (`pw: {h, set}` or absent, `sv`), since that is what these tests already assert on.
   h.users = async () => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
     try {
@@ -98,6 +98,11 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
   };
   h.user = async id => (await h.users()).find(u => u.id === id) || null;
   h.userByName = async name => (await h.users()).find(u => u.name === name) || null;
+  h.invite = async code => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT code, used_by FROM invites WHERE code = $1', [code])).rows[0] || null; }
+    finally { await pool.end(); }
+  };
   return h;
 }
 const user = (id, name, extra = {}) => ({ id, name, created: new Date().toISOString(), ...extra });
@@ -310,7 +315,7 @@ test('registration with a password: policy, unique names among password holders,
   assert.match(cleo.pw.h, /^\$scrypt\$v=1\$ln=15,r=8,p=1\$/);
   assert.equal(JSON.stringify(db).includes(GOOD), false, 'the password itself is never stored');
   assert.equal(JSON.stringify(await h.users()).includes(GOOD), false, 'the password itself is never stored, in Postgres either');
-  assert.equal(db.invites[0].usedBy, cleo.id);
+  assert.equal((await h.invite('INVITE1')).used_by, cleo.id);
   // Burned: the same code does not let anyone else in.
   assert.equal((await reg({ name: 'Dora', password: GOOD, code: 'INVITE1' }, '198.51.100.81')).status, 403);
   // A name that only a passkey profile has is free to take; the two never meet at sign-in.

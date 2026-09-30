@@ -264,3 +264,95 @@ export async function getSession(pool, id) {
 export async function revokeSession(pool, id) {
   await pool.query('UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL', [id]);
 }
+
+/* ---------- invites ----------
+ * `created_by` carries a foreign key on users(id) — `used_by` deliberately does not (see
+ * migrations/001_init.sql): a burned code has to stay burned even after the account that burned
+ * it is deleted, or admin/user/delete would quietly free it back up on an invite-only instance.
+ * consumeInvite still only takes a userId that already exists, though — a registration route has
+ * to create its user row before consuming the invite that let them in, and the two need to commit
+ * or fail together (an invite consumed by a request whose user row then never landed would be
+ * burned for nothing). Pass a transaction client in place of `pool` to any of these — they only
+ * ever call `.query` on it, so a `db.js` withTransaction client duck-types as one.
+ */
+
+function rowToInvite(row) {
+  return {
+    code: row.code,
+    ...(row.note ? { note: row.note } : {}),
+    ...(row.created_by ? { createdBy: row.created_by } : {}),
+    created: row.created_at.toISOString(),
+    ...(row.used_by ? { usedBy: row.used_by, usedAt: row.used_at.toISOString() } : {})
+  };
+}
+
+export async function createInvite(pool, { code, note, createdBy }) {
+  await pool.query(
+    'INSERT INTO invites (code, note, created_by) VALUES ($1, $2, $3)',
+    [code, note || null, createdBy || null]
+  );
+}
+
+export async function getAllInvites(pool) {
+  const { rows } = await pool.query('SELECT * FROM invites ORDER BY created_at');
+  return rows.map(rowToInvite);
+}
+
+export async function codeExists(pool, code) {
+  const { rows } = await pool.query('SELECT 1 FROM invites WHERE code = $1', [code]);
+  return rows.length > 0;
+}
+
+// A read-only check, for the two points server.js wants to know "is this still good" without
+// claiming it: /api/register/options (before the WebAuthn ceremony even starts) and the
+// INVITE_ONLY gate on /api/register/password. Not the thing that makes a code single-use — that's
+// consumeInvite, called once, right before the user it let in is a real row.
+export async function inviteIsValid(pool, code) {
+  const { rows } = await pool.query('SELECT 1 FROM invites WHERE code = $1 AND used_by IS NULL', [code]);
+  return rows.length > 0;
+}
+
+// Atomic single-use claim: `used_by IS NULL` in the WHERE clause is what db.json's `!i.usedBy`
+// check meant back when a read and a write couldn't be interleaved by another request — two
+// requests racing the same code now race this UPDATE instead, and only one matches a row. Returns
+// whether THIS call was the one that won.
+export async function consumeInvite(pool, code, userId) {
+  const { rowCount } = await pool.query(
+    'UPDATE invites SET used_by = $1, used_at = now() WHERE code = $2 AND used_by IS NULL',
+    [userId, code]
+  );
+  return rowCount > 0;
+}
+
+// Revoking is deletion (matches db.json — there was never a `.revoked` flag, see migrations/001).
+// Refuses a code already used, same as before: freeing it would quietly let someone else in on
+// it, and the account it already let in stays in either way.
+export async function revokeInvite(pool, code) {
+  const { rowCount } = await pool.query('DELETE FROM invites WHERE code = $1 AND used_by IS NULL', [code]);
+  return rowCount > 0;
+}
+
+// Boot's one-time migration of whatever db.json still holds, same idea as upsertUser. Preserves
+// the original createdAt/usedAt rather than stamping now() — this is importing history, not
+// issuing or consuming a code live. `createdBy` naming a user this db.json doesn't have (deleted
+// since, or a test fixture missing it) can't satisfy the foreign key on that column — retried with
+// it dropped rather than failing the whole boot over what is, in the end, just a display value.
+// `usedBy` carries no such constraint (see the comment above this section) and never needs a retry.
+export async function upsertInvite(pool, { code, note, createdBy, created, usedBy, usedAt }) {
+  const values = [
+    code, note || null, createdBy || null, created ? new Date(created) : new Date(),
+    usedBy || null, usedAt ? new Date(usedAt) : null
+  ];
+  const sql = `
+    INSERT INTO invites (code, note, created_by, created_at, used_by, used_at)
+    VALUES ($1,$2,$3,$4,$5,$6)
+    ON CONFLICT (code) DO UPDATE SET
+      note = EXCLUDED.note, created_by = EXCLUDED.created_by, created_at = EXCLUDED.created_at,
+      used_by = EXCLUDED.used_by, used_at = EXCLUDED.used_at`;
+  try {
+    await pool.query(sql, values);
+  } catch (e) {
+    if (e.code !== '23503') throw e; // not foreign_key_violation
+    await pool.query(sql, [values[0], values[1], null, values[3], values[4], values[5]]);
+  }
+}

@@ -82,8 +82,8 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
   };
   h.db = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'db.json'), 'utf8'));
   h.audit = () => { try { return fs.readFileSync(path.join(dataDir, 'audit.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };
-  // users moved off db.json onto PostgreSQL's users table (ISO-1403); creds/subs/invites have not
-  // moved yet and still read straight off h.db().
+  // users/invites moved off db.json onto PostgreSQL (ISO-1403); creds/subs have not moved yet and
+  // still read straight off h.db().
   h.users = async () => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
     try { return (await pool.query('SELECT id, name, email FROM users ORDER BY created_at')).rows; }
@@ -91,6 +91,11 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
   };
   h.user = async id => (await h.users()).find(u => u.id === id) || null;
   h.userByName = async name => (await h.users()).find(u => u.name === name) || null;
+  h.invite = async code => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT code, used_by FROM invites WHERE code = $1', [code])).rows[0] || null; }
+    finally { await pool.end(); }
+  };
   return h;
 }
 const user = (id, name, extra = {}) => ({ id, name, created: new Date().toISOString(), ...extra });
@@ -315,10 +320,10 @@ test('on an invite-only instance signup says nothing about addresses without a v
   // With a valid code the address in use is refused, and the code is still there to use.
   let r = await h.req('POST', '/api/register/password', { body: { name: 'Dee', password: GOOD, email: 'ANA@example.com', code: 'goodcode' }, ip: '198.51.100.180' });
   assert.equal(r.status, 409); assert.equal(r.body.code, 'email-taken');
-  assert.equal(h.db().invites.find(i => i.code === 'GOODCODE').usedBy, undefined);
+  assert.equal((await h.invite('GOODCODE')).used_by, null);
   r = await h.req('POST', '/api/register/password', { body: { name: 'Dee', password: GOOD, email: 'dee@example.com', code: 'GOODCODE' }, ip: '198.51.100.181' });
   assert.equal(r.status, 200);
-  assert.equal(h.db().invites.find(i => i.code === 'GOODCODE').usedBy, (await h.userByName('Dee')).id);
+  assert.equal((await h.invite('GOODCODE')).used_by, (await h.userByName('Dee')).id);
 });
 
 test('asking over and over whether an address is in use runs into a pause', async t => {

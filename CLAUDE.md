@@ -108,16 +108,23 @@ the test suite still does for speed) has nothing to revoke individually and is r
 touching auth code: `sessionStillValid(req, user, sv?)`
 re-checks a session by account id and session version, not object identity — every read is its own
 row now, not a live reference into a shared array, so the old `readSession(req) !== user` idiom
-from before this migration can no longer tell a changed account from an unchanged one. `db.json`
-(passkey credentials, invites, push subscriptions, device links) has **not** moved yet — that's the
-rest of ISO-1403, in a later run — and is still a flat file under `DATA_DIR`, written with a
-write-temp-then-rename atomic pattern (`atomicWrite`); `users.invited_by`'s value lives in the
-`extra` jsonb column rather than that foreign-key column until invites move too, since an invite
-code that only exists in db.json cannot be referenced from a Postgres row. `api/coach/jobs.js`
-still reads `state-<uid>.json` directly and is not migrated by this pass — a real gap until it
-moves too (see the issue's final comment: Coach stops seeing data for anyone who syncs after this
-ships, until it does). Auth is WebAuthn passkeys (`@simplewebauthn/server`) plus a signed session
-cookie (HMAC'd with a `DATA_DIR/secret` generated on first boot) — no JWT/session-store dependency.
+from before this migration can no longer tell a changed account from an unchanged one. Invite codes
+also live in Postgres now (`store.js`'s `createInvite`/`consumeInvite`/etc.): registration creates
+the user row and consumes the invite in one transaction (`withTransaction`), so a race between two
+signups on the same code can only ever seat one of them — the other rolls back clean rather than
+leaving an orphan account. `users.invited_by` still lives in the `extra` jsonb column rather than
+that foreign-key column, because an invite code minted before this migration and only ever in
+db.json cannot be referenced from a Postgres row at boot. `invites.used_by` deliberately carries no
+foreign key (unlike `created_by`, which does): `admin/user/delete` relies on a burned code staying
+burned even after the account that burned it is gone, or deleting a user would quietly free their
+invite back up on an invite-only instance. `db.json` (passkey credentials, push subscriptions,
+device links) has **not** moved yet — that's the rest of ISO-1403, in a later run — and is still a
+flat file under `DATA_DIR`, written with a write-temp-then-rename atomic pattern (`atomicWrite`).
+`api/coach/jobs.js` still reads `state-<uid>.json` directly and is not migrated by this pass — a
+real gap until it moves too (see the issue's final comment: Coach stops seeing data for anyone who
+syncs after this ships, until it does). Auth is WebAuthn passkeys (`@simplewebauthn/server`) plus a
+signed session cookie (HMAC'd with a `DATA_DIR/secret` generated on first boot) — no JWT/session-
+store dependency.
 Optional pieces
 gated by env vars: `ADMIN_UIDS` (admin dashboard), `INVITE_ONLY` (signup needs a code),
 `ALLOW_GUEST` (client-only guest mode never hits the server at all), plus a rotating
