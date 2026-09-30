@@ -32,10 +32,11 @@ services:
         fi
     restart: "no"
 
-  # PostgreSQL (Phase 1, ISO-1387/1402). The API connects and migrates against this at boot; it
-  # does not read or write user data through it yet (that's Phase 1b, ISO-1403) — db.json and
-  # state-<uid>.json are still the source of truth. No port published: only the api service on
-  # this compose network ever needs to reach it.
+  # PostgreSQL (Phase 1, ISO-1387/1402/1403). The API connects and migrates against this at boot
+  # and it is the source of truth for everything db.json and state-<uid>.json used to hold — an
+  # instance upgrading from before ISO-1403 has its old ./data/db.json and state-*.json files
+  # imported here once, at that first boot. No port published: only the api service on this
+  # compose network ever needs to reach it.
   db:
     image: postgres:17-alpine
     restart: unless-stopped
