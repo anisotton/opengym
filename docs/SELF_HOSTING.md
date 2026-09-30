@@ -524,10 +524,10 @@ in this archive — and unreadable without the secret next to them, like everyth
 As of Phase 1c, `api/scripts/import-json.js` copies everything the API stored as JSON —
 `db.json`'s users, passkeys, push subscriptions, invites and device-pairing links, plus every
 profile's `state-<uid>.json` — into the `db` container's tables. The API itself has switched over
-for users, profile state, invites and push subscriptions (Phase 1b/ISO-1403, part of the way —
-passkeys and device-pairing links are still `db.json`, a later part of the same switch); running
-this script against an instance still on `db.json`'s users gets it into PostgreSQL ahead of
-upgrading, so there's no downtime and no rush to run it the moment you do.
+for users, profile state, invites, push subscriptions and device-pairing links (Phase 1b/ISO-1403,
+part of the way — passkeys are still `db.json`, the last piece of the same switch); running this
+script against an instance still on `db.json`'s users gets it into PostgreSQL ahead of upgrading,
+so there's no downtime and no rush to run it the moment you do.
 
 1. **Back up `./data` first** (above) — the script only reads the JSON files, never writes or
    moves them, but there's no reason to skip a backup before a bulk write to a new database.

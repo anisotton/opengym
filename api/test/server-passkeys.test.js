@@ -109,6 +109,14 @@ async function startServer(t, { env = {}, users = [], creds = [], deviceLinks } 
     try { return (await pool.query('SELECT password_hash FROM users WHERE id = $1', [id])).rows[0]?.password_hash != null; }
     finally { await pool.end(); }
   };
+  // device links moved off db.json onto PostgreSQL (ISO-1403).
+  h.deviceLinks = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try {
+      const { rows } = await pool.query('SELECT hash AS h, user_id AS "userId" FROM device_links ORDER BY created_at');
+      return rows;
+    } finally { await pool.end(); }
+  };
   // A passkey assertion made for this request, the way Settings confirms before adding.
   h.stepUp = async (key, ip) => {
     const { cid, options } = (await h.req('POST', '/api/login/options', { body: {}, ip })).body;
@@ -257,7 +265,7 @@ test('with PASSWORD_LOGIN off only a passkey proves anything; a stored password 
   }
   assert.ok(!h.audit().some(e => e.ev === 'auth.password.fail' || e.ev === 'auth.proof.fail' || e.ev === 'auth.password.locked'));
   assert.equal(h.db().creds.length, 2);
-  assert.deepEqual(h.db().deviceLinks || [], []);
+  assert.deepEqual(await h.deviceLinks(), []);
   // A profile with only a password cannot confirm anything at all.
   assert.equal((await h.req('POST', '/api/account/passkeys/options', { body: { current: GOOD }, cookie: mintSession('u2'), ip })).body.code, 'passkey-required');
   // The passkey does, for all three.
@@ -487,7 +495,7 @@ test('a device link: made with proof, kept only as a hash, redeemed once by a ne
   const stored = fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8');
   assert.doesNotMatch(stored, new RegExp(code));
   assert.doesNotMatch(stored, new RegExp(code.replace(/-/g, '')));
-  assert.deepEqual(h.db().deviceLinks.map(l => [l.userId, l.h]), [['u1', hashLinkCode(code)]]);
+  assert.deepEqual((await h.deviceLinks()).map(l => [l.userId, l.h]), [['u1', hashLinkCode(code)]]);
   assert.ok(h.audit().some(e => e.ev === 'auth.link.create' && e.uid === 'u1' && e.msg === 'passkey'));
 
   // The other device, signed in as nobody.
@@ -506,7 +514,7 @@ test('a device link: made with proof, kept only as a hash, redeemed once by a ne
   const row = h.db().creds.find(c => c.id === phone.id);
   assert.equal(row.userId, 'u1');
   assert.equal(row.name, 'Phone');
-  assert.deepEqual(h.db().deviceLinks, []);
+  assert.deepEqual(await h.deviceLinks(), []);
   assert.ok(h.audit().some(e => e.ev === 'auth.link.ok' && e.uid === 'u1'));
 
   // Used: gone for good, whichever step tries it.
@@ -552,10 +560,10 @@ test('removing a passkey drops an unused code, so one made with it just before a
   const ip = '198.51.100.54';
   // Whoever holds the lost phone makes a code with its passkey…
   const { code } = (await makeLink(h, stolen, 'u1', ip)).body;
-  assert.equal(h.db().deviceLinks.length, 1);
+  assert.equal((await h.deviceLinks()).length, 1);
   // …the owner removes that passkey…
   assert.equal((await h.req('DELETE', '/api/account/passkeys?id=' + encodeURIComponent(stolen.id), { body: await h.stepUp(key, ip), cookie: mintSession('u1'), ip })).status, 200);
-  assert.deepEqual(h.db().deviceLinks, []);
+  assert.deepEqual(await h.deviceLinks(), []);
   // …and the code no longer adds a new one.
   const r = await redeem(h, code, thief, '203.0.113.54');
   assert.equal(r.status, 400);
@@ -693,7 +701,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
     const db = h.db();
     assert.deepEqual(await h.users(), ['u1']);
     assert.deepEqual(db.creds.map(c => c.id), [key.id]);
-    assert.equal(db.deviceLinks.length, 1);
+    assert.equal((await h.deviceLinks()).length, 1);
   };
 
   // Someone who read the code sends the link's challenge to sign-up instead of to the link route.

@@ -29,7 +29,6 @@ import { createBackoff, createWindow } from './rate-limit.js';
 import {
   listPasskeys, addPasskeyRecord, renamePasskeyRecord, removePasskeyRecord, passkeyRemovalRefused, MAX_PASSKEYS
 } from './passkeys-store.js';
-import { createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks } from './device-link.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
 import { connectAndMigrate, withTransaction } from './db.js';
 import {
@@ -39,7 +38,8 @@ import {
   deleteUser, upsertUser, backfillPasswordResetBy,
   createSession, getSession, revokeSession,
   createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
-  upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe
+  upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
+  createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink
 } from './store.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -1025,8 +1025,7 @@ async function changePassword(user, h) {
   delete user.pwReset;
   user.sv = await bumpSessionVersion(pool, user.id);
   for (const [k, v] of pairings) if (v.uid === user.id) pairings.delete(k);
-  dropDeviceLinks(db, user.id);
-  saveDb();
+  await dropDeviceLinks(pool, user.id);
 }
 
 // A passkey assertion made just now by the signed-in account itself — how someone who has no
@@ -1409,9 +1408,8 @@ const passwordRoutes = {
     await setPasswordReset(pool, u.id, { h: hashResetCode(code), exp, by: admin.id });
     u.sv = await bumpSessionVersion(pool, u.id);
     for (const [k, v] of pairings) if (v.uid === u.id) pairings.delete(k);
-    dropDeviceLinks(db, u.id);
+    await dropDeviceLinks(pool, u.id);
     presence.delete(u.id);
-    saveDb();
     audit(req, 'admin.password.reset', { user: admin, target: u });
     json(res, 200, { ok: true, name: u.name, code, expires: exp });
   },
@@ -1609,7 +1607,7 @@ const passkeyRoutes = {
     if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
     const r = removePasskeyRecord(db, user.id, id, passwordWayIn(user) ? 1 : 0);
     if (r.error) return refuse(r);
-    dropDeviceLinks(db, user.id);
+    await dropDeviceLinks(pool, user.id);
     saveDb();
     audit(req, 'auth.passkey.remove', { user, msg: r.row.name || null });
     json(res, 200, { ok: true, ...passkeyState(user) });
@@ -1625,8 +1623,7 @@ const passkeyRoutes = {
     const proof = await proveOwner(req, res, user, body, 'device-link');
     if (!proof) return;
     if (!(await sessionStillValid(req, user))) return notSignedIn(res);
-    const { code, link } = createDeviceLink(db, user.id);
-    saveDb();
+    const { code, link } = await createDeviceLink(pool, user.id);
     audit(req, 'auth.link.create', { user, msg: proof });
     json(res, 200, { code, expires: link.exp });
   },
@@ -1643,7 +1640,7 @@ const passkeyRoutes = {
   'POST /api/device-link/options': async (req, res) => {
     const body = await readBody(req);
     if (addressPaused(req, res, 'link')) return;
-    const link = findDeviceLink(db, text(body.code));
+    const link = await findDeviceLink(pool, text(body.code));
     if (!link) {
       strikeAddress(req, 'link');
       audit(req, 'auth.link.fail', { ok: false, msg: 'link-invalid' });
@@ -1668,7 +1665,7 @@ const passkeyRoutes = {
     if (addressPaused(req, res, 'link')) return;
     const code = text(body.code);
     const c = takeChallenge(text(body.cid));
-    const link = findDeviceLink(db, code);
+    const link = await findDeviceLink(pool, code);
     if (!link) {
       strikeAddress(req, 'link');
       audit(req, 'auth.link.fail', { ok: false, msg: 'link-invalid' });
@@ -1682,9 +1679,13 @@ const passkeyRoutes = {
     const cred = await newPasskey(req, res, c, body, 'auth.link.fail', owner || { id: link.userId });
     if (!cred) return;
     // Everything above awaited: the code may have been used, replaced or dropped since (a sign-out
-    // everywhere, a new password, a disable), and the profile may be gone or locked.
+    // everywhere, a new password, a disable), and the profile may be gone or locked. Re-checked by
+    // existence, not object identity — every read is its own row now, but a live link is found by
+    // its code's hash, and two different live links can never hash to the same code, so "still
+    // finds one" already means "still this same link, unburned and unreplaced" (sessionStillValid
+    // above uses the same idea for a session).
     const user = await getUserById(pool, link.userId);
-    if (findDeviceLink(db, code) !== link || !user || user.disabled) {
+    if (!(await findDeviceLink(pool, code)) || !user || user.disabled) {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'link-invalid' });
       return json(res, 400, LINK_INVALID);
     }
@@ -1694,7 +1695,7 @@ const passkeyRoutes = {
       return json(res, 409, { error: added.error, code: added.code });
     }
     added.row.lastUsed = added.row.created;
-    burnDeviceLink(db, link);
+    await burnDeviceLink(pool, link.h);
     saveDb();
     audit(req, 'auth.link.ok', { user, msg: added.row.name || null });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
@@ -2046,8 +2047,7 @@ const routes = {
     // An unredeemed pairing code is a session-in-waiting for this account; it goes too, and so
     // does an unused device link.
     for (const [k, v] of pairings) if (v.uid === user.id) pairings.delete(k);
-    dropDeviceLinks(db, user.id);
-    saveDb();
+    await dropDeviceLinks(pool, user.id);
     audit(req, 'auth.logout.all', { user });
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
@@ -2326,7 +2326,7 @@ const routes = {
     await setDisabled(pool, u.id, u.disabled);
     if (u.disabled) presence.delete(u.id);   // drop them off "training now" at once
     // A device link made before the lock would otherwise still be waiting when it is lifted.
-    if (u.disabled) { dropDeviceLinks(db, u.id); saveDb(); }
+    if (u.disabled) await dropDeviceLinks(pool, u.id);
     audit(req, u.disabled ? 'admin.user.disable' : 'admin.user.enable', { user: admin, target: u });
     json(res, 200, { ok: true, id: u.id, disabled: u.disabled });
   },
@@ -2346,10 +2346,9 @@ const routes = {
     if (isAdmin(u) && (await getAllUsers(pool)).filter(isAdmin).length <= 1) return json(res, 400, { error: 'cannot delete the last admin' });
     const name = u.name;
     db.creds = (db.creds || []).filter(c => c.userId !== u.id);
-    dropDeviceLinks(db, u.id);
     presence.delete(u.id);
-    // The row itself — cascades to user_state and push_subscriptions (`ON DELETE CASCADE`),
-    // same as it will for creds/deviceLinks, just filtered out above by hand, once they move here too.
+    // The row itself — cascades to user_state, push_subscriptions and device_links (`ON DELETE
+    // CASCADE`), same as it will for creds, just filtered out above by hand, once that moves too.
     await deleteUser(pool, u.id);
     try { coachConfig.clearProfileAuth(u.id); } catch { /* nothing stored */ }
     // Their photos and videos — the one place a profile's folder under uploads/ is removed.
@@ -2606,6 +2605,12 @@ async function listen() {
     try { await upsertSub(pool, s); } catch (e) { console.error('could not migrate push subscription into postgres', s.endpoint, e.message); }
   }
   delete db.subs;
+  // Same idea, for device links — also not fatal: an unmigrated one just means whoever was
+  // mid-pairing has to make a new code, the same as if it had simply expired.
+  for (const l of db.deviceLinks) {
+    try { await upsertDeviceLink(pool, l); } catch (e) { console.error('could not migrate device link into postgres', e.message); }
+  }
+  delete db.deviceLinks;
   // The port is read back off the listener rather than echoed from PORT, so the line states the
   // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose
   // it (the tests spawn the server that way, and so does anyone running two instances on one

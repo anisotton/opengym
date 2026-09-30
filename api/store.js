@@ -1,8 +1,10 @@
 /* PostgreSQL-backed access for the pieces of db.json / state-<uid>.json converted so far
  * (ISO-1403, Phase 1b): a profile's training data (user_state), `users` itself — identity,
- * passwords, admin/disabled flags, session_version — invites, and now push subscriptions.
- * `passkeys` (db.creds) and device links are still db.json for now.
+ * passwords, admin/disabled flags, session_version — invites, push subscriptions and now device
+ * links. `passkeys` (db.creds) is still db.json for now.
  */
+
+import { makeLinkCode, hashLinkCode, DEVICE_LINK_TTL_MS } from './device-link.js';
 
 // { state, rev } — state is null and rev is 0 for a profile that has never pushed, exactly what
 // GET /api/data returned for a state file that did not exist yet.
@@ -425,4 +427,68 @@ export async function deleteSub(pool, endpoint) {
 
 export async function unsubscribe(pool, userId, endpoint) {
   await pool.query('DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [userId, endpoint]);
+}
+
+/* ---------- device links ----------
+ * One row per profile — `createDeviceLink` clears any earlier one first, same "a new one replaces
+ * the one before" rule db.json's own code always had. Expired rows are never read back
+ * (`expires_at > now()` on every lookup) rather than actively swept on a timer; the opportunistic
+ * deletes below just keep the table from growing forever on an instance nobody restarts often.
+ */
+
+function rowToDeviceLink(row) {
+  return { h: row.hash, userId: row.user_id, exp: row.expires_at.getTime(), created: row.created_at.getTime() };
+}
+
+// → { code, link }. The code is returned once and never stored — only its hash is.
+export async function createDeviceLink(pool, userId, ttlMs = DEVICE_LINK_TTL_MS) {
+  await pool.query('DELETE FROM device_links WHERE expires_at <= now()');
+  await pool.query('DELETE FROM device_links WHERE user_id = $1', [userId]);
+  const code = makeLinkCode();
+  const hash = hashLinkCode(code);
+  const now = Date.now();
+  const exp = new Date(now + ttlMs);
+  // created_at passed explicitly rather than left to the column's own now() default, so the
+  // returned link and a fresh findDeviceLink read of the same row always agree to the millisecond.
+  await pool.query(
+    'INSERT INTO device_links (hash, user_id, expires_at, created_at) VALUES ($1,$2,$3,$4)',
+    [hash, userId, exp, new Date(now)]
+  );
+  return { code, link: { h: hash, userId, exp: exp.getTime(), created: now } };
+}
+
+// The live link a code belongs to, or null — a wrong code, a used one and an expired one all look
+// the same from outside. Finding a link does not use it up; burnDeviceLink does. A fresh call
+// with the same code is also how a caller re-checks a link is still the one it read earlier
+// (routes/server.js): two different live links can never hash to the same code, so "still finds
+// it" is equivalent to "still the same link, unburned and unreplaced" without comparing rows.
+export async function findDeviceLink(pool, code) {
+  const { rows } = await pool.query(
+    'SELECT * FROM device_links WHERE hash = $1 AND expires_at > now()', [hashLinkCode(code)]
+  );
+  return rows.length ? rowToDeviceLink(rows[0]) : null;
+}
+
+export async function burnDeviceLink(pool, hash) {
+  await pool.query('DELETE FROM device_links WHERE hash = $1', [hash]);
+}
+
+// Every unused link of a profile, for the moments its sessions end: an unused link is a way in
+// waiting to be taken, like a pairing code. Says whether anything went, so a caller can skip work
+// that depends on it.
+export async function dropDeviceLinks(pool, userId) {
+  const { rowCount } = await pool.query('DELETE FROM device_links WHERE user_id = $1', [userId]);
+  return rowCount > 0;
+}
+
+// Boot's one-time migration of whatever db.json still holds. Already-expired links are imported
+// same as any other row — findDeviceLink's own `expires_at > now()` never returns them — rather
+// than filtered here, so this has one less thing to get right at the one moment a bug in it would
+// be hardest to notice.
+export async function upsertDeviceLink(pool, { h, userId, exp, created }) {
+  await pool.query(
+    `INSERT INTO device_links (hash, user_id, expires_at, created_at) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (hash) DO UPDATE SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at`,
+    [h, userId, new Date(exp), new Date(created)]
+  );
 }
