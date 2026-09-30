@@ -134,8 +134,9 @@ ALLOW_GUEST=0              # remove "Continue without account"
 ```
 
 Register your own passkey profile first, then copy your id from **Settings → Account → Account
-ID** (tap it to copy; it is also in `./data/db.json` under `users[].id`) and put it in
-`ADMIN_UIDS`. The same row is how anyone on your instance tells you which account is theirs when
+ID** (tap it to copy; it is also the `id` column of PostgreSQL's `users` table — `docker compose
+exec db psql -U opengym -c "SELECT id, name FROM users"`) and put it in `ADMIN_UIDS`. The same row
+is how anyone on your instance tells you which account is theirs when
 they need help. You'll get an **Admin dashboard** link in Settings: who's training
 right now, each user's workout history and body weight, the ability to disable an account (signed
 out and locked out everywhere until you re-enable it), and — with `INVITE_ONLY=1` — generating and
@@ -522,10 +523,11 @@ in this archive — and unreadable without the secret next to them, like everyth
 
 As of Phase 1c, `api/scripts/import-json.js` copies everything the API stored as JSON —
 `db.json`'s users, passkeys, push subscriptions, invites and device-pairing links, plus every
-profile's `state-<uid>.json` — into the `db` container's tables. The API itself still reads and
-writes the JSON files today (the switch is Phase 1b/ISO-1403); running this script now just gets
-an existing instance's data into PostgreSQL ahead of that switch, so there's no downtime and no
-rush to run it the moment you upgrade.
+profile's `state-<uid>.json` — into the `db` container's tables. The API itself has switched over
+for users and profile state (Phase 1b/ISO-1403, part of the way — passkeys, push subscriptions,
+invites and device-pairing links are still `db.json`, a later part of the same switch); running
+this script against an instance still on `db.json`'s users gets it into PostgreSQL ahead of
+upgrading, so there's no downtime and no rush to run it the moment you do.
 
 1. **Back up `./data` first** (above) — the script only reads the JSON files, never writes or
    moves them, but there's no reason to skip a backup before a bulk write to a new database.

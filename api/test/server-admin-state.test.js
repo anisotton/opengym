@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import pg from 'pg';
 import { tempData, spawnApi, seedUserState } from './helpers.mjs';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
@@ -37,6 +38,12 @@ async function startServer(t) {
   // document stored before that filter existed, same as writing state-<uid>.json directly did.
   h.plant = S => seedUserState(h.databaseUrl, VICTIM, S, Number(S?._rev) || 1);
   h.get = async p => { const r = await fetch(`${h.api}${p}`, { headers: asAdmin }); return { status: r.status, body: await r.json() }; };
+  // users moved off db.json onto PostgreSQL's users table (ISO-1403).
+  h.user = async uid => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT disabled, last_pull_at FROM users WHERE id = $1', [uid])).rows[0] || null; }
+    finally { await pool.end(); }
+  };
   return h;
 }
 
@@ -112,7 +119,7 @@ test('the user list and the disable switch survive the same document', async t =
   await h.plant(DOCS['a null routine entry']);
   const r = await fetch(`${h.api}/api/admin/user/disable`, { method: 'POST', headers: asAdmin, body: JSON.stringify({ id: VICTIM, disabled: true }) });
   assert.equal(r.status, 200);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8')).users.find(u => u.id === VICTIM).disabled, true);
+  assert.equal((await h.user(VICTIM)).disabled, true);
   // …and the audit log still reads back, with that change in it.
   const a = await h.get('/api/admin/audit?limit=10&cat=');
   assert.equal(a.status, 200);
@@ -134,7 +141,7 @@ test('a pull shows as the last sync, in the list and the drill-down', async t =>
   assert.ok(row.lastSync >= before, JSON.stringify(row));
   assert.ok((await h.get(`/api/admin/user?id=${VICTIM}`)).body.lastSync >= before);
   // Kept across a restart: it is on the user record.
-  assert.ok(JSON.parse(fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8')).users.find(u => u.id === VICTIM).lastPull >= before);
+  assert.ok((await h.user(VICTIM)).last_pull_at.getTime() >= before);
   // A later push still wins when it is the newer of the two.
   await h.plant({ _rev: 4, _ts: Date.now() + 60000, workouts: [okW] });
   row = (await h.get('/api/admin/users')).body.users.find(u => u.id === VICTIM);

@@ -1,27 +1,10 @@
 /* PostgreSQL-backed access for the pieces of db.json / state-<uid>.json converted so far
- * (ISO-1403, Phase 1b). Everything else (passkeys, invites, push subscriptions, device links,
- * sessions) is still db.json/in-memory for now — a later run of the same issue finishes that
- * half and this module grows with it.
- *
- * The `users` functions below (createUser onward) are not wired into server.js yet — that is
- * the next slice, a careful rewrite of the auth routes and the helpers they share (loginTarget,
- * setPassword, nameTaken/emailTaken and friends all close over db.users synchronously and call
- * each other, so switching the source under them touches most of the registration/login/password
- * surface at once). Landing the data-access layer on its own first, fully tested against real
- * PostgreSQL, means that rewrite starts from a store that already works rather than debugging
- * both at the same time. `syncUser` (the minimal id+name mirror) stays in use by server.js until
- * that wiring lands and `createUser` takes over as the one place a user row is ever written.
+ * (ISO-1403, Phase 1b): a profile's training data (user_state) and now `users` itself — identity,
+ * passwords, admin/disabled flags, session_version. `passkeys` (db.creds), invites, push
+ * subscriptions and device links are still db.json for now; `users.invited_by`/`password_reset_by`
+ * keep their FK targets but nothing here writes `invited_by` yet (see createUser/upsertUser) since
+ * invites have nowhere in Postgres to point at until they move too.
  */
-
-// Mirrors one db.json user into the Postgres `users` table — id and name only, enough to satisfy
-// user_state's foreign key. Called at boot for every existing user, and again right after a new
-// one is created.
-export async function syncUser(pool, user) {
-  await pool.query(
-    'INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name',
-    [user.id, user.name]
-  );
-}
 
 // { state, rev } — state is null and rev is 0 for a profile that has never pushed, exactly what
 // GET /api/data returned for a state file that did not exist yet.
@@ -128,9 +111,62 @@ export async function createUser(pool, user) {
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       user.id, user.name, user.email || null, user.pw?.h || null, user.pw?.set || null, user.created,
-      user.invitedBy ? { invitedBy: user.invitedBy } : {}
+      extraOf(user)
     ]
   );
+}
+
+function extraOf(user) {
+  return {
+    ...(user.invitedBy ? { invitedBy: user.invitedBy } : {}),
+    ...(user.lastReminder ? { lastReminder: user.lastReminder } : {})
+  };
+}
+
+// Upsert, full shape — boot's one-time backfill of every user already in db.json into Postgres,
+// same fields createUser writes for a brand new one plus the ones only an existing account can
+// already have (admin, disabled, session_version, a reset in progress, lastPull/lastReminder).
+// ON CONFLICT so re-running boot (a restart) is a no-op once every user is a real row here rather
+// than db.json's copy — server.js still updates db.json too until the routes below stop reading
+// it, so the two must not drift apart in between.
+//
+// `password_reset_by` is left for backfillPasswordResetBy below, not set here: it is
+// self-referential (users.id), and db.json's users arrive in no particular order — the admin who
+// issued a pending reset may not have a row yet when the user holding that reset is upserted.
+// Same two-pass shape as scripts/import-json.js, for the same reason.
+export async function upsertUser(pool, user) {
+  await pool.query(
+    `INSERT INTO users (id, name, email, admin, disabled, session_version, password_hash,
+       password_set_at, password_reset_hash, password_reset_expires_at, last_pull_at, created_at, extra)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+     ON CONFLICT (id) DO UPDATE SET
+       name = EXCLUDED.name, email = EXCLUDED.email, admin = EXCLUDED.admin, disabled = EXCLUDED.disabled,
+       session_version = EXCLUDED.session_version, password_hash = EXCLUDED.password_hash,
+       password_set_at = EXCLUDED.password_set_at, password_reset_hash = EXCLUDED.password_reset_hash,
+       password_reset_expires_at = EXCLUDED.password_reset_expires_at, last_pull_at = EXCLUDED.last_pull_at,
+       created_at = EXCLUDED.created_at, extra = EXCLUDED.extra`,
+    [
+      user.id, user.name, user.email || null, user.admin === true, !!user.disabled,
+      Number.isInteger(user.sv) ? user.sv : 0, user.pw?.h || null, user.pw?.set || null,
+      user.pwReset?.h || null, user.pwReset?.exp ? new Date(user.pwReset.exp) : null,
+      user.lastPull ? new Date(user.lastPull) : null, user.created, extraOf(user)
+    ]
+  );
+}
+
+// Second pass: only meaningful for a user upsertUser just gave a password_reset_hash to, and only
+// once every user from the same boot pass has a row — see upsertUser above. A no-op (0 rows) for
+// anyone without a pending reset, or without a `by` to record. `by` naming an admin outside this
+// same db.json (deleted since, or a test fixture that only seeds one side of the pair) cannot
+// satisfy the column's foreign key — left unset rather than failing the whole boot over what was
+// always just a display value ("who issued this code").
+export async function backfillPasswordResetBy(pool, id, by) {
+  if (!by) return;
+  try {
+    await pool.query('UPDATE users SET password_reset_by = $1 WHERE id = $2 AND password_reset_hash IS NOT NULL', [by, id]);
+  } catch (e) {
+    if (e.code !== '23503') throw e; // not foreign_key_violation — a real problem, not a dangling by
+  }
 }
 
 // setPassword's `delete user.pwReset` alongside `user.pw = {...}` in one statement: a fresh
@@ -146,6 +182,12 @@ export async function setPassword(pool, id, pw) {
 
 export async function removePassword(pool, id) {
   await pool.query('UPDATE users SET password_hash = NULL, password_set_at = NULL WHERE id = $1', [id]);
+}
+
+// A sign-in re-hashing an existing password at today's cost parameters — not a new password: only
+// the hash changes, password_set_at stays what it was.
+export async function rehashPassword(pool, id, h) {
+  await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [h, id]);
 }
 
 // The admin reset route's `delete u.pw; u.pwReset = {...}` — same one-statement guarantee as

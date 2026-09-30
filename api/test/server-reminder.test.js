@@ -38,6 +38,13 @@ async function startServer(t, subs = []) {
     try { return (await pool.query('SELECT state, rev FROM user_state WHERE user_id = $1', [uid])).rows[0] || null; }
     finally { await pool.end(); }
   };
+  // lastReminder moved off db.json onto PostgreSQL's users table (ISO-1403, kept in `extra` —
+  // there is no dedicated column for it).
+  h.lastReminder = async uid => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT extra->>\'lastReminder\' AS r FROM users WHERE id = $1', [uid])).rows[0]?.r || null; }
+    finally { await pool.end(); }
+  };
   return h;
 }
 
@@ -95,8 +102,7 @@ test('a non-array workouts in user_state is logged and skipped by the reminder t
   assert.match(h.log, /reminder tick u_test_1 TypeError/, h.log);
   assert.match(h.log, /reminder firing u_test_2 r1/, h.log);
   assert.equal((await fetch(`${h.api}/api/health`)).status, 200);
-  const db = JSON.parse(fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8'));
-  assert.ok(db.users.find(u => u.id === 'u_test_2').lastReminder, 'the good user\'s reminder was recorded');
+  assert.ok(await h.lastReminder('u_test_2'), 'the good user\'s reminder was recorded');
 });
 
 /* The catch-up window. The tick used to want the exact minute — an API restart or a stalled
@@ -129,8 +135,7 @@ test('a reminder whose minute passed 3 minutes ago still fires — once', async 
   // several more ticks: the date-level dedupe holds inside the window
   await wait(1500);
   assert.equal(firings(h.log), 1, 'fired again inside the window');
-  const db = JSON.parse(fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8'));
-  assert.ok(db.users.find(u => u.id === 'u_test_1').lastReminder, 'the day is recorded');
+  assert.ok(await h.lastReminder('u_test_1'), 'the day is recorded');
 });
 
 test('a reminder 20 minutes past is not delivered late, and a day already trained is skipped', async t => {

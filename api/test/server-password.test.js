@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import pg from 'pg';
 import { hashPassword, hashResetCode } from '../password.js';
 import { tempData, spawnApi } from './helpers.mjs';
 
@@ -82,6 +83,21 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
   };
   h.db = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'db.json'), 'utf8'));
   h.audit = () => { try { return fs.readFileSync(path.join(dataDir, 'audit.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };
+  // users moved off db.json onto PostgreSQL's users table (ISO-1403); creds/invites have not
+  // moved yet and still read straight off h.db(). Shaped like the file-backed user object used
+  // to be (`pw: {h, set}` or absent, `sv`), since that is what these tests already assert on.
+  h.users = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try {
+      const { rows } = await pool.query('SELECT id, name, session_version, password_hash, password_set_at FROM users ORDER BY created_at');
+      return rows.map(r => ({
+        id: r.id, name: r.name, sv: r.session_version,
+        ...(r.password_hash ? { pw: { h: r.password_hash, set: r.password_set_at.toISOString() } } : {})
+      }));
+    } finally { await pool.end(); }
+  };
+  h.user = async id => (await h.users()).find(u => u.id === id) || null;
+  h.userByName = async name => (await h.users()).find(u => u.name === name) || null;
   return h;
 }
 const user = (id, name, extra = {}) => ({ id, name, created: new Date().toISOString(), ...extra });
@@ -290,9 +306,10 @@ test('registration with a password: policy, unique names among password holders,
   assert.equal(r.status, 200);
   assert.ok(r.cookie);
   const db = h.db();
-  const cleo = db.users.find(u => u.name === 'Cleo');
+  const cleo = await h.userByName('Cleo');
   assert.match(cleo.pw.h, /^\$scrypt\$v=1\$ln=15,r=8,p=1\$/);
   assert.equal(JSON.stringify(db).includes(GOOD), false, 'the password itself is never stored');
+  assert.equal(JSON.stringify(await h.users()).includes(GOOD), false, 'the password itself is never stored, in Postgres either');
   assert.equal(db.invites[0].usedBy, cleo.id);
   // Burned: the same code does not let anyone else in.
   assert.equal((await reg({ name: 'Dora', password: GOOD, code: 'INVITE1' }, '198.51.100.81')).status, 403);
@@ -342,7 +359,7 @@ test('changing a password takes the current one and signs out every other sessio
   assert.equal(wrong.body.code, 'current-wrong');
   const r = await h.req('POST', '/api/account/password', { body: { next, current: GOOD }, cookie: a, ip });
   assert.equal(r.status, 200);
-  assert.equal(h.db().users[0].sv, 1);
+  assert.equal((await h.user('u1')).sv, 1);
   assert.equal((await h.req('GET', '/api/me', { cookie: b, ip })).status, 401, 'the other session ended');
   assert.equal((await h.req('GET', '/api/me', { cookie: r.cookie, ip })).status, 200, 'this one did not');
   assert.equal((await login(h, 'Ana', GOOD, ip)).status, 401);
@@ -418,7 +435,7 @@ test('the last way in is never removed', async t => {
   const both = await h.req('DELETE', '/api/account/password', { body: { current: GOOD }, cookie: `gymsid=${mintSession('u2')}`, ip });
   assert.equal(both.status, 200);
   assert.equal((await login(h, 'Bea', GOOD, ip)).status, 401);
-  assert.equal(h.db().users.find(u => u.id === 'u2').pw, undefined);
+  assert.equal((await h.user('u2')).pw, undefined);
   assert.ok(h.audit().some(e => e.ev === 'auth.password.remove' && e.uid === 'u2'));
   // Nothing left to remove: the same answer, no proof needed.
   assert.equal((await h.req('DELETE', '/api/account/password', { body: {}, cookie: `gymsid=${mintSession('u2')}`, ip })).status, 200);
@@ -439,7 +456,7 @@ test('removing the password needs proof made for it: the password itself or a pa
     const r = await h.req('DELETE', '/api/account/password', { body, cookie, ip });
     assert.equal(r.status, 403, JSON.stringify(body)?.slice(0, 60));
     assert.equal(r.body.code, code);
-    assert.ok(h.db().users[0].pw?.h, 'the password is still set');
+    assert.ok((await h.user('u1')).pw?.h, 'the password is still set');
   };
   await refused(undefined, 'current-required');
   await refused({}, 'current-required');
@@ -461,7 +478,7 @@ test('removing the password needs proof made for it: the password itself or a pa
 
   const r = await h.req('DELETE', '/api/account/password', { body: await stepUp(key), cookie, ip });
   assert.equal(r.status, 200);
-  assert.equal(h.db().users[0].pw, undefined);
+  assert.equal((await h.user('u1')).pw, undefined);
   assert.equal((await login(h, 'Ana', GOOD, ip)).status, 401);
   assert.ok(h.audit().some(e => e.ev === 'auth.password.remove' && e.uid === 'u1'));
   // Existing sessions are left alone.
@@ -480,7 +497,7 @@ test('wrong passwords given to remove the password count toward the same pause a
   assert.ok(h.audit().some(e => e.ev === 'auth.password.locked' && e.uid === 'u1'));
   assert.equal((await login(h, 'Ana', GOOD, '198.51.100.150')).status, 429);
   assert.equal((await h.req('DELETE', '/api/account/password', { body: { current: GOOD }, cookie, ip: '198.51.100.151' })).status, 429);
-  assert.ok(h.db().users[0].pw?.h);
+  assert.ok((await h.user('u1')).pw?.h);
 });
 
 test('an admin reset: a one-time code that ends the old password, works once, and expires', async t => {
@@ -502,7 +519,7 @@ test('an admin reset: a one-time code that ends the old password, works once, an
   const { code } = issued.body;
   assert.match(code, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
   assert.ok(issued.body.expires > Date.now() + 23 * 3600000);
-  const stored = h.db().users.find(u => u.id === 'u1');
+  const stored = await h.user('u1');
   assert.equal(JSON.stringify(stored).includes(code), false, 'only a hash of the code is kept');
   assert.equal(stored.pw, undefined);
   // The old password and the old session are both gone.
@@ -563,7 +580,7 @@ test('a pending reset keeps the name: nobody can take it until the code is used 
   const r = await h.req('POST', '/api/login/password-reset', { body: { name: 'Ana', code, next: 'a brand new passphrase' }, ip });
   assert.equal(r.status, 200);
   assert.equal((await login(h, 'ana', 'a brand new passphrase', ip)).status, 200);
-  assert.equal(h.db().users.filter(u => u.pw && u.name.trim().toLowerCase() === 'ana').length, 1);
+  assert.equal((await h.users()).filter(u => u.pw && u.name.trim().toLowerCase() === 'ana').length, 1);
 
   // An expired code holds nothing: that name is free.
   assert.equal((await h.req('POST', '/api/register/password', { body: { name: 'cleo', password: GOOD }, ip })).status, 200);
@@ -578,7 +595,7 @@ test('registering a name while its reset code is redeemed leaves one password ho
   ]);
   assert.equal(redeem.status, 200);
   assert.equal(reg.status, 409);
-  const holders = h.db().users.filter(u => u.pw && u.name.toLowerCase() === 'bob');
+  const holders = (await h.users()).filter(u => u.pw && u.name.toLowerCase() === 'bob');
   assert.deepEqual(holders.map(u => u.id), ['u1']);
   assert.equal((await login(h, 'Bob', 'a brand new passphrase', '198.51.100.244')).status, 200);
 });

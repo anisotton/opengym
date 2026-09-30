@@ -1,13 +1,16 @@
-/* The `users` half of store.js (ISO-1403), tested directly against real PostgreSQL — no server.js
- * spawned, since these functions are not wired into any route yet (see the module comment in
- * store.js). One isolated database per test file, migrated the same way server.js boots. */
+/* The `users` half of store.js (ISO-1403), tested directly against real PostgreSQL — server.js's
+ * own routes are covered by the server-*.test.js files that spawn it; this file is for the data
+ * layer on its own, including the boot-time backfill (upsertUser/backfillPasswordResetBy) that
+ * only runs once, at startup, and is easier to pin down directly than through a boot log. One
+ * isolated database per test file, migrated the same way server.js boots. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { provisionTestDatabase } from './helpers.mjs';
 import { connectAndMigrate } from '../db.js';
 import {
   createUser, getUserById, getAllUsers, setPassword, removePassword, setPasswordReset,
-  bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder, deleteUser
+  bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder, deleteUser,
+  upsertUser, backfillPasswordResetBy
 } from '../store.js';
 
 async function withPool(t) {
@@ -137,4 +140,46 @@ test('deleteUser removes the row; a profile\'s user_state goes with it via casca
   assert.equal(await getUserById(pool, 'u1'), null);
   const { rows } = await pool.query('SELECT 1 FROM user_state WHERE user_id = $1', ['u1']);
   assert.equal(rows.length, 0);
+});
+
+test('upsertUser carries every field db.json could hold, and is a no-op the second time', async t => {
+  const pool = await withPool(t);
+  const created = iso();
+  const full = {
+    id: 'u1', name: 'Ana', created, email: 'ana@example.com', admin: true, disabled: false, sv: 3,
+    pw: { h: 'h1', set: iso() }, invitedBy: 'CODE1', lastPull: Date.now(), lastReminder: '2026-09-30'
+  };
+  await upsertUser(pool, full);
+  let u = await getUserById(pool, 'u1');
+  assert.equal(u.email, 'ana@example.com');
+  assert.equal(u.admin, true);
+  assert.equal(u.sv, 3);
+  assert.deepEqual(u.pw, full.pw);
+  assert.equal(u.invitedBy, 'CODE1');
+  assert.equal(u.lastReminder, '2026-09-30');
+
+  // A second boot (a restart) re-upserts the same db.json row — nothing changes.
+  await upsertUser(pool, full);
+  u = await getUserById(pool, 'u1');
+  assert.equal(u.sv, 3, 'upsertUser overwrites with the source value, it does not increment');
+});
+
+test('upsertUser never sets password_reset_by directly — db.json users have no guaranteed order', async t => {
+  const pool = await withPool(t);
+  await upsertUser(pool, { id: 'u1', name: 'Ana', created: iso(), pwReset: { h: 'reset-h', exp: Date.now() + 60000, by: 'admin1' } });
+  // admin1's own row does not exist yet at this point, in the boot pass this simulates.
+  assert.equal((await getUserById(pool, 'u1')).pwReset.by, null);
+});
+
+test('backfillPasswordResetBy sets it once every row exists, and is a no-op without a pending reset', async t => {
+  const pool = await withPool(t);
+  await upsertUser(pool, { id: 'admin1', name: 'Admin', created: iso() });
+  await upsertUser(pool, { id: 'u1', name: 'Ana', created: iso(), pwReset: { h: 'reset-h', exp: Date.now() + 60000, by: 'admin1' } });
+  await upsertUser(pool, { id: 'u2', name: 'Bo', created: iso() }); // no pending reset
+
+  await backfillPasswordResetBy(pool, 'u1', 'admin1');
+  await backfillPasswordResetBy(pool, 'u2', 'admin1'); // nothing to attach it to
+
+  assert.equal((await getUserById(pool, 'u1')).pwReset.by, 'admin1');
+  assert.equal('pwReset' in (await getUserById(pool, 'u2')), false);
 });

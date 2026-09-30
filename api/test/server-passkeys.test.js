@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import pg from 'pg';
 import { hashPassword } from '../password.js';
 import { hashLinkCode } from '../device-link.js';
 import { MAX_PASSKEYS } from '../passkeys-store.js';
@@ -97,6 +98,17 @@ async function startServer(t, { env = {}, users = [], creds = [], deviceLinks } 
   };
   h.db = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'db.json'), 'utf8'));
   h.audit = () => { try { return fs.readFileSync(path.join(dataDir, 'audit.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };
+  // users moved off db.json onto PostgreSQL's users table (ISO-1403).
+  h.users = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT id FROM users ORDER BY created_at')).rows.map(r => r.id); }
+    finally { await pool.end(); }
+  };
+  h.hasPassword = async id => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT password_hash FROM users WHERE id = $1', [id])).rows[0]?.password_hash != null; }
+    finally { await pool.end(); }
+  };
   // A passkey assertion made for this request, the way Settings confirms before adding.
   h.stepUp = async (key, ip) => {
     const { cid, options } = (await h.req('POST', '/api/login/options', { body: {}, ip })).body;
@@ -416,8 +428,8 @@ test('removing the password and the last passkey at the same time leaves one of 
   ]);
   assert.deepEqual([pw.status, pk.status].filter(s => s === 200).length, 1, `${pw.status} ${JSON.stringify(pw.body)} / ${pk.status} ${JSON.stringify(pk.body)}`);
   assert.ok([403, 409].includes(pw.status === 200 ? pk.status : pw.status));
-  const u = h.db().users[0];
-  assert.equal(h.db().creds.length + (u.pw ? 1 : 0), 1, 'the profile kept exactly one way in');
+  const hasPw = await h.hasPassword('u1');
+  assert.equal(h.db().creds.length + (hasPw ? 1 : 0), 1, 'the profile kept exactly one way in');
 });
 
 test('a password is a way in only while the instance offers password sign-in', async t => {
@@ -677,9 +689,9 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   const ip = '198.51.100.53', other = '203.0.113.53';
   const { code } = (await makeLink(h, key, 'u1', ip)).body;
   const linkOptions = async () => (await h.req('POST', '/api/device-link/options', { body: { code }, ip: other })).body;
-  const unchanged = () => {
+  const unchanged = async () => {
     const db = h.db();
-    assert.deepEqual(db.users.map(u => u.id), ['u1']);
+    assert.deepEqual(await h.users(), ['u1']);
     assert.deepEqual(db.creds.map(c => c.id), [key.id]);
     assert.equal(db.deviceLinks.length, 1);
   };
@@ -690,7 +702,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
     const r = await h.req('POST', '/api/register/verify', { body: { cid: opt.cid, credential: thief.attestation(opt.options.challenge) }, ip: other });
     assert.equal(r.status, 400);
     assert.equal(r.cookie, null);
-    unchanged();
+    await unchanged();
   }
   assert.ok(h.audit().some(e => e.ev === 'auth.register.fail' && e.msg === 'challenge-expired'));
   assert.ok(!h.audit().some(e => e.ev === 'auth.register.ok'));
@@ -700,7 +712,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   const viaAdd = await h.req('POST', '/api/register/verify', { body: { cid: add.cid, credential: thief.attestation(add.options.challenge) }, ip });
   assert.equal(viaAdd.status, 400);
   assert.equal(viaAdd.cookie, null);
-  unchanged();
+  await unchanged();
 
   // Nor is a link's challenge a sign-in, or the proof that makes another code.
   const asLogin = await linkOptions();
@@ -715,7 +727,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   const reg = (await h.req('POST', '/api/register/options', { body: { name: 'Mallory' }, ip })).body;
   const regProof = await h.req('POST', '/api/account/device-link', { body: { cid: reg.cid, credential: key.assertion(reg.options.challenge) }, cookie: mintSession('u1'), ip });
   assert.equal(regProof.status, 403);
-  unchanged();
+  await unchanged();
 
   // A link challenge fetched before "sign out everywhere" finishes nothing afterwards.
   const early = await linkOptions();
@@ -725,7 +737,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   assert.equal(late.status, 400);
   const late2 = await h.req('POST', '/api/device-link/verify', { body: { code, cid: early2.cid, credential: thief.attestation(early2.options.challenge) }, ip: other });
   assert.equal(late2.status, 400);
-  assert.deepEqual(h.db().users.map(u => u.id), ['u1']);
+  assert.deepEqual(await h.users(), ['u1']);
   assert.deepEqual(h.db().creds.map(c => c.id), [key.id]);
 
   // The owner's next code is redeemed exactly once, by the link route.
@@ -742,5 +754,5 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   assert.equal(made.status, 200, JSON.stringify(made.body));
   assert.equal(made.body.user.name, 'Cleo');
   assert.ok(made.cookie);
-  assert.equal(h.db().users.length, 2);
+  assert.equal((await h.users()).length, 2);
 });

@@ -45,6 +45,13 @@ async function startServer(t, { twoAdmins = false } = {}) {
     try { return (await pool.query('SELECT 1 FROM user_state WHERE user_id = $1', [uid])).rows[0] || null; }
     finally { await pool.end(); }
   };
+  // users moved off db.json onto PostgreSQL's users table (ISO-1403) — creds/subs/invites have
+  // not moved yet and still read straight off h.db().
+  h.users = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT id FROM users ORDER BY created_at')).rows.map(r => r.id); }
+    finally { await pool.end(); }
+  };
   h.stackFrames = () => h.log.split('\n').filter(l => /^\s+at /.test(l)).length;
   return h;
 }
@@ -55,8 +62,8 @@ test('removes the account and everything attached to it', async t => {
   const res = await h.del(VICTIM);
   assert.equal(res.status, 200);
 
+  assert.deepEqual(await h.users(), [ADMIN], 'the user is gone');
   const db = h.db();
-  assert.deepEqual(db.users.map(u => u.id), [ADMIN], 'the user is gone');
   assert.deepEqual(db.creds.map(c => c.userId), [ADMIN], 'their passkeys are gone');
   assert.deepEqual(db.subs.map(s => s.userId), [ADMIN], 'their push subscriptions are gone');
   assert.equal(await h.stateRow(VICTIM), null, 'their history is gone');
@@ -83,14 +90,14 @@ test('refuses the two deletions that cannot be undone', async t => {
 
   const last = await h.del(ADMIN, ADMIN);   // ADMIN is also the only admin
   assert.equal(last.status, 400);
-  assert.equal(h.db().users.length, 2, 'nothing was removed');
+  assert.equal((await h.users()).length, 2, 'nothing was removed');
 });
 
 test('another admin can be deleted while one remains', async t => {
   const h = await startServer(t, { twoAdmins: true });
   const res = await h.del(ADMIN2);
   assert.equal(res.status, 200);
-  assert.deepEqual(h.db().users.map(u => u.id).sort(), [ADMIN, VICTIM].sort());
+  assert.deepEqual((await h.users()).sort(), [ADMIN, VICTIM].sort());
 });
 
 test('says so plainly when the account is not there, and needs an admin', async t => {
@@ -99,5 +106,5 @@ test('says so plainly when the account is not there, and needs an admin', async 
   assert.equal(missing.status, 404);
   const asVictim = await h.del(ADMIN, VICTIM);
   assert.equal(asVictim.status, 403, 'an ordinary user cannot delete anyone');
-  assert.equal(h.db().users.length, 2);
+  assert.equal((await h.users()).length, 2);
 });

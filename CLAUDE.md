@@ -93,18 +93,25 @@ Single file, no framework, plain `node:http`. Requests are dispatched through a 
 keyed by `'METHOD /path'` (e.g. `routes['GET /api/health']`) matched against `req.method + ' ' +
 url.pathname` — add a new endpoint by adding a key here. `DATABASE_URL` is mandatory: `db.js`
 connects to PostgreSQL and applies `migrations/NNN_*.sql` before the server starts listening.
-A profile's training data (`GET`/`PUT /api/data`, `GET /api/data/rev`) lives in Postgres'
-`user_state` table (`store.js`) — `rev` is an optimistic-concurrency counter, and `PUT` is a
+A profile's training data (`GET`/`PUT /api/data`, `GET /api/data/rev`) and `users` itself both live
+in PostgreSQL (`store.js`) — `user_state.rev` is an optimistic-concurrency counter, and `PUT` is a
 lock-free compare-and-set that retries against the fresh row on a lost race rather than losing a
-concurrent write (ISO-1403, Phase 1b). `db.json` (users/credentials/push subscriptions/invites/
-device links) has **not** moved yet — that's the rest of ISO-1403, in a later run — and is still a
-flat file under `DATA_DIR`, written with a write-temp-then-rename atomic pattern (`atomicWrite`);
-`store.js` also keeps a minimal `users` mirror (id + name only) in Postgres purely so `user_state`
-rows have something to satisfy their foreign key against until db.json's users move for real.
-`api/coach/jobs.js` still reads `state-<uid>.json` directly for the same reason and is not
-migrated by this pass — a real gap until it moves too (see the issue's final comment). Auth is
-WebAuthn passkeys (`@simplewebauthn/server`) plus a signed session cookie (HMAC'd with a
-`DATA_DIR/secret` generated on first boot) — no JWT/session-store dependency. Optional pieces
+concurrent write; `session_version` invalidates every cookie for an account at once the same way it
+always did, just read from Postgres on every request now instead of an in-memory object (ISO-1403,
+Phase 1b). A helper worth knowing before touching auth code: `sessionStillValid(req, user, sv?)`
+re-checks a session by account id and session version, not object identity — every read is its own
+row now, not a live reference into a shared array, so the old `readSession(req) !== user` idiom
+from before this migration can no longer tell a changed account from an unchanged one. `db.json`
+(passkey credentials, invites, push subscriptions, device links) has **not** moved yet — that's the
+rest of ISO-1403, in a later run — and is still a flat file under `DATA_DIR`, written with a
+write-temp-then-rename atomic pattern (`atomicWrite`); `users.invited_by`'s value lives in the
+`extra` jsonb column rather than that foreign-key column until invites move too, since an invite
+code that only exists in db.json cannot be referenced from a Postgres row. `api/coach/jobs.js`
+still reads `state-<uid>.json` directly and is not migrated by this pass — a real gap until it
+moves too (see the issue's final comment: Coach stops seeing data for anyone who syncs after this
+ships, until it does). Auth is WebAuthn passkeys (`@simplewebauthn/server`) plus a signed session
+cookie (HMAC'd with a `DATA_DIR/secret` generated on first boot) — no JWT/session-store dependency.
+Optional pieces
 gated by env vars: `ADMIN_UIDS` (admin dashboard), `INVITE_ONLY` (signup needs a code),
 `ALLOW_GUEST` (client-only guest mode never hits the server at all), plus a rotating
 `data/audit.log` (JSONL) for sign-in/admin events. Web Push (`web-push`, VAPID keys
