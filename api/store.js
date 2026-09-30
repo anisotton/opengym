@@ -1,10 +1,11 @@
-/* PostgreSQL-backed access for the pieces of db.json / state-<uid>.json converted so far
- * (ISO-1403, Phase 1b): a profile's training data (user_state), `users` itself — identity,
- * passwords, admin/disabled flags, session_version — invites, push subscriptions and now device
- * links. `passkeys` (db.creds) is still db.json for now.
+/* PostgreSQL-backed access for db.json / state-<uid>.json (ISO-1403, Phase 1b — the last db.json
+ * collection, passkey credentials, moved in this pass too): a profile's training data
+ * (user_state), `users` itself — identity, passwords, admin/disabled flags, session_version —
+ * invites, push subscriptions, device links and now passkeys.
  */
 
 import { makeLinkCode, hashLinkCode, DEVICE_LINK_TTL_MS } from './device-link.js';
+import { passkeyName, transportsOf, MAX_PASSKEYS } from './passkeys-store.js';
 
 // { state, rev } — state is null and rev is 0 for a profile that has never pushed, exactly what
 // GET /api/data returned for a state file that did not exist yet.
@@ -490,5 +491,117 @@ export async function upsertDeviceLink(pool, { h, userId, exp, created }) {
     `INSERT INTO device_links (hash, user_id, expires_at, created_at) VALUES ($1,$2,$3,$4)
      ON CONFLICT (hash) DO UPDATE SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at`,
     [h, userId, new Date(exp), new Date(created)]
+  );
+}
+
+/* ---------- passkeys ----------
+ * `passkeyName`/`transportsOf` (passkeys-store.js) shape what a name or a transports list may
+ * keep; everything DB-shaped — the rows, the count, the "never lose the last way in" rule — is
+ * here. `otherWays` (passkeyRemovalRefused/removePasskey) is how many ways besides its passkeys
+ * can still sign the profile in (a password, while the instance offers password sign-in);
+ * server.js decides that, this only counts.
+ */
+
+function rowToPasskey(row) {
+  return {
+    id: row.id, userId: row.user_id, publicKey: row.public_key, counter: Number(row.counter),
+    transports: row.transports || [],
+    ...(row.name ? { name: row.name } : {}),
+    created: row.created_at.toISOString(),
+    ...(row.last_used_at ? { lastUsed: row.last_used_at.toISOString() } : {})
+  };
+}
+
+// What the owner sees of their passkeys: never the public key, which nothing on screen needs.
+export async function listPasskeys(pool, userId) {
+  const { rows } = await pool.query('SELECT * FROM passkeys WHERE user_id = $1 ORDER BY created_at', [userId]);
+  return rows.map(rowToPasskey).map(c => ({
+    id: c.id, name: c.name || null, created: c.created || null, lastUsed: c.lastUsed || null,
+    transports: c.transports
+  }));
+}
+
+export async function getPasskeyById(pool, id) {
+  const { rows } = await pool.query('SELECT * FROM passkeys WHERE id = $1', [id]);
+  return rows.length ? rowToPasskey(rows[0]) : null;
+}
+
+export async function countPasskeys(pool, userId) {
+  const { rows } = await pool.query('SELECT count(*)::int AS n FROM passkeys WHERE user_id = $1', [userId]);
+  return rows[0].n;
+}
+
+// The count check and the insert are one statement (a subquery in the WHERE), not a separate
+// query followed by an INSERT — two additions racing the same account can't both slip past a
+// count checked before either had committed. Pass a transaction client in place of `pool` to
+// insert alongside the user row a fresh signup creates (registration ceremonies do) — same idea
+// as consumeInvite.
+export async function insertPasskey(pool, userId, cred) {
+  const name = passkeyName(cred.name);
+  const row = {
+    id: cred.id, userId, publicKey: cred.publicKey, counter: cred.counter || 0,
+    transports: transportsOf(cred.transports), created: cred.created || new Date().toISOString(),
+    ...(cred.lastUsed ? { lastUsed: cred.lastUsed } : {}), ...(name ? { name } : {})
+  };
+  let rowCount;
+  try {
+    ({ rowCount } = await pool.query(
+      `INSERT INTO passkeys (id, user_id, public_key, counter, transports, name, created_at, last_used_at)
+       SELECT $1,$2,$3,$4,$5,$6,$7,$8
+       WHERE (SELECT count(*) FROM passkeys WHERE user_id = $2) < $9`,
+      [row.id, row.userId, row.publicKey, row.counter, row.transports, row.name || null,
+        new Date(row.created), row.lastUsed ? new Date(row.lastUsed) : null, MAX_PASSKEYS]
+    ));
+  } catch (e) {
+    if (e.code === '23505') return { error: 'credential already registered', code: 'credential-exists' }; // unique_violation
+    throw e;
+  }
+  if (rowCount === 0) return { error: `a profile can have at most ${MAX_PASSKEYS} passkeys`, code: 'passkey-limit' };
+  return { ok: true, row };
+}
+
+export async function renamePasskey(pool, userId, credId, name) {
+  const { rows } = await pool.query(
+    'UPDATE passkeys SET name = $1 WHERE id = $2 AND user_id = $3 RETURNING *',
+    [passkeyName(name) || null, credId, userId]
+  );
+  return rows.length ? { ok: true, row: rowToPasskey(rows[0]) } : { error: 'passkey not found', code: 'not-found' };
+}
+
+// Why removing `credId` would be refused, or null when it could go. On its own so server.js can
+// ask before it asks the owner for proof, and again, through removePasskey, once the proof is in.
+export async function passkeyRemovalRefused(pool, userId, credId, otherWays = 0) {
+  const cred = await getPasskeyById(pool, credId);
+  if (!cred || cred.userId !== userId) return { error: 'passkey not found', code: 'not-found' };
+  const mine = await countPasskeys(pool, userId);
+  if (mine - 1 + otherWays < 1) return { error: 'this passkey is the only way into this profile', code: 'last-way-in' };
+  return null;
+}
+
+export async function removePasskey(pool, userId, credId, otherWays = 0) {
+  const refused = await passkeyRemovalRefused(pool, userId, credId, otherWays);
+  if (refused) return refused;
+  const { rows } = await pool.query('DELETE FROM passkeys WHERE id = $1 AND user_id = $2 RETURNING *', [credId, userId]);
+  return { ok: true, row: rowToPasskey(rows[0]) };
+}
+
+// A passkey's own counter/last-use, touched by every ceremony that verifies an assertion against
+// it (sign-in, a step-up proof) — used to be a mutation of the same in-memory row a lookup handed
+// back; now its own write, since a read is never the same object twice.
+export async function touchPasskeyUse(pool, id, counter) {
+  await pool.query('UPDATE passkeys SET counter = $1, last_used_at = now() WHERE id = $2', [counter, id]);
+}
+
+// Boot's one-time migration of whatever db.json still holds.
+export async function upsertPasskey(pool, { id, userId, publicKey, counter, transports, name, created, lastUsed }) {
+  await pool.query(
+    `INSERT INTO passkeys (id, user_id, public_key, counter, transports, name, created_at, last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (id) DO UPDATE SET
+       user_id = EXCLUDED.user_id, public_key = EXCLUDED.public_key, counter = EXCLUDED.counter,
+       transports = EXCLUDED.transports, name = EXCLUDED.name, created_at = EXCLUDED.created_at,
+       last_used_at = EXCLUDED.last_used_at`,
+    [id, userId, publicKey, counter || 0, transportsOf(transports), name || null,
+      created ? new Date(created) : new Date(), lastUsed ? new Date(lastUsed) : null]
   );
 }

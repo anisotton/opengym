@@ -42,14 +42,12 @@ async function startServer(t, { twoAdmins = false } = {}) {
     const r = await fetch(`${h.api}/api/admin/user/delete`, { method: 'POST', headers: { ...as(uid), Origin: 'http://localhost:8080' }, body: JSON.stringify({ id }) });
     return { status: r.status, body: await r.json() };
   };
-  h.db = () => JSON.parse(fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8'));
   h.stateRow = async uid => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
     try { return (await pool.query('SELECT 1 FROM user_state WHERE user_id = $1', [uid])).rows[0] || null; }
     finally { await pool.end(); }
   };
-  // users/invites/push subscriptions moved off db.json onto PostgreSQL (ISO-1403) — creds have
-  // not moved yet and still read straight off h.db().
+  // users/invites/push subscriptions/passkeys all moved off db.json onto PostgreSQL (ISO-1403).
   h.users = async () => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
     try { return (await pool.query('SELECT id FROM users ORDER BY created_at')).rows.map(r => r.id); }
@@ -65,6 +63,11 @@ async function startServer(t, { twoAdmins = false } = {}) {
     try { return (await pool.query('SELECT user_id FROM push_subscriptions ORDER BY created_at')).rows.map(r => r.user_id); }
     finally { await pool.end(); }
   };
+  h.creds = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT user_id FROM passkeys ORDER BY created_at')).rows.map(r => r.user_id); }
+    finally { await pool.end(); }
+  };
   h.stackFrames = () => h.log.split('\n').filter(l => /^\s+at /.test(l)).length;
   return h;
 }
@@ -76,8 +79,7 @@ test('removes the account and everything attached to it', async t => {
   assert.equal(res.status, 200);
 
   assert.deepEqual(await h.users(), [ADMIN], 'the user is gone');
-  const db = h.db();
-  assert.deepEqual(db.creds.map(c => c.userId), [ADMIN], 'their passkeys are gone');
+  assert.deepEqual(await h.creds(), [ADMIN], 'their passkeys are gone');
   assert.deepEqual(await h.subs(), [ADMIN], 'their push subscriptions are gone');
   assert.equal(await h.stateRow(VICTIM), null, 'their history is gone');
   // The code they joined with stays burned: it was used, and freeing it would quietly widen

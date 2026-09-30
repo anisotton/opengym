@@ -129,14 +129,28 @@ hashing it) — the row itself, one per profile, is `createDeviceLink`/`findDevi
 is still live by re-running `findDeviceLink` and testing for a non-null result, not by comparing
 the row to the one read earlier (`sessionStillValid`'s idiom again: every read is its own row, but
 two different live links can never hash to the same code, so "still finds one" already means
-"still this same link"). `db.json` (passkey credentials only, now) has **not** moved yet — that's
-the rest of ISO-1403, in a later run — and is still a flat file under `DATA_DIR`, written with a
-write-temp-then-rename atomic pattern (`atomicWrite`).
-`api/coach/jobs.js` still reads `state-<uid>.json` directly and is not migrated by this pass — a
-real gap until it moves too (see the issue's final comment: Coach stops seeing data for anyone who
-syncs after this ships, until it does). Auth is WebAuthn passkeys (`@simplewebauthn/server`) plus a
-signed session cookie (HMAC'd with a `DATA_DIR/secret` generated on first boot) — no JWT/session-
-store dependency.
+"still this same link"). Passkey credentials (`passkeys`, `passkeys-store.js` + `store.js`) are the
+last db.json collection, also moved: `passkeys-store.js` holds only the pure shaping rules
+(`passkeyName`, `transportsOf`, `MAX_PASSKEYS`) now, same split as `device-link.js`; the rows,
+the count, and the "never lose the last way in" rule are `store.js`'s `insertPasskey`/
+`listPasskeys`/`renamePasskey`/`removePasskey`/`passkeyRemovalRefused`/`touchPasskeyUse`.
+`insertPasskey`'s cap check is one statement (a subquery in the INSERT's WHERE), not a separate
+count-then-insert, so two additions racing the same account can't both slip past `MAX_PASSKEYS`.
+Registration (both password and passkey signup) now inserts the user row, consumes the invite
+*and* inserts the first passkey inside one transaction — the credential used to land in db.json as
+a separate, non-atomic step after the Postgres user existed; now all three commit or none do.
+
+With passkeys moved, `db.json` itself is retired: `server.js` no longer has a module-level `db`
+object or a `saveDb()` — the "remove the global `db` variable, `saveDb()` and `stateFile()`" the
+issue opened with. `db.json` is still read once, at boot (`readBootDb()`, a local variable scoped
+to `listen()`), to carry over whatever an instance upgrading from before ISO-1403 still has on
+disk; nothing after that boot pass reads or writes it again. `api/coach/jobs.js` is the one piece
+outside `server.js` this phase does not reach: it still reads `state-<uid>.json` directly (its own
+`readState`/`listUserIds`, used by `coach/cohort.js` and `coach/cadence.js` too), a real gap until
+a later run threads `pool` through the Coach subsystem the same way — see the issue's final
+comment: Coach stops seeing data for anyone who syncs after this ships, until it does. Auth is
+WebAuthn passkeys (`@simplewebauthn/server`) plus a signed session cookie (HMAC'd with a
+`DATA_DIR/secret` generated on first boot) — no JWT/session-store dependency.
 Optional pieces
 gated by env vars: `ADMIN_UIDS` (admin dashboard), `INVITE_ONLY` (signup needs a code),
 `ALLOW_GUEST` (client-only guest mode never hits the server at all), plus a rotating

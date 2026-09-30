@@ -96,13 +96,23 @@ async function startServer(t, { env = {}, users = [], creds = [], deviceLinks } 
     const setCookie = r.headers.getSetCookie().find(c => c.startsWith('gymsid=') && !c.startsWith('gymsid=;'));
     return { status: r.status, body: await r.json(), headers: r.headers, cookie: setCookie ? setCookie.split(';')[0] : null };
   };
-  h.db = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'db.json'), 'utf8'));
   h.audit = () => { try { return fs.readFileSync(path.join(dataDir, 'audit.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };
-  // users moved off db.json onto PostgreSQL's users table (ISO-1403).
+  // users/passkeys moved off db.json onto PostgreSQL (ISO-1403).
   h.users = async () => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
     try { return (await pool.query('SELECT id FROM users ORDER BY created_at')).rows.map(r => r.id); }
     finally { await pool.end(); }
+  };
+  h.creds = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try {
+      const { rows } = await pool.query('SELECT * FROM passkeys ORDER BY created_at');
+      return rows.map(r => ({
+        id: r.id, userId: r.user_id, publicKey: r.public_key, counter: r.counter,
+        transports: r.transports, name: r.name || undefined,
+        created: r.created_at.toISOString(), lastUsed: r.last_used_at ? r.last_used_at.toISOString() : undefined
+      }));
+    } finally { await pool.end(); }
   };
   h.hasPassword = async id => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
@@ -163,12 +173,12 @@ test('adding a passkey needs proof, excludes the ones the profile has, and the n
   });
   assert.equal(ver.status, 200, JSON.stringify(ver.body));
   assert.deepEqual(ver.body.passkeys.map(p => p.id), [key.id, fresh.id]);
-  const row = h.db().creds.find(c => c.id === fresh.id);
+  const row = (await h.creds()).find(c => c.id === fresh.id);
   assert.equal(row.userId, 'u1');
   assert.equal(row.name, 'Phone');
   assert.ok(row.created);
   // The confirming passkey was used just now.
-  assert.ok(h.db().creds.find(c => c.id === key.id).lastUsed);
+  assert.ok((await h.creds()).find(c => c.id === key.id).lastUsed);
   assert.ok(h.audit().some(e => e.ev === 'auth.passkey.add' && e.uid === 'u1' && e.msg === 'passkey'));
 
   // The new passkey is a way in of its own.
@@ -176,14 +186,14 @@ test('adding a passkey needs proof, excludes the ones the profile has, and the n
   const signedIn = await h.req('POST', '/api/login/verify', { body: { cid: lo.cid, credential: fresh.assertion(lo.options.challenge) }, ip });
   assert.equal(signedIn.status, 200);
   assert.equal(signedIn.body.user.id, 'u1');
-  assert.ok(h.db().creds.find(c => c.id === fresh.id).lastUsed);
+  assert.ok((await h.creds()).find(c => c.id === fresh.id).lastUsed);
 
   // The same authenticator again is refused, not stored twice.
   const again = await h.req('POST', '/api/account/passkeys/options', { body: await h.stepUp(key, ip), cookie, ip });
   const dup = await h.req('POST', '/api/account/passkeys/verify', { body: { cid: again.body.cid, credential: fresh.attestation(again.body.options.challenge) }, cookie, ip });
   assert.equal(dup.status, 409);
   assert.equal(dup.body.code, 'credential-exists');
-  assert.equal(h.db().creds.length, 2);
+  assert.equal((await h.creds()).length, 2);
 });
 
 test('another profile’s passkey, or a challenge minted for another profile, adds nothing', async t => {
@@ -201,14 +211,14 @@ test('another profile’s passkey, or a challenge minted for another profile, ad
     body: { cid: opt.body.cid, credential: fresh.attestation(opt.body.options.challenge) }, cookie: mintSession('u2'), ip
   });
   assert.equal(hijack.status, 400);
-  assert.equal(h.db().creds.length, 2);
+  assert.equal((await h.creds()).length, 2);
   // A registration made for another origin does not verify.
   const opt2 = await h.req('POST', '/api/account/passkeys/options', { body: await h.stepUp(ana, ip), cookie: mintSession('u1'), ip });
   const phish = await h.req('POST', '/api/account/passkeys/verify', {
     body: { cid: opt2.body.cid, credential: fresh.attestation(opt2.body.options.challenge, { origin: 'https://evil.example' }) }, cookie: mintSession('u1'), ip
   });
   assert.equal(phish.status, 400);
-  assert.equal(h.db().creds.length, 2);
+  assert.equal((await h.creds()).length, 2);
 });
 
 test('signing out everywhere between the proof and the new passkey ends the ceremony', async t => {
@@ -222,7 +232,7 @@ test('signing out everywhere between the proof and the new passkey ends the cere
     body: { cid: opt.body.cid, credential: fresh.attestation(opt.body.options.challenge) }, cookie: mintSession('u1', 1), ip
   });
   assert.equal(late.status, 401);
-  assert.equal(h.db().creds.length, 1);
+  assert.equal((await h.creds()).length, 1);
 });
 
 test('the current password proves an addition while the instance offers password sign-in', async t => {
@@ -264,7 +274,7 @@ test('with PASSWORD_LOGIN off only a passkey proves anything; a stored password 
     }
   }
   assert.ok(!h.audit().some(e => e.ev === 'auth.password.fail' || e.ev === 'auth.proof.fail' || e.ev === 'auth.password.locked'));
-  assert.equal(h.db().creds.length, 2);
+  assert.equal((await h.creds()).length, 2);
   assert.deepEqual(await h.deviceLinks(), []);
   // A profile with only a password cannot confirm anything at all.
   assert.equal((await h.req('POST', '/api/account/passkeys/options', { body: { current: GOOD }, cookie: mintSession('u2'), ip })).body.code, 'passkey-required');
@@ -305,7 +315,7 @@ test('renaming touches only the caller’s own passkey', async t => {
   assert.equal(r.body.passkeys[0].name, 'Work laptop');
   const theirs = await h.req('POST', '/api/account/passkeys/rename', { body: { id: b.id, name: 'mine' }, cookie: mintSession('u1') });
   assert.equal(theirs.status, 404);
-  assert.equal(h.db().creds.find(c => c.id === b.id).name, undefined);
+  assert.equal((await h.creds()).find(c => c.id === b.id).name, undefined);
   assert.equal((await h.req('POST', '/api/account/passkeys/rename', { body: { id: a.id, name: 'x' } })).status, 401);
 });
 
@@ -324,7 +334,7 @@ test('removing: never the last way in, never someone else’s, audited, and it s
   const last = await del(b.id, b);
   assert.equal(last.status, 409);
   assert.equal(last.body.code, 'last-way-in');
-  assert.equal(h.db().creds.filter(c => c.userId === 'u1').length, 1);
+  assert.equal((await h.creds()).filter(c => c.userId === 'u1').length, 1);
   // The removed passkey is unknown from now on…
   const lo = (await h.req('POST', '/api/login/options', { body: {} })).body;
   assert.equal((await h.req('POST', '/api/login/verify', { body: { cid: lo.cid, credential: a.assertion(lo.options.challenge) } })).status, 404);
@@ -343,7 +353,7 @@ test('removing a passkey needs proof made for it: none, another profile’s pass
     const r = await h.req('DELETE', url, { body, cookie, ip });
     assert.equal(r.status, 403, JSON.stringify(body)?.slice(0, 60));
     assert.equal(r.body.code, code);
-    assert.deepEqual(h.db().creds.filter(c => c.userId === 'u1').map(c => c.id), [a.id, b.id]);
+    assert.deepEqual((await h.creds()).filter(c => c.userId === 'u1').map(c => c.id), [a.id, b.id]);
   };
   // A session on its own — with no body at all, or an empty one.
   await refused(undefined, 'passkey-required');
@@ -374,7 +384,7 @@ test('removing a passkey needs proof made for it: none, another profile’s pass
   assert.equal((await h.req('DELETE', url, { body: proof, cookie, ip })).status, 200);
   const again = await h.req('DELETE', '/api/account/passkeys?id=' + encodeURIComponent(b.id), { body: proof, cookie, ip });
   assert.equal(again.status, 409);   // b is the last way in now, which is answered before any proof
-  assert.deepEqual(h.db().creds.filter(c => c.userId === 'u1').map(c => c.id), [b.id]);
+  assert.deepEqual((await h.creds()).filter(c => c.userId === 'u1').map(c => c.id), [b.id]);
   assert.equal(h.audit().filter(e => e.ev === 'auth.passkey.remove').length, 1);
 });
 
@@ -387,9 +397,9 @@ test('a proof is spent by the removal it was made for, and a replayed one remove
   const replay = await h.req('DELETE', '/api/account/passkeys?id=' + encodeURIComponent(b.id), { body: proof, cookie, ip });
   assert.equal(replay.status, 403);
   assert.equal(replay.body.code, 'passkey');
-  assert.deepEqual(h.db().creds.map(x => x.id), [b.id, c.id]);
+  assert.deepEqual((await h.creds()).map(x => x.id), [b.id, c.id]);
   // The confirming passkey's use is recorded like any other.
-  assert.ok(h.db().creds.find(x => x.id === c.id).lastUsed);
+  assert.ok((await h.creds()).find(x => x.id === c.id).lastUsed);
 });
 
 test('wrong current passwords given to remove a passkey count toward the sign-in pause, and are audited as such', async t => {
@@ -407,7 +417,7 @@ test('wrong current passwords given to remove a passkey count toward the sign-in
   // The name is paused: the right password waits too, from anywhere, and so does a sign-in.
   assert.equal((await h.req('DELETE', url, { body: { current: GOOD }, cookie, ip: '198.51.100.33' })).status, 429);
   assert.equal((await h.req('POST', '/api/login/password', { body: { name: 'Ana', password: GOOD }, ip: '198.51.100.33' })).status, 429);
-  assert.equal(h.db().creds.length, 2);
+  assert.equal((await h.creds()).length, 2);
   // A passkey is never paused by it.
   assert.equal((await h.req('DELETE', url, { body: await h.stepUp(key, ip), cookie, ip })).status, 200);
 });
@@ -437,7 +447,7 @@ test('removing the password and the last passkey at the same time leaves one of 
   assert.deepEqual([pw.status, pk.status].filter(s => s === 200).length, 1, `${pw.status} ${JSON.stringify(pw.body)} / ${pk.status} ${JSON.stringify(pk.body)}`);
   assert.ok([403, 409].includes(pw.status === 200 ? pk.status : pw.status));
   const hasPw = await h.hasPassword('u1');
-  assert.equal(h.db().creds.length + (hasPw ? 1 : 0), 1, 'the profile kept exactly one way in');
+  assert.equal((await h.creds()).length + (hasPw ? 1 : 0), 1, 'the profile kept exactly one way in');
 });
 
 test('a password is a way in only while the instance offers password sign-in', async t => {
@@ -511,7 +521,7 @@ test('a device link: made with proof, kept only as a hash, redeemed once by a ne
   assert.deepEqual(done.body.user, { id: 'u1', name: 'Ana', admin: false });
   assert.ok(done.cookie);
   assert.equal((await h.req('GET', '/api/me', { cookie: done.cookie })).body.user.id, 'u1');
-  const row = h.db().creds.find(c => c.id === phone.id);
+  const row = (await h.creds()).find(c => c.id === phone.id);
   assert.equal(row.userId, 'u1');
   assert.equal(row.name, 'Phone');
   assert.deepEqual(await h.deviceLinks(), []);
@@ -521,7 +531,7 @@ test('a device link: made with proof, kept only as a hash, redeemed once by a ne
   const again = await redeem(h, code, softPasskey(), '198.51.100.42');
   assert.equal(again.status, 400);
   assert.equal(again.body.code, 'link-invalid');
-  assert.equal(h.db().creds.length, 2);
+  assert.equal((await h.creds()).length, 2);
 });
 
 test('a password-only profile can make a link with its password, and the phone gets a passkey', async t => {
@@ -532,7 +542,7 @@ test('a password-only profile can make a link with its password, and the phone g
   assert.equal(made.status, 200);
   assert.ok(h.audit().some(e => e.ev === 'auth.link.create' && e.msg === 'password'));
   assert.equal((await redeem(h, made.body.code, phone, ip)).status, 200);
-  assert.equal(h.db().creds[0].userId, 'u1');
+  assert.equal((await h.creds())[0].userId, 'u1');
 });
 
 test('an expired link, a replaced link and a link of a disabled profile are all just wrong', async t => {
@@ -568,7 +578,7 @@ test('removing a passkey drops an unused code, so one made with it just before a
   const r = await redeem(h, code, thief, '203.0.113.54');
   assert.equal(r.status, 400);
   assert.equal(r.body.code, 'link-invalid');
-  assert.deepEqual(h.db().creds.map(c => c.id), [key.id]);
+  assert.deepEqual((await h.creds()).map(c => c.id), [key.id]);
   // A refused removal leaves the owner's own code alone.
   const mine = (await makeLink(h, key, 'u1', ip)).body.code;
   assert.equal((await h.req('DELETE', '/api/account/passkeys?id=' + encodeURIComponent(key.id), { body: await h.stepUp(key, ip), cookie: mintSession('u1'), ip })).status, 409);
@@ -605,7 +615,7 @@ test('a link redeemed after the owner signed out everywhere mid-ceremony makes n
   const r = await h.req('POST', '/api/device-link/verify', { body: { code, cid: opt.body.cid, credential: thief.attestation(opt.body.options.challenge) }, ip });
   assert.equal(r.status, 400);
   assert.equal(r.cookie, null);
-  assert.equal(h.db().creds.length, 1);
+  assert.equal((await h.creds()).length, 1);
 });
 
 test('two devices racing with one code: exactly one gets the passkey and the session', async t => {
@@ -621,7 +631,7 @@ test('two devices racing with one code: exactly one gets the passkey and the ses
   ]);
   assert.deepEqual(results.map(r => r.status).sort(), [200, 400]);
   assert.equal(results.filter(r => r.cookie).length, 1);
-  assert.equal(h.db().creds.length, 2);
+  assert.equal((await h.creds()).length, 2);
 });
 
 test('a challenge from one ceremony does not finish the other, nor a link of another profile', async t => {
@@ -642,7 +652,7 @@ test('a challenge from one ceremony does not finish the other, nor a link of ano
   const linkOpt = (await h.req('POST', '/api/device-link/options', { body: { code: anaCode }, ip })).body;
   const mixed2 = await h.req('POST', '/api/account/passkeys/verify', { body: { cid: linkOpt.cid, credential: fresh.attestation(linkOpt.options.challenge) }, cookie: mintSession('u1'), ip });
   assert.equal(mixed2.status, 400);
-  assert.equal(h.db().creds.length, 2);
+  assert.equal((await h.creds()).length, 2);
   // Both codes still work for their own profiles.
   assert.equal((await redeem(h, beaCode, fresh, ip)).body.user.id, 'u2');
 });
@@ -698,9 +708,8 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   const { code } = (await makeLink(h, key, 'u1', ip)).body;
   const linkOptions = async () => (await h.req('POST', '/api/device-link/options', { body: { code }, ip: other })).body;
   const unchanged = async () => {
-    const db = h.db();
     assert.deepEqual(await h.users(), ['u1']);
-    assert.deepEqual(db.creds.map(c => c.id), [key.id]);
+    assert.deepEqual((await h.creds()).map(c => c.id), [key.id]);
     assert.equal((await h.deviceLinks()).length, 1);
   };
 
@@ -746,7 +755,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   const late2 = await h.req('POST', '/api/device-link/verify', { body: { code, cid: early2.cid, credential: thief.attestation(early2.options.challenge) }, ip: other });
   assert.equal(late2.status, 400);
   assert.deepEqual(await h.users(), ['u1']);
-  assert.deepEqual(h.db().creds.map(c => c.id), [key.id]);
+  assert.deepEqual((await h.creds()).map(c => c.id), [key.id]);
 
   // The owner's next code is redeemed exactly once, by the link route.
   const next = (await h.req('POST', '/api/account/device-link', { body: await h.stepUp(key, ip), cookie: mintSession('u1', 1), ip })).body.code;
@@ -754,7 +763,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   assert.equal(done.status, 200);
   assert.equal(done.body.user.id, 'u1');
   assert.equal((await redeem(h, next, softPasskey(), ip)).status, 400);
-  assert.deepEqual(h.db().creds.map(c => [c.id, c.userId]), [[key.id, 'u1'], [phone.id, 'u1']]);
+  assert.deepEqual((await h.creds()).map(c => [c.id, c.userId]), [[key.id, 'u1'], [phone.id, 'u1']]);
 
   // Sign-up with its own challenge still works, and makes one new profile.
   const signUp = (await h.req('POST', '/api/register/options', { body: { name: 'Cleo' }, ip })).body;

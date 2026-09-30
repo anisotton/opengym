@@ -26,9 +26,7 @@ import {
   normalizeEmail, maskEmail
 } from './password.js';
 import { createBackoff, createWindow } from './rate-limit.js';
-import {
-  listPasskeys, addPasskeyRecord, renamePasskeyRecord, removePasskeyRecord, passkeyRemovalRefused, MAX_PASSKEYS
-} from './passkeys-store.js';
+import { MAX_PASSKEYS } from './passkeys-store.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
 import { connectAndMigrate, withTransaction } from './db.js';
 import {
@@ -39,14 +37,19 @@ import {
   createSession, getSession, revokeSession,
   createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
   upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
-  createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink
+  createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
+  listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
+  removePasskey, touchPasskeyUse, upsertPasskey
 } from './store.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
-// Phase 1b (ISO-1403): a profile's training data (state-<uid>.json) and `users` itself now live
-// in PostgreSQL (store.js) — mandatory from here on. db.json (passkeys/creds, invites, push
-// subscriptions, device links) has not moved yet — that is the rest of this issue, in a later run.
+// Phase 1b (ISO-1403): db.json and a profile's training data (state-<uid>.json) have both moved
+// onto PostgreSQL (store.js) — mandatory from here on. db.json itself is read exactly once more,
+// at boot (readBootDb below), to migrate whatever an instance upgrading from before this phase
+// still has on disk; nothing after that reads or writes it again. api/coach/jobs.js's own
+// state-<uid>.json reader is the one piece this phase does not reach — see the issue's final
+// comment.
 const DATABASE_URL = process.env.DATABASE_URL || '';
 if (!DATABASE_URL) {
   console.error('DATABASE_URL is required (PostgreSQL holds profile state — see docs/SELF_HOSTING.md)');
@@ -120,16 +123,18 @@ const secretFile = path.join(DATA, 'secret');
 if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
 const SECRET = fs.readFileSync(secretFile, 'utf8').trim();
 
+// db.json itself is only ever read once more, at boot (readBootDb below) — the one-time
+// migration of whatever an instance upgrading from before ISO-1403 still has on disk. Nothing
+// after boot reads or writes it: every collection it used to hold lives in PostgreSQL now.
 const dbFile = path.join(DATA, 'db.json');
-let db = { users: [], creds: [], subs: [], invites: [] };
-try { db = JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch {}
-db.subs = db.subs || [];
-db.invites = db.invites || [];
-db.deviceLinks = db.deviceLinks || [];   // unused one-time device links, hashed (device-link.js)
 const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
-// 0600: db.json holds passkey credential material. It used to be covered by a blanket 0700 on
-// the whole directory; now that the directory stays traversable, the file carries its own mode.
-function saveDb() { atomicWrite(dbFile, JSON.stringify(db, null, 2), 0o600); }
+function readBootDb() {
+  let db = { users: [], creds: [], subs: [], invites: [], deviceLinks: [] };
+  try { db = JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch { /* no db.json — a fresh instance */ }
+  db.users = db.users || []; db.creds = db.creds || []; db.subs = db.subs || [];
+  db.invites = db.invites || []; db.deviceLinks = db.deviceLinks || [];
+  return db;
+}
 function atomicWrite(file, content, mode) {
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, content, mode ? { mode } : undefined);
@@ -183,7 +188,7 @@ webpush.setVapidDetails(VAPID_SUBJECT, vapid.publicKey, vapid.privateKey);
       the request itself uses, not in a prior pass. A literal IP address never goes through
       that lookup at all — Node hands it straight to connect() — so literals are judged by
       pushEndpointError instead: at subscribe, and again in sendPush for an endpoint that got
-      into db.json some other way.
+      into storage some other way.
    2. PUSH_TIMEOUT_MS: an endpoint that accepts TCP and then stalls used to hang the request
       handler that awaited it, indefinitely. web-push sets no timeout of its own.
    3. PUSH_CONCURRENCY: one small request must not turn into an unbounded burst of outbound
@@ -717,15 +722,15 @@ setInterval(() => { for (const [k, v] of presence) if (Date.now() - v.updatedAt 
 /* ---------- audit log ---------- */
 // Who signed in, who tried and failed, and what an admin changed. One JSON object per line in
 // ./data/audit.log, appended and never rewritten in place. It deliberately does not live in
-// db.json: that file is rewritten whole on every save, and the login/register handshakes are
-// unauthenticated and unthrottled by design (see SECURITY.md; only the optional password routes
-// are throttled, below), so an audit trail in there would turn one bogus request into a full
-// db.json rewrite. A line torn by a crash costs one event and is dropped on read.
+// PostgreSQL alongside everything else: the login/register handshakes are unauthenticated and
+// unthrottled by design (see SECURITY.md; only the optional password routes are throttled,
+// below), so an audit trail in a table there would turn one bogus request into a row nobody
+// asked for. A line torn by a crash costs one event and is dropped on read.
 //
-// On by default. It records strictly less than the instance already holds — every account is in
-// db.json and every workout is in state-<uid>.json, both readable by any admin — and a security
-// feature that ships switched off protects nobody. IP addresses are the exception: off unless you
-// ask for them, because they are the one field here that says where somebody physically is.
+// On by default. It records strictly less than the instance already holds — every account and
+// every workout is already in the database, readable by any admin — and a security feature that
+// ships switched off protects nobody. IP addresses are the exception: off unless you ask for
+// them, because they are the one field here that says where somebody physically is.
 const AUDIT_ON = !/^(0|false|no|off)$/i.test(process.env.AUDIT_LOG || '');
 const AUDIT_MAX = Math.max(0, +(process.env.AUDIT_MAX || 5000) || 0);     // 0 = no count cap
 const AUDIT_DAYS = Math.max(0, +(process.env.AUDIT_DAYS || 90) || 0);     // 0 = no age cap
@@ -999,7 +1004,7 @@ async function loginTarget(body) {
   return { k, user, resolve, email: k.includes('@'), key: user ? acctKey(user) : 'id:' + k };
 }
 const acctKey = u => 'acct:' + u.id;
-const passkeyCount = u => db.creds.filter(c => c.userId === u.id).length;
+const passkeyCount = u => countPasskeys(pool, u.id);
 const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u) });
 const POLICY_ERRORS = {
   'too-short': `the password needs at least ${MIN_LENGTH} characters`,
@@ -1035,8 +1040,8 @@ async function changePassword(user, h) {
 // to belong to this account.
 async function passkeyStepUp(user, body) {
   const c = takeChallenge(body.cid);
-  const cred = c?.kind === 'login' && db.creds.find(x => x.id === body.credential?.id && x.userId === user.id);
-  if (!cred) return false;
+  const cred = c?.kind === 'login' && await getPasskeyById(pool, body.credential?.id);
+  if (!cred || cred.userId !== user.id) return false;
   try {
     const v = await verifyAuthenticationResponse({
       response: body.credential, expectedChallenge: c.challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
@@ -1044,8 +1049,7 @@ async function passkeyStepUp(user, body) {
       credential: { id: cred.id, publicKey: b64uToBuf(cred.publicKey), counter: cred.counter, transports: cred.transports }
     });
     if (!v.verified) return false;
-    cred.counter = v.authenticationInfo.newCounter;
-    cred.lastUsed = new Date().toISOString();
+    await touchPasskeyUse(pool, cred.id, v.authenticationInfo.newCounter);
     return true;
   } catch { return false; }
 }
@@ -1272,7 +1276,7 @@ const passwordRoutes = {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     json(res, 200, {
-      set: hasPassword(user), setAt: user.pw?.set || null, passkeys: passkeyCount(user),
+      set: hasPassword(user), setAt: user.pw?.set || null, passkeys: await passkeyCount(user),
       name: user.name, nameTaken: await nameTaken(user.name, user.id),
       // Only the owner's own session is ever handed their address.
       email: user.email || null
@@ -1318,7 +1322,7 @@ const passwordRoutes = {
     const body = await readBody(req);
     const lastWayIn = () => json(res, 409, { error: 'the password is the only way into this profile', code: 'last-way-in' });
     if (!hasPassword(user)) return json(res, 200, { ok: true });
-    if (!passkeyCount(user)) return lastWayIn();
+    if (!(await passkeyCount(user))) return lastWayIn();
     const proof = await proveOwner(req, res, user, body, 'password-remove');
     if (!proof) return;
     // Everything above awaited: the session may have ended, and the profile's last passkey may
@@ -1326,9 +1330,8 @@ const passwordRoutes = {
     // data (sessionStillValid's return), not the snapshot from before those awaits.
     const fresh = await sessionStillValid(req, user);
     if (!fresh) return json(res, 401, { error: 'not signed in' });
-    if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
     if (!hasPassword(fresh)) return json(res, 200, { ok: true });
-    if (!passkeyCount(fresh)) return lastWayIn();
+    if (!(await passkeyCount(fresh))) return lastWayIn();
     delete fresh.pw;
     await removePassword(pool, fresh.id);
     audit(req, 'auth.password.remove', { user: fresh });
@@ -1362,7 +1365,6 @@ const passwordRoutes = {
     if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
     if (paused()) return;
     if (await emailTaken(email, user.id)) {
-      if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
       strikeAddress(req, 'email');
       ADDR_FAILS.fail(acct);
       audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
@@ -1477,8 +1479,8 @@ const passwordRoutes = {
 // Sessions are not tied to the passkey that opened them — a session is `uid:expiry:version`,
 // nothing more — so removing a passkey stops it signing in again but does not end a session it
 // already opened. "Sign out everywhere" does that, and Settings says so where a passkey is removed.
-const passkeyState = u => {
-  const passkeys = listPasskeys(db, u.id);
+const passkeyState = async u => {
+  const passkeys = await listPasskeys(pool, u.id);
   // `password`: whether the password can confirm an addition or a removal (proveOwner) — only
   // while password sign-in is on. `lastWayIn`: whether removing any one passkey would be refused.
   return { passkeys, password: passwordWayIn(u), lastWayIn: passkeys.length + (passwordWayIn(u) ? 1 : 0) <= 1 };
@@ -1491,16 +1493,19 @@ const notSignedIn = res => json(res, 401, { error: 'not signed in' });
 // at sign-up, so an authenticator files the new passkey under the same account; the passkeys the
 // profile has already are excluded, so an authenticator that holds one of them says so instead of
 // making a second.
-const moreOptions = user => generateRegistrationOptions({
-  rpName: RP_NAME, rpID: RP_ID,
-  userID: Buffer.from(user.id), userName: user.name, userDisplayName: user.name,
-  attestationType: 'none',
-  authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
-  excludeCredentials: db.creds.filter(c => c.userId === user.id).map(c => ({ id: c.id, transports: c.transports || [] }))
-});
+const moreOptions = async user => {
+  const mine = await listPasskeys(pool, user.id);
+  return generateRegistrationOptions({
+    rpName: RP_NAME, rpID: RP_ID,
+    userID: Buffer.from(user.id), userName: user.name, userDisplayName: user.name,
+    attestationType: 'none',
+    authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
+    excludeCredentials: mine.map(c => ({ id: c.id, transports: c.transports || [] }))
+  });
+};
 
-// The second half of either ceremony: the new passkey as a db.creds row, or null once the
-// refusal has been answered and audited as `ev`.
+// The second half of either ceremony: the new passkey as a candidate row (not yet inserted), or
+// null once the refusal has been answered and audited as `ev`.
 async function newPasskey(req, res, c, body, ev, user) {
   let verification;
   try {
@@ -1533,7 +1538,7 @@ const passkeyRoutes = {
   'GET /api/account/passkeys': async (req, res) => {
     const user = await readSession(req);
     if (!user) return notSignedIn(res);
-    json(res, 200, passkeyState(user));
+    json(res, 200, await passkeyState(user));
   },
 
   // Adding one from Settings, step one: the proof, then the options. The proof is spent here; the
@@ -1543,12 +1548,11 @@ const passkeyRoutes = {
     const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
-    if (passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
+    if ((await passkeyCount(user)) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const proof = await proveOwner(req, res, user, body, 'passkey-add');
     if (!proof) return;
     // Awaited: a sign-out everywhere, a disable or an admin reset may have ended this session.
     if (!(await sessionStillValid(req, user))) return notSignedIn(res);
-    if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
     const options = await moreOptions(user);
     const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'add', sv: sessionVersion(user), proof });
     json(res, 200, { cid, options });
@@ -1566,24 +1570,22 @@ const passkeyRoutes = {
     const cred = await newPasskey(req, res, c, body, 'auth.passkey.fail', user);
     if (!cred) return;
     if (!(await sessionStillValid(req, user, c.sv))) return notSignedIn(res);
-    const added = addPasskeyRecord(db, user.id, cred);
+    const added = await insertPasskey(pool, user.id, cred);
     if (added.error) {
       audit(req, 'auth.passkey.fail', { ok: false, user, msg: added.code });
       return json(res, 409, { error: added.error, code: added.code });
     }
-    saveDb();
     audit(req, 'auth.passkey.add', { user, msg: c.proof });
-    json(res, 200, { ok: true, ...passkeyState(user) });
+    json(res, 200, { ok: true, ...(await passkeyState(user)) });
   },
 
   'POST /api/account/passkeys/rename': async (req, res) => {
     const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
-    const r = renamePasskeyRecord(db, user.id, text(body.id), body.name);
+    const r = await renamePasskey(pool, user.id, text(body.id), body.name);
     if (r.error) return json(res, 404, { error: r.error, code: r.code });
-    saveDb();
-    json(res, 200, { ok: true, ...passkeyState(user) });
+    json(res, 200, { ok: true, ...(await passkeyState(user)) });
   },
 
   // `?id=` — the credential id from the list; the body carries the same proof adding one takes
@@ -1599,18 +1601,16 @@ const passkeyRoutes = {
     const id = new URL(req.url, 'http://x').searchParams.get('id') || '';
     const body = await readBody(req);
     const refuse = r => json(res, r.code === 'last-way-in' ? 409 : 404, { error: r.error, code: r.code });
-    const refused = passkeyRemovalRefused(db, user.id, id, passwordWayIn(user) ? 1 : 0);
+    const refused = await passkeyRemovalRefused(pool, user.id, id, passwordWayIn(user) ? 1 : 0);
     if (refused) return refuse(refused);
     const proof = await proveOwner(req, res, user, body, 'passkey-remove');
     if (!proof) return;
     if (!(await sessionStillValid(req, user))) return notSignedIn(res);
-    if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
-    const r = removePasskeyRecord(db, user.id, id, passwordWayIn(user) ? 1 : 0);
+    const r = await removePasskey(pool, user.id, id, passwordWayIn(user) ? 1 : 0);
     if (r.error) return refuse(r);
     await dropDeviceLinks(pool, user.id);
-    saveDb();
     audit(req, 'auth.passkey.remove', { user, msg: r.row.name || null });
-    json(res, 200, { ok: true, ...passkeyState(user) });
+    json(res, 200, { ok: true, ...(await passkeyState(user)) });
   },
 
   // Makes the code another device redeems below. Same proof as adding a passkey here, because the
@@ -1619,7 +1619,7 @@ const passkeyRoutes = {
     const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
-    if (passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
+    if ((await passkeyCount(user)) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const proof = await proveOwner(req, res, user, body, 'device-link');
     if (!proof) return;
     if (!(await sessionStillValid(req, user))) return notSignedIn(res);
@@ -1651,7 +1651,7 @@ const passkeyRoutes = {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'user-unavailable' });
       return json(res, 400, LINK_INVALID);
     }
-    if (passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
+    if ((await passkeyCount(user)) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const options = await moreOptions(user);
     const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'link', lh: link.h });
     json(res, 200, { cid, options, id: user.id, name: user.name });
@@ -1689,14 +1689,15 @@ const passkeyRoutes = {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'link-invalid' });
       return json(res, 400, LINK_INVALID);
     }
-    const added = addPasskeyRecord(db, user.id, cred);
+    // Redeeming the link is itself a first use, same as the credential this profile signed up
+    // with — created and lastUsed together, not left unset until a later sign-in.
+    const now = new Date().toISOString();
+    const added = await insertPasskey(pool, user.id, { ...cred, created: now, lastUsed: now });
     if (added.error) {
       audit(req, 'auth.link.fail', { ok: false, user, msg: added.code });
       return json(res, 409, { error: added.error, code: added.code });
     }
-    added.row.lastUsed = added.row.created;
     await burnDeviceLink(pool, link.h);
-    saveDb();
     audit(req, 'auth.link.ok', { user, msg: added.row.name || null });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   }
@@ -1735,7 +1736,7 @@ function mediaThrottle(req, user, win) {
   throw new MediaError(429, 'locked', { retryAfter: wait }, { 'Retry-After': String(wait) });
 }
 // Removes files that no profile's readable state has referenced for MEDIA_GC_GRACE_DAYS. Only
-// profiles in db.json are swept, and only when their state parses (see media.js for why a
+// profiles with a users row are swept, and only when their state parses (see media.js for why a
 // missing anything never means "delete"). First pass a few minutes after boot, so an instance
 // that is redeployed more often than hourly still gets one.
 async function mediaSweepAll() {
@@ -1922,7 +1923,7 @@ const routes = {
       return json(res, 400, { error: 'not verified' });
     }
     const { credential } = verification.registrationInfo;
-    if (db.creds.find(x => x.id === credential.id)) {
+    if (await getPasskeyById(pool, credential.id)) {
       audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'credential-exists' });
       return json(res, 409, { error: 'credential already registered' });
     }
@@ -1933,29 +1934,38 @@ const routes = {
     }
     const user = { id: c.uid, name: c.name, created: new Date().toISOString() };
     if (INVITE_ONLY) user.invitedBy = c.code;
-    // createUser and consumeInvite commit or fail together — see POST /api/register/password for
-    // why (same InviteRaceError, same shape).
+    const cred = {
+      id: credential.id,
+      publicKey: Buffer.from(credential.publicKey).toString('base64url'),
+      counter: credential.counter || 0,
+      transports: body.credential?.response?.transports || [],
+      // What Settings → Passkeys shows (#95); a passkey from before then has neither.
+      created: user.created, lastUsed: user.created
+    };
+    // createUser, consumeInvite and the passkey itself commit or fail together now that all
+    // three are Postgres — see POST /api/register/password for why (same InviteRaceError, same
+    // shape); getPasskeyById above is the cheap pre-check that skips the whole transaction (and
+    // the invite it would burn) for the common case of an already-registered credential, but the
+    // insert's own unique constraint is still the real backstop against two requests racing here.
+    let added;
     try {
       await withTransaction(pool, async client => {
         await createUser(client, user);
         if (INVITE_ONLY && !(await consumeInvite(client, c.code, user.id))) throw new InviteRaceError();
+        added = await insertPasskey(client, user.id, cred);
+        if (added.error) throw new HttpError(409, added.error);
       });
     } catch (e) {
       if (e instanceof InviteRaceError) {
         audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'invite-invalid' });
         return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
       }
+      if (e instanceof HttpError) {
+        audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: added.code });
+        return json(res, e.status, { error: e.message });
+      }
       throw e;
     }
-    db.creds.push({
-      id: credential.id, userId: user.id,
-      publicKey: Buffer.from(credential.publicKey).toString('base64url'),
-      counter: credential.counter || 0,
-      transports: body.credential?.response?.transports || [],
-      // What Settings → Passkeys shows (#95); a passkey from before then has neither.
-      created: user.created, lastUsed: user.created
-    });
-    saveDb(); // the credential — db.json's for now
     audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? c.code : null });
     json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
@@ -1975,7 +1985,7 @@ const routes = {
       audit(req, 'auth.login.fail', { ok: false, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired — try again' });
     }
-    const cred = db.creds.find(x => x.id === body.credential?.id);
+    const cred = await getPasskeyById(pool, body.credential?.id);
     if (!cred) {
       // No credential id goes in the log: it is a stable handle for one passkey, and recording it
       // would let an admin correlate an unknown device across attempts. Nothing here identifies
@@ -2006,9 +2016,7 @@ const routes = {
       audit(req, 'auth.login.fail', { ok: false, user: await getUserById(pool, cred.userId), uid: cred.userId, msg: 'not-verified' });
       return json(res, 400, { error: 'not verified' });
     }
-    cred.counter = verification.authenticationInfo.newCounter;
-    cred.lastUsed = new Date().toISOString();
-    saveDb();
+    await touchPasskeyUse(pool, cred.id, verification.authenticationInfo.newCounter);
     const user = await getUserById(pool, cred.userId);
     if (!user) {
       audit(req, 'auth.login.fail', { ok: false, uid: cred.userId, msg: 'user-missing' });
@@ -2345,15 +2353,13 @@ const routes = {
     if (u.id === admin.id) return json(res, 400, { error: 'you cannot delete your own account' });
     if (isAdmin(u) && (await getAllUsers(pool)).filter(isAdmin).length <= 1) return json(res, 400, { error: 'cannot delete the last admin' });
     const name = u.name;
-    db.creds = (db.creds || []).filter(c => c.userId !== u.id);
     presence.delete(u.id);
-    // The row itself — cascades to user_state, push_subscriptions and device_links (`ON DELETE
-    // CASCADE`), same as it will for creds, just filtered out above by hand, once that moves too.
+    // The row itself — cascades to user_state, push_subscriptions, device_links and passkeys
+    // (`ON DELETE CASCADE`), the last piece of db.json to move here too.
     await deleteUser(pool, u.id);
     try { coachConfig.clearProfileAuth(u.id); } catch { /* nothing stored */ }
     // Their photos and videos — the one place a profile's folder under uploads/ is removed.
     try { MEDIA.removeUser(u.id); } catch (e) { console.error('media: could not remove uploads of', u.id, e.message); }
-    saveDb();
     // Logged with the name, because the id is about to mean nothing to anyone reading this back.
     audit(req, 'admin.user.delete', { user: admin, msg: name });
     json(res, 200, { ok: true, id: u.id });
@@ -2437,8 +2443,8 @@ const routes = {
 
   /* ---------- AI Coach ---------- */
   // Routes live in coach/routes.js and are handed the helpers above rather than importing
-  // them: they are closures over db and SECRET, and passing them in keeps that module free of
-  // a cycle. Every one of them is inert while the feature is unconfigured.
+  // them: they are closures over `pool` and SECRET, and passing them in keeps that module free
+  // of a cycle. Every one of them is inert while the feature is unconfigured.
   ...coachRoutes({ json, readBody, readSession, requireAdmin }),
 
   /* ---------- photos & videos ---------- */
@@ -2569,48 +2575,50 @@ async function listen() {
     process.exit(1);
   }
   // One-time migration of whatever db.json still holds from before this boot (an instance
-  // upgrading from a pre-1403 build, or a test fixture that seeds db.json directly) into the real
-  // users table. Two passes, same shape as scripts/import-json.js and for the same reason:
+  // upgrading from a pre-1403 build, or a test fixture that seeds db.json directly) — every
+  // collection it ever held, into PostgreSQL. Read once into a local `db`, not the module-level
+  // global the issue asked to remove: nothing after boot needs it again, since every read/write
+  // from here on is a table.
+  const db = readBootDb();
+  // Users: two passes, same shape as scripts/import-json.js and for the same reason:
   // password_reset_by is self-referential and db.json's users array has no guaranteed order, so
-  // the admin who issued a pending reset may not have a row yet on the first pass. `db.users` is
-  // dropped from memory afterwards — nothing reads or writes it again, and a stale copy would
-  // otherwise keep going out on every future saveDb(). Sequential, not Promise.all: a personal
-  // instance has few enough users that boot time is not the concern, and a boot failure here
-  // should point at one clear id.
-  const bootUsers = db.users || [];
-  for (const u of bootUsers) {
+  // the admin who issued a pending reset may not have a row yet on the first pass. Sequential, not
+  // Promise.all: a personal instance has few enough users that boot time is not the concern, and
+  // a boot failure here should point at one clear id.
+  for (const u of db.users) {
     try { await upsertUser(pool, u); } catch (e) { console.error('could not migrate user into postgres', u.id, e.message); process.exit(1); }
   }
-  for (const u of bootUsers) {
+  for (const u of db.users) {
     try { await backfillPasswordResetBy(pool, u.id, u.pwReset?.by); } catch (e) { console.error('could not backfill password_reset_by for', u.id, e.message); process.exit(1); }
   }
-  delete db.users;
   usersCache = await getAllUsers(pool);
-  // Same one-time migration, for invites — after the users pass above, so created_by/used_by
-  // (both foreign keys on users(id)) have something to reference. `db.invites` is dropped from
-  // memory afterwards for the same reason `db.users` is. A `.revoked` invite is skipped rather
-  // than imported: the live routes only ever revoke by deleting the row (there is no `revoked`
-  // column — see migrations/001), so a code already flagged that way in old db.json is gone,
-  // the same as if it had been revoked through the app itself.
+  // Invites — after the users pass above, so created_by/used_by (both foreign keys on users(id))
+  // have something to reference. A `.revoked` invite is skipped rather than imported: the live
+  // routes only ever revoke by deleting the row (there is no `revoked` column — see
+  // migrations/001), so a code already flagged that way in old db.json is gone, the same as if it
+  // had been revoked through the app itself.
   for (const i of db.invites) {
     if (i.revoked) continue;
     try { await upsertInvite(pool, i); } catch (e) { console.error('could not migrate invite into postgres', i.code, e.message); process.exit(1); }
   }
-  delete db.invites;
-  // Same idea, for push subscriptions — not fatal on failure, unlike users/invites above: a
-  // subscription this fails to carry over (a dangling userId nobody has, a malformed db.json
-  // entry) is not data anyone can lose in a way that matters, since the client re-sends its
-  // subscription itself on its next boot (lib/push.js).
+  // Push subscriptions — not fatal on failure, unlike users/invites above: a subscription this
+  // fails to carry over (a dangling userId nobody has, a malformed db.json entry) is not data
+  // anyone can lose in a way that matters, since the client re-sends its subscription itself on
+  // its next boot (lib/push.js).
   for (const s of db.subs) {
     try { await upsertSub(pool, s); } catch (e) { console.error('could not migrate push subscription into postgres', s.endpoint, e.message); }
   }
-  delete db.subs;
-  // Same idea, for device links — also not fatal: an unmigrated one just means whoever was
-  // mid-pairing has to make a new code, the same as if it had simply expired.
+  // Device links — also not fatal: an unmigrated one just means whoever was mid-pairing has to
+  // make a new code, the same as if it had simply expired.
   for (const l of db.deviceLinks) {
     try { await upsertDeviceLink(pool, l); } catch (e) { console.error('could not migrate device link into postgres', e.message); }
   }
-  delete db.deviceLinks;
+  // Passkeys — the last db.json collection. Not fatal either: a credential this fails to carry
+  // over means whoever owns it adds a new one, the same recovery as a lost security key always
+  // needed.
+  for (const c of db.creds) {
+    try { await upsertPasskey(pool, c); } catch (e) { console.error('could not migrate passkey into postgres', c.id, e.message); }
+  }
   // The port is read back off the listener rather than echoed from PORT, so the line states the
   // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose
   // it (the tests spawn the server that way, and so does anyone running two instances on one
