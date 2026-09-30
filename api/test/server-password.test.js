@@ -643,3 +643,25 @@ test('a disabled account is refused even with the right password', async t => {
   assert.equal(r.status, 403);
   assert.equal(r.cookie, null);
 });
+
+// Acceptance criterion for ISO-1403 (Phase 1b): logout revokes the session row a real login
+// issues, not just the cookie client-side — the same cookie replayed afterwards is refused, the
+// way an expired one always was. A second, still-live cookie for the same account is untouched:
+// logout is per-device, "sign out everywhere" (POST /api/logout/all) is the account-wide one.
+test('logout revokes the session: the same cookie is refused afterwards, a second one is not', async t => {
+  const h = await startServer(t, { users: [withPassword('u1', 'Ana')] });
+  const ip = '198.51.100.170';
+  const a = (await login(h, 'Ana', GOOD, ip)).cookie;
+  const b = (await login(h, 'Ana', GOOD, ip)).cookie;
+  assert.ok(a && b);
+
+  assert.equal((await h.req('GET', '/api/me', { cookie: a, ip })).status, 200);
+  const out = await h.req('POST', '/api/logout', { body: {}, cookie: a, ip });
+  assert.equal(out.status, 200);
+
+  assert.equal((await h.req('GET', '/api/me', { cookie: a, ip })).status, 401, 'the logged-out cookie is refused');
+  assert.equal((await h.req('GET', '/api/me', { cookie: b, ip })).status, 200, 'the other session is untouched');
+
+  // Logging out again with the same (now-revoked) cookie is a no-op, not an error.
+  assert.equal((await h.req('POST', '/api/logout', { body: {}, cookie: a, ip })).status, 200);
+});

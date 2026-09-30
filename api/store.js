@@ -235,3 +235,32 @@ export async function setLastReminder(pool, id, date) {
 export async function deleteUser(pool, id) {
   await pool.query('DELETE FROM users WHERE id = $1', [id]);
 }
+
+/* ---------- sessions ----------
+ * One row per cookie/bearer token actually issued by a login or registration ceremony, so
+ * POST /api/logout can revoke the one that made the request instead of the account's every
+ * session ("sign out everywhere" — POST /api/logout/all — still works the old way, by bumping
+ * users.session_version, which invalidates every session at once regardless of these rows).
+ * server.js embeds the row's id in the signed cookie payload; a cookie with no id in it (minted
+ * by a build before this table existed, or forged directly in a test without a real login) has
+ * nothing here to revoke and is read as valid by session_version alone, same as always.
+ */
+
+export async function createSession(pool, { userId, expiresAt, userAgent }) {
+  const { rows } = await pool.query(
+    'INSERT INTO sessions (user_id, expires_at, user_agent) VALUES ($1, $2, $3) RETURNING id',
+    [userId, new Date(expiresAt), userAgent ? String(userAgent).slice(0, 300) : null]
+  );
+  return rows[0].id;
+}
+
+// null for an id that was never a session (or the row aged out — nothing prunes this table yet;
+// out of scope here) — sessionOf treats that the same as a revoked or expired one.
+export async function getSession(pool, id) {
+  const { rows } = await pool.query('SELECT user_id, revoked_at FROM sessions WHERE id = $1', [id]);
+  return rows.length ? { userId: rows[0].user_id, revoked: rows[0].revoked_at != null } : null;
+}
+
+export async function revokeSession(pool, id) {
+  await pool.query('UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL', [id]);
+}

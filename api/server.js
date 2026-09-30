@@ -36,7 +36,8 @@ import {
   getUserState, getUserStateRev, putUserState,
   getUserById, getAllUsers, createUser, setPassword, removePassword, rehashPassword,
   setPasswordReset, bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder,
-  deleteUser, upsertUser, backfillPasswordResetBy
+  deleteUser, upsertUser, backfillPasswordResetBy,
+  createSession, getSession, revokeSession
 } from './store.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -440,15 +441,20 @@ function verifySig(token) {
   } catch { return null; }
   return payload;
 }
-// Session payload is `<uid>:<expiry>:<version>`, where the version is the user's `sv` counter.
-// Bumping `sv` (POST /api/logout/all) makes every cookie ever handed out for that account stop
-// verifying, which is the only revocation there was before short of deleting ./data/secret and
-// signing out the whole instance. Cookies minted before `sv` existed have no third field and are
-// read as version 0, matching a user who has never bumped — they stay valid until they expire.
+// Session payload is `<uid>:<expiry>:<version>[:<sessionId>]`. `version` is the user's `sv`
+// counter — bumping it (POST /api/logout/all) still invalidates every cookie for the account at
+// once, the way it always did. `sessionId` (ISO-1403) is a `sessions` row, for POST /api/logout to
+// revoke the one cookie that made the request instead of every one of the account's — see
+// sessionOf below for the revocation check, and store.js for the table. Cookies minted before
+// either field existed have fewer than four parts, and are read as version 0 / no session to
+// revoke, matching what they always meant — they stay valid until they expire or `sv` moves, same
+// as before this table existed. That includes every cookie a test forges directly against SECRET
+// without going through a real login: nothing here requires a `sessions` row to exist.
 const sessionVersion = user => user.sv || 0;
-function makeSession(user) {
+async function makeSession(user, userAgent) {
   const exp = Date.now() + SESSION_DAYS * 86400000;
-  return sign(user.id + ':' + exp + ':' + sessionVersion(user));
+  const sid = await createSession(pool, { userId: user.id, expiresAt: exp, userAgent });
+  return sign(`${user.id}:${exp}:${sessionVersion(user)}:${sid}`);
 }
 // With the __Host- prefix the *browser* guarantees the cookie is host-only (no Domain attribute
 // is even allowed) — which is what stops a sibling subdomain, e.g. anything-else.example.com
@@ -494,8 +500,16 @@ async function sessionOf(req) {
   if (!tok) return null;
   const payload = verifySig(tok);
   if (!payload) return null;
-  const [uid, exp, ver] = payload.split(':');
+  const [uid, exp, ver, sid] = payload.split(':');
   if (!uid || +exp < Date.now()) return null;
+  // A fourth field is a real sessions row (ISO-1403) — revoked (POST /api/logout) or gone
+  // (nothing prunes this table yet, but a wiped database would leave old cookies pointing at
+  // nothing) makes the cookie invalid regardless of what `sv` says. No fourth field: nothing to
+  // check here, same as before this table existed.
+  if (sid) {
+    const session = await getSession(pool, sid);
+    if (!session || session.revoked || session.userId !== uid) return null;
+  }
   const user = await getUserById(pool, uid);
   if (!user) return null;
   if (user.disabled) return null;           // disabled accounts are locked out everywhere
@@ -503,7 +517,7 @@ async function sessionOf(req) {
   // payload (it still had to pass the HMAC, so this is belt-and-braces) and is refused outright.
   const claimed = ver === undefined ? 0 : Number(ver);
   if (!Number.isInteger(claimed) || claimed !== sessionVersion(user)) return null;
-  return { user, exp: +exp, bearer: !cookie };
+  return { user, exp: +exp, bearer: !cookie, sid: sid || null };
 }
 async function readSession(req) {
   return (await sessionOf(req))?.user || null;
@@ -535,8 +549,8 @@ async function requireAdmin(req, res) {
   return user;
 }
 const expireCookie = name => `${name}=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
-function sessionCookie(user) {
-  const fresh = `${COOKIE}=${makeSession(user)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
+async function sessionCookie(user, userAgent) {
+  const fresh = `${COOKIE}=${await makeSession(user, userAgent)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
   // Signing in also retires any pre-upgrade cookie, so nobody is left carrying an unprefixed one
   // (or a shadowing copy of it) alongside the new session.
   return COOKIE === LEGACY_COOKIE ? [fresh] : [fresh, expireCookie(LEGACY_COOKIE)];
@@ -1184,7 +1198,7 @@ const passwordRoutes = {
       if (!fresh) return json(res, 401, WRONG);
     }
     audit(req, 'auth.password.ok', { user: fresh });
-    json(res, 200, { user: publicUser(fresh) }, { 'Set-Cookie': sessionCookie(fresh) });
+    json(res, 200, { user: publicUser(fresh) }, { 'Set-Cookie': await sessionCookie(fresh, req.headers['user-agent']) });
   },
 
   // For browsers that cannot make a passkey at all: plain http on a LAN address, some Firefox
@@ -1247,7 +1261,7 @@ const passwordRoutes = {
     }
     saveDb(); // the invite's usedBy/usedAt, still db.json's for now
     audit(req, 'auth.register.ok', { user, msg: inv ? inv.code + ' · password' : 'password' });
-    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   // What Settings shows: whether a password is set, and whether it could be removed.
@@ -1286,8 +1300,8 @@ const passwordRoutes = {
     ACCOUNT_FAILS.clear(acctKey(user));
     audit(req, first ? 'auth.password.set' : 'auth.password.change', { user, msg: proof });
     // This session carries on under the new version: a new cookie, or a new token for a phone.
-    if (s.bearer) return json(res, 200, { ok: true, token: makeSession(user) });
-    json(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(user) });
+    if (s.bearer) return json(res, 200, { ok: true, token: await makeSession(user, req.headers['user-agent']) });
+    json(res, 200, { ok: true }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   // Never the last way in: a profile with no passkey keeps its password, because nothing else
@@ -1435,7 +1449,7 @@ const passwordRoutes = {
     await changePassword(user, h);
     ACCOUNT_FAILS.clear(acctKey(user));
     audit(req, 'auth.password.reset', { user });
-    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   }
 };
 
@@ -1679,7 +1693,7 @@ const passkeyRoutes = {
     burnDeviceLink(db, link);
     saveDb();
     audit(req, 'auth.link.ok', { user, msg: added.row.name || null });
-    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   }
 };
 
@@ -1852,7 +1866,7 @@ const routes = {
     if (!s) return json(res, 401, { error: 'not signed in' });
     const { user } = s;
     const renew = s.bearer && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) }, ...(renew ? { token: makeSession(user) } : {}) });
+    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) }, ...(renew ? { token: await makeSession(user, req.headers['user-agent']) } : {}) });
   },
 
   'POST /api/register/options': async (req, res) => {
@@ -1929,7 +1943,7 @@ const routes = {
     });
     saveDb(); // the credential, and the invite's usedBy/usedAt — both still db.json's for now
     audit(req, 'auth.register.ok', { user, msg: invite ? invite.code : null });
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': sessionCookie(user) });
+    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   'POST /api/login/options': async (req, res) => {
@@ -1991,14 +2005,20 @@ const routes = {
       return json(res, 403, { error: 'this account has been disabled' });
     }
     audit(req, 'auth.login.ok', { user });
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': sessionCookie(user) });
+    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
-  // Reads the session purely so the sign-out can be recorded; the cookie is cleared either way.
-  // A logout with no valid cookie is a no-op and isn't worth an entry.
+  // Revokes the session row this cookie names (ISO-1403) — a real logout, not just clearing the
+  // cookie client-side: the same token replayed after this is refused by sessionOf's revocation
+  // check, same as if it had expired. A cookie with no session row to revoke (minted before this
+  // table existed) still just gets cleared, as logout always did before. A logout with no valid
+  // session at all is a no-op and isn't worth an audit entry.
   'POST /api/logout': async (req, res) => {
-    const user = await readSession(req);
-    if (user) audit(req, 'auth.logout', { user });
+    const s = await sessionOf(req);
+    if (s) {
+      audit(req, 'auth.logout', { user: s.user });
+      if (s.sid) await revokeSession(pool, s.sid);
+    }
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
 
@@ -2047,7 +2067,7 @@ const routes = {
       return json(res, 400, { error: 'invalid or expired code' });
     }
     audit(req, 'auth.pair.ok', { user });
-    json(res, 200, { token: makeSession(user), user: { id: user.id, name: user.name, admin: isAdmin(user) } });
+    json(res, 200, { token: await makeSession(user, req.headers['user-agent']), user: { id: user.id, name: user.name, admin: isAdmin(user) } });
   },
 
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.

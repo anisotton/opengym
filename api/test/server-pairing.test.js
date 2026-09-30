@@ -55,9 +55,10 @@ test('logout/all invalidates the account\'s outstanding pairing codes and nobody
   // the other account's code is untouched
   assert.equal((await redeem(other)).status, 200);
 
-  // and a code minted after the sign-out (session version 1 now) redeems for a token of that version
+  // and a code minted after the sign-out (session version 1 now) redeems for a token of that
+  // version — with a fourth field now (ISO-1403): the sessions row this token can be revoked by.
   const fresh = await redeem(await create('u_test_1', 1));
   assert.equal(fresh.status, 200);
   const { token } = await fresh.json();
-  assert.match(token.split('.')[0], /^u_test_1:\d+:1$/);
+  assert.match(token.split('.')[0], /^u_test_1:\d+:1:[0-9a-f-]{36}$/);
 });

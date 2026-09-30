@@ -97,8 +97,15 @@ A profile's training data (`GET`/`PUT /api/data`, `GET /api/data/rev`) and `user
 in PostgreSQL (`store.js`) — `user_state.rev` is an optimistic-concurrency counter, and `PUT` is a
 lock-free compare-and-set that retries against the fresh row on a lost race rather than losing a
 concurrent write; `session_version` invalidates every cookie for an account at once the same way it
-always did, just read from Postgres on every request now instead of an in-memory object (ISO-1403,
-Phase 1b). A helper worth knowing before touching auth code: `sessionStillValid(req, user, sv?)`
+always did, just read from Postgres on every request now instead of an in-memory object. A login
+or registration also creates a row in Postgres' `sessions` table and embeds its id as a fourth
+`:`-separated field in the signed cookie/bearer payload (`uid:exp:sv:sessionId`); `POST /api/logout`
+revokes that one row, so the same cookie replayed afterwards is refused — a real per-device logout,
+not just clearing the cookie client-side. A payload with no fourth field (minted by a build before
+this table existed, or a cookie forged directly against `secret` without a real login, as most of
+the test suite still does for speed) has nothing to revoke individually and is read as valid by
+`session_version` alone, exactly as before (ISO-1403, Phase 1b). A helper worth knowing before
+touching auth code: `sessionStillValid(req, user, sv?)`
 re-checks a session by account id and session version, not object identity — every read is its own
 row now, not a live reference into a shared array, so the old `readSession(req) !== user` idiom
 from before this migration can no longer tell a changed account from an unchanged one. `db.json`
