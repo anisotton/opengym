@@ -1,9 +1,10 @@
-/* server.js's PostgreSQL boot path (ISO-1402): connects and migrates before listening when
- * DATABASE_URL is set, refuses to boot on a connection/migration failure, and does not reapply
- * migrations on a second boot against the same database. DATABASE_URL unset (every other test
- * file in this suite) is covered implicitly — none of them fail, and none of them talk to
- * PostgreSQL at all. Needs a real PostgreSQL — provisionTestDatabase() throws a clear error
- * without TEST_DATABASE_URL. */
+/* server.js's PostgreSQL boot path: connects and migrates before listening, refuses to boot on a
+ * connection/migration failure, and does not reapply migrations on a second boot against the same
+ * database. DATABASE_URL became mandatory in ISO-1403 (Phase 1b) — GET/PUT /api/data have nothing
+ * else to read or write — so every other test file in this suite provisions one too now (see
+ * spawnApi in helpers.mjs); this file is what actually pins the boot-time behaviour, including the
+ * unset case. Needs a real PostgreSQL — provisionTestDatabase() throws a clear error without
+ * TEST_DATABASE_URL. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -82,5 +83,20 @@ test('refuses to boot — never opens a port — when DATABASE_URL cannot be rea
   const [code] = await new Promise(resolve => child.once('exit', (c, s) => resolve([c, s])));
   assert.equal(code, 1);
   assert.match(log, /postgres connection\/migration failed/);
+  assert.doesNotMatch(log, /gym-api on :/);
+});
+
+test('refuses to boot — never opens a port — when DATABASE_URL is unset', async t => {
+  const dataDir = tempDir();
+  const env = { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost' };
+  delete env.DATABASE_URL;
+  const child = spawn(process.execPath, ['server.js'], { cwd: API, stdio: ['ignore', 'pipe', 'pipe'], env });
+  let log = '';
+  child.stdout.on('data', d => log += d);
+  child.stderr.on('data', d => log += d);
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const [code] = await new Promise(resolve => child.once('exit', (c, s) => resolve([c, s])));
+  assert.equal(code, 1);
+  assert.match(log, /DATABASE_URL is required/);
   assert.doesNotMatch(log, /gym-api on :/);
 });

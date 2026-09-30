@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
 /* The port a spawned server.js actually bound.
@@ -51,8 +53,62 @@ export function tempData() {
   return dir;
 }
 
+// Coach (api/coach/jobs.js) still reads state-<uid>.json directly — untouched by ISO-1403 Phase
+// 1b, which only moved server.js's own GET/PUT /api/data onto PostgreSQL's user_state table (see
+// seedUserState below). Coach test fixtures keep using this.
 export function writeState(dir, uid, S) {
   fs.writeFileSync(path.join(dir, 'state-' + uid + '.json'), JSON.stringify(S));
+}
+
+/* Spawning server.js for a test (ISO-1403). DATABASE_URL is mandatory now — GET/PUT /api/data has
+ * nothing else to read or write — so every test that starts a real server needs a database, not
+ * just the ones that previously cared about PostgreSQL. `spawnApi` is the one place that does
+ * both provisioning and spawning, so a test file states its DATA_DIR/db.json fixture and its env
+ * overrides and gets a running server back; `t.after` teardown (kill the child, drop the
+ * database) is registered here too, so a test cannot forget it.
+ *
+ * `dataDir`, if omitted, is a fresh tempData() — most callers only care about DATABASE_URL being
+ * there; a handful seed their own db.json first and pass the directory in.
+ */
+export async function spawnApi(t, { dataDir, env = {} } = {}) {
+  const dir = dataDir || tempData();
+  const { databaseUrl, cleanup } = await provisionTestDatabase();
+  t.after(cleanup);
+  const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env, PORT: '0', DATA_DIR: dir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost',
+      DATABASE_URL: databaseUrl, ...env
+    }
+  });
+  const h = { log: '', dataDir: dir, databaseUrl };
+  child.stdout.on('data', d => h.log += d);
+  child.stderr.on('data', d => h.log += d);
+  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }); });
+  h.port = await boundPort(child, () => h.log);
+  h.api = `http://127.0.0.1:${h.port}`;
+  h.child = child;
+  return h;
+}
+
+// A direct Postgres connection to a spawned server's own database — for tests that assert on the
+// user_state row itself (a 409's payload is one thing; that nothing was written on a refused PUT
+// is another). Caller's job to end() it, or better, hand it to t.after.
+export function testPool(databaseUrl) {
+  return new pg.Pool({ connectionString: databaseUrl });
+}
+
+export async function seedUserState(databaseUrl, userId, state, rev = 1) {
+  const p = new pg.Pool({ connectionString: databaseUrl });
+  try {
+    await p.query(
+      'INSERT INTO user_state (user_id, state, rev) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET state = $2, rev = $3',
+      [userId, state, rev]
+    );
+  } finally {
+    await p.end();
+  }
 }
 
 /* PostgreSQL harness (ISO-1402). TEST_DATABASE_URL points at an admin/maintenance connection

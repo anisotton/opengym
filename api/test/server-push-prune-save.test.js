@@ -11,13 +11,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundPort } from './helpers.mjs';
+import { tempData, spawnApi, seedUserState } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 
 function mintSession(uid) {
@@ -27,7 +23,7 @@ function mintSession(uid) {
 const cookie = { Cookie: `gymsid=${mintSession('u_test_1')}` };
 
 async function startServer(t) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-pushprune-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     users: [{ id: 'u_test_1', name: 'One', created: new Date().toISOString() }],
@@ -35,28 +31,15 @@ async function startServer(t) {
     // a private address: refused at send time and pruned, no socket opened
     subs: [{ userId: 'u_test_1', endpoint: 'https://10.1.2.3/push/abc', keys: { p256dh: 'p', auth: 'a' }, created: new Date().toISOString() }]
   }));
-  fs.writeFileSync(path.join(dataDir, 'state-u_test_1.json'), JSON.stringify({ _rev: 1, lang: 'en', workouts: [], routines: [] }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    // AUDIT_LOG off and the reminder tick parked: the only write this test wants to fail is the prune's
-    env: {
-      ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost',
-      AUDIT_LOG: '0', REMINDER_TICK_MS: '100000'
-    }
-  });
-  const h = { api: '', dataDir, log: '', exited: null };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  child.on('exit', (code, signal) => { h.exited = { code, signal }; });
-  t.after(() => {
-    try { fs.chmodSync(dataDir, 0o700); } catch { /* already restored */ }
-    child.kill('SIGKILL');
-    fs.rmSync(dataDir, { recursive: true, force: true });
-  });
-  // The boot line carries the port the listener bound, so it is both the address and the
-  // readiness signal — see boundPort in helpers.mjs for why the test does not pick one.
-  h.port = await boundPort(child, () => h.log);
-  h.api = `http://127.0.0.1:${h.port}`;
+  // node:test runs t.after hooks in registration order, so this has to be registered before
+  // spawnApi's own t.after (kill + rmSync) — otherwise rmSync hits the directory while it is
+  // still the 0500 a test left it in.
+  t.after(() => { try { fs.chmodSync(dataDir, 0o700); } catch { /* already restored */ } });
+  // AUDIT_LOG off and the reminder tick parked: the only write this test wants to fail is the prune's
+  const h = await spawnApi(t, { dataDir, env: { AUDIT_LOG: '0', REMINDER_TICK_MS: '100000' } });
+  await seedUserState(h.databaseUrl, 'u_test_1', { lang: 'en', workouts: [], routines: [] });
+  h.exited = null;
+  h.child.on('exit', (code, signal) => { h.exited = { code, signal }; });
   return h;
 }
 const unwritable = h => fs.chmodSync(h.dataDir, 0o500);

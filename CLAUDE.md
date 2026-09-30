@@ -91,20 +91,27 @@ signed Android APK, and deploys the demo/docs site. The Gitea and GitHub workflo
 
 Single file, no framework, plain `node:http`. Requests are dispatched through a `routes` object
 keyed by `'METHOD /path'` (e.g. `routes['GET /api/health']`) matched against `req.method + ' ' +
-url.pathname` — add a new endpoint by adding a key here. State is two flat JSON files under
-`DATA_DIR` (`db.json`: users/credentials/subscriptions/invites; `state-<uid>.json`: per-user
-workout data), written with a write-temp-then-rename atomic pattern (`atomicWrite`). Auth is
+url.pathname` — add a new endpoint by adding a key here. `DATABASE_URL` is mandatory: `db.js`
+connects to PostgreSQL and applies `migrations/NNN_*.sql` before the server starts listening.
+A profile's training data (`GET`/`PUT /api/data`, `GET /api/data/rev`) lives in Postgres'
+`user_state` table (`store.js`) — `rev` is an optimistic-concurrency counter, and `PUT` is a
+lock-free compare-and-set that retries against the fresh row on a lost race rather than losing a
+concurrent write (ISO-1403, Phase 1b). `db.json` (users/credentials/push subscriptions/invites/
+device links) has **not** moved yet — that's the rest of ISO-1403, in a later run — and is still a
+flat file under `DATA_DIR`, written with a write-temp-then-rename atomic pattern (`atomicWrite`);
+`store.js` also keeps a minimal `users` mirror (id + name only) in Postgres purely so `user_state`
+rows have something to satisfy their foreign key against until db.json's users move for real.
+`api/coach/jobs.js` still reads `state-<uid>.json` directly for the same reason and is not
+migrated by this pass — a real gap until it moves too (see the issue's final comment). Auth is
 WebAuthn passkeys (`@simplewebauthn/server`) plus a signed session cookie (HMAC'd with a
 `DATA_DIR/secret` generated on first boot) — no JWT/session-store dependency. Optional pieces
 gated by env vars: `ADMIN_UIDS` (admin dashboard), `INVITE_ONLY` (signup needs a code),
 `ALLOW_GUEST` (client-only guest mode never hits the server at all), plus a rotating
 `data/audit.log` (JSONL) for sign-in/admin events. Web Push (`web-push`, VAPID keys
 auto-generated into `data/vapid.json`) drives rest-timer-over and day-reminder notifications.
-`db.js` connects to PostgreSQL (`DATABASE_URL`) and applies `migrations/NNN_*.sql` before the
-server starts listening — foundation laid in Phase 1a (ISO-1402) for the actual db.json/
-state-*.json read/write switch in Phase 1b (ISO-1403); `DATABASE_URL` is optional today, so the
-existing file-based test suite is unaffected. `api/scripts/test-with-pg.sh` (`npm run test:pg`)
-runs the suite against an ephemeral Postgres for the tests that do exercise it.
+`api/scripts/test-with-pg.sh` (`npm run test:pg`) starts an ephemeral Postgres and runs the whole
+suite against it — every test that spawns `server.js` needs one now, not just the ones that used
+to exercise PostgreSQL directly.
 
 ### MCP server (`mcp/src`)
 

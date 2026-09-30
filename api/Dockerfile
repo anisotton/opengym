@@ -53,7 +53,7 @@ RUN npm ci --omit=dev --omit=optional && npm cache clean --force
 
 # Every module server.js imports from the api root has to be named here: the image carries nothing
 # else, and one that is missing only shows at boot, as ERR_MODULE_NOT_FOUND.
-COPY server.js push-messages.js verify-error.js password.js rate-limit.js passkeys-store.js device-link.js media.js db.js ./
+COPY server.js push-messages.js verify-error.js password.js rate-limit.js passkeys-store.js device-link.js media.js db.js store.js ./
 COPY coach ./coach
 # db.js reads these off disk at boot (runMigrations) rather than importing them, so
 # dockerfile-copy.test.js's import walk can't see the dependency — copied here instead.

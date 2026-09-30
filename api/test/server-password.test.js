@@ -7,14 +7,10 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { hashPassword, hashResetCode } from '../password.js';
-import { boundPort } from './helpers.mjs';
+import { tempData, spawnApi } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 const ORIGIN = 'http://localhost:8080';
 const b64u = b => Buffer.from(b).toString('base64url');
@@ -67,23 +63,13 @@ const hashAt = (pw, ln) => new Promise((resolve, reject) => {
 
 async function startServer(t, { env = {}, users = [], creds = [], invites = [] } = {}) {
   pwHash ??= await hashPassword(GOOD);
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-pw-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({ users, creds, subs: [], invites }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN, RP_ID: 'localhost',
-      PASSWORD_LOGIN: '1', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env
-    }
+  const h = await spawnApi(t, {
+    dataDir,
+    env: { ORIGIN, PASSWORD_LOGIN: '1', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env }
   });
-  const h = { api: '', log: '', dataDir };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  // The boot line carries the port the listener bound, so it is both the address and the
-  // readiness signal — see boundPort in helpers.mjs for why the test does not pick one.
-  h.api = `http://127.0.0.1:${await boundPort(child, () => h.log)}`;
   // Every request looks like the app talking to its own backend unless a test says otherwise.
   h.req = async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
     const r = await fetch(`${h.api}${p}`, {

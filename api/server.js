@@ -32,15 +32,21 @@ import {
 import { createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks } from './device-link.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
 import { connectAndMigrate } from './db.js';
+import { syncUser, getUserState, getUserStateRev, putUserState } from './store.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
-// Phase 1 (ISO-1387/1402): the API connects and migrates PostgreSQL at boot, ahead of the actual
-// switch (ISO-1403) — every read/write below this still goes through db.json/state-<uid>.json.
-// Optional for now so the existing file-based test suite (none of it sets DATABASE_URL) keeps
-// booting exactly as before; the bundled docker-compose.yml always sets it, and Phase 1b will
-// make it mandatory once the API actually depends on it.
+// Phase 1b (ISO-1403): a profile's training data (state-<uid>.json) now lives in PostgreSQL's
+// user_state table (store.js) — mandatory from here on, since GET/PUT /api/data have nothing else
+// to read or write to. db.json (users/creds/subs/invites/deviceLinks) has not moved yet — that is
+// the rest of this issue, in a later run — so `pool` also carries a minimal mirror of `users`
+// (id + name only) purely to satisfy user_state's foreign key until it does.
 const DATABASE_URL = process.env.DATABASE_URL || '';
+if (!DATABASE_URL) {
+  console.error('DATABASE_URL is required (PostgreSQL holds profile state — see docs/SELF_HOSTING.md)');
+  process.exit(1);
+}
+let pool; // set once connectAndMigrate() resolves, in listen() below
 const RP_ID = process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
 const RP_NAME = process.env.RP_NAME || 'Brilhart Fitness';
@@ -116,7 +122,6 @@ function atomicWrite(file, content, mode) {
   fs.writeFileSync(tmp, content, mode ? { mode } : undefined);
   fs.renameSync(tmp, file);
 }
-const stateFile = uid => path.join(DATA, 'state-' + uid.replace(/[^a-zA-Z0-9_-]/g, '') + '.json');
 // When a profile last fetched its document (GET /api/data). The document's own `_ts` moves only
 // on a push, so a device that only ever read — a second phone, a profile that trains elsewhere
 // and just looks — showed "last sync never" in the admin dashboard (QA 1.3.9). Kept on the user
@@ -129,8 +134,12 @@ function notePull(user, now = Date.now()) {
 }
 // The later of the last push and the last pull.
 const lastSyncOf = (u, S) => Math.max(S?._ts || 0, u?.lastPull || 0) || null;
-function readState(uid) {
-  try { return JSON.parse(fs.readFileSync(stateFile(uid), 'utf8')); } catch { return null; }
+// A profile's training data (ISO-1403) — PostgreSQL's user_state table, not state-<uid>.json.
+// Kept as its own async function, rather than calling getUserState(pool, uid) at every call site,
+// so callers that only want the document (media.js's injected readState, the reminder tick, the
+// admin views) do not also have to know about `pool` or unwrap `{ state, rev }` themselves.
+async function readState(uid) {
+  return (await getUserState(pool, uid)).state;
 }
 // An entry is an object a reader can dereference, and `records` is every entry of a stored
 // list. PUT /api/data drops the rest on the way in — a null workout, a routine that is a
@@ -365,46 +374,19 @@ const hhmmToMin = v => {
 // Minutes since the reminder's time on the user's clock; negative before it, NaN when either
 // side does not parse. Same-day only — a 23:55 reminder is not owed at 00:05 the next day.
 const minutesLate = (time, now) => hhmmToMin(now.hhmm) - hhmmToMin(time);
-// The tick reads every subscribed user's state file every 10 s. Most of those files do not
-// change between ticks; a stat is far cheaper than a read and a parse of a state that can be
-// megabytes, and it keeps the tick short — a slow tick was one more way to miss the minute.
-//
-// What it holds is a whole parsed state per user, and a state can be megabytes, so the two
-// bounds below are what keep it a cache rather than a leak on an instance with more than one
-// person on it: an entry nobody has touched for ten minutes is dropped, and the map never holds
-// more than STATE_CACHE_MAX users. Map iteration order is insertion order, so re-inserting on
-// every hit makes the first key the least recently hit one — which is the one to evict.
-const STATE_CACHE_MAX = 64;
-// Ten minutes: far longer than the gap between a client's polls (30 s) or the reminder tick's
-// (10 s), so nobody who is actually using the instance is ever evicted by age; the tests shorten
-// it, as they do REMINDER_TICK_MS.
-const STATE_CACHE_TTL_MS = Math.max(50, +(process.env.STATE_CACHE_TTL_MS || 600000) || 600000);
-const stateCache = new Map(); // uid -> { mtimeMs, size, hitAt, S }
-function readStateCached(uid) {
-  let st;
-  try { st = fs.statSync(stateFile(uid)); } catch { stateCache.delete(uid); return null; }
-  const now = Date.now();
-  for (const [k, v] of stateCache) if (now - v.hitAt > STATE_CACHE_TTL_MS) stateCache.delete(k);
-  const hit = stateCache.get(uid);
-  stateCache.delete(uid);                       // re-inserted below, so the map stays in hit order
-  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
-    hit.hitAt = now;
-    stateCache.set(uid, hit);
-    return hit.S;
-  }
-  const S = readState(uid);
-  stateCache.set(uid, { mtimeMs: st.mtimeMs, size: st.size, hitAt: now, S });
-  while (stateCache.size > STATE_CACHE_MAX) stateCache.delete(stateCache.keys().next().value);
-  return S;
-}
-setInterval(() => {
+// The tick reads every subscribed user's state every 10 s. It used to hold a file-stat cache here
+// (mtime/size keyed) because parsing a multi-MB JSON file off disk on every pass was the expensive
+// part; a `SELECT state FROM user_state` does not pay that cost; Postgres, not this process, is
+// what decides how a query the size doesn't change gets served twice in a row.
+setInterval(async () => {
   for (const user of db.users) {
     if (!db.subs.some(s => s.userId === user.id)) continue;
-    // One user's state file is one user's problem: a shape this tick cannot read is logged and
+    // One user's state is one user's problem: a shape this tick cannot read is logged and
     // skipped, not allowed to take the process — and everyone else's reminders — down with it.
-    // PUT /api/data refuses the obvious shapes, but a file already on disk answers to nobody.
+    // PUT /api/data refuses the obvious shapes, but a document written before it did answers to
+    // nobody.
     try {
-      const S = readStateCached(user.id);
+      const S = await readState(user.id);
       if (!S?.reminder?.on) continue;
       const now = userNow(S.reminder.tz || 'UTC');
       if (!now) continue;
@@ -1190,6 +1172,10 @@ const passwordRoutes = {
     if (inv) { user.invitedBy = inv.code; inv.usedBy = user.id; inv.usedAt = created; }
     db.users.push(user);
     saveDb();
+    // Mirrors id+name into Postgres so a later PUT /api/data has a row to satisfy user_state's
+    // foreign key against — see store.js. Best-effort: db.json is still what registration itself
+    // depends on, so a Postgres hiccup here must not turn a created account into a failed signup.
+    try { await syncUser(pool, user); } catch (e) { console.error('could not mirror user into postgres', user.id, e.message); }
     audit(req, 'auth.register.ok', { user, msg: inv ? inv.code + ' · password' : 'password' });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
   },
@@ -1650,9 +1636,9 @@ function mediaThrottle(req, user, win) {
 // profiles in db.json are swept, and only when their state parses (see media.js for why a
 // missing anything never means "delete"). First pass a few minutes after boot, so an instance
 // that is redeployed more often than hourly still gets one.
-function mediaSweepAll() {
+async function mediaSweepAll() {
   try {
-    const r = MEDIA.sweepAll({ uids: db.users.map(u => u.id) });
+    const r = await MEDIA.sweepAll({ uids: db.users.map(u => u.id) });
     if (r.removed || r.tmp) console.log(`media: swept ${r.removed} unreferenced file(s), ${(r.freedBytes / 1048576).toFixed(1)} MB, ${r.tmp} stale upload(s)`);
   } catch (e) { console.error('media: sweep failed', e); }
 }
@@ -1729,7 +1715,7 @@ const mediaRoutes = {
     if (!user) return json(res, 401, { error: 'not signed in' });
     await readBody(req);
     mediaThrottle(req, user, MEDIA_SWEEPS);
-    const r = MEDIA.sweep(user.id, { graceMs: 0 });
+    const r = await MEDIA.sweep(user.id, { graceMs: 0 });
     audit(req, 'media.sweep', { user, msg: `${r.removed} file(s), ${(r.freedBytes / 1048576).toFixed(1)} MB${r.skipped ? ', state unreadable' : ''}` });
     json(res, 200, { removed: r.removed, freedBytes: r.freedBytes, usage: MEDIA.usage(user.id) });
   }
@@ -1859,6 +1845,8 @@ const routes = {
       created: user.created, lastUsed: user.created
     });
     saveDb();
+    // See the password registration route above for why this is best-effort.
+    try { await syncUser(pool, user); } catch (e) { console.error('could not mirror user into postgres', user.id, e.message); }
     audit(req, 'auth.register.ok', { user, msg: invite ? invite.code : null });
     json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': sessionCookie(user) });
   },
@@ -1988,25 +1976,24 @@ const routes = {
   ...passkeyRoutes,
 
   // `rev` is the server's own count of writes to this profile (also stored inside the document as
-  // `_rev`, so every other reader of the file — reminder tick, admin, Coach, MCP — is unaffected).
-  // A client pushes it back as `baseRev`, and a write over a document it never saw is refused.
+  // `_rev`, so every other reader — reminder tick, admin, Coach, MCP — is unaffected). A client
+  // pushes it back as `baseRev`, and a write over a document it never saw is refused.
   'GET /api/data': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    const state = readState(user.id);
+    const { state, rev } = await getUserState(pool, user.id);
     notePull(user);
-    json(res, 200, { state, rev: state?._rev || 0 });
+    json(res, 200, { state, rev });
   },
   // Just the revision: the client asks this every half minute while it is open and on every
   // return to the foreground, and fetches the document only when the number moved — a signed-in
-  // device is meant to show what the server has, and this is what keeps that cheap.
-  // Cheap means the stat cache the reminder tick already uses: parsing a megabytes-long document
-  // to read one number off it cost 31 ms per poll on a 2.4 MB state, all of it on the event loop.
-  // Every write goes through atomicWrite's rename, so the cache can never hand out a stale rev.
+  // device is meant to show what the server has, and this is what keeps that cheap. A narrow
+  // `SELECT rev` never touches the (possibly multi-MB) state column, so this needs no cache of
+  // its own the way the file-stat one used to.
   'GET /api/data/rev': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    json(res, 200, { rev: readStateCached(user.id)?._rev || 0 });
+    json(res, 200, { rev: await getUserStateRev(pool, user.id) });
   },
 
   'PUT /api/data': async (req, res) => {
@@ -2026,10 +2013,10 @@ const routes = {
       return json(res, 400, { error: 'state required' });
     }
     // The reminder tick and the admin routes iterate these two on the server's side, so a truthy
-    // non-array would throw there on every pass for as long as it sat on disk. Absent or null is
+    // non-array would throw there on every pass for as long as it was stored. Absent or null is
     // fine — every client fills its own defaults. An array is `typeof 'object'` but no document:
-    // `_rev` set on it is dropped by JSON.stringify, so the file would read back as rev 0 while
-    // the response claimed the next revision.
+    // `_rev` set on it is dropped by JSON.stringify, so it would read back as rev 0 while the
+    // response claimed the next revision.
     const list = v => v == null || Array.isArray(v);
     if (Array.isArray(body.state) || !list(body.state.workouts) || !list(body.state.routines)) return json(res, 400, { error: 'invalid state' });
     // The same readers walk every entry (`w.d`, `w.name`). They skip what is not an entry now
@@ -2037,46 +2024,42 @@ const routes = {
     // such an entry carries nothing worth keeping, whereas a 400 would strand a client whose own
     // copy is already malformed — it keeps re-sending the same document and never syncs again.
     for (const k of ['workouts', 'routines']) if (Array.isArray(body.state[k])) body.state[k] = records(body.state[k]);
-    // Conditional write: a `baseRev` that is not the current revision means this client last
-    // read an older document — another device has written since — and the copy it is about to
-    // push would silently drop that write. The current document travels back with the 409, so
-    // the client can merge and try again without a second request. No `baseRev` (a client from
-    // before revisions, or a deliberate replace such as a backup import) overwrites, as before.
-    // readState and atomicWrite are synchronous with nothing awaited between them, so the
-    // compare-and-write is atomic for this process.
-    const cur = readState(user.id);
-    const curRev = cur?._rev || 0;
-    if (body.baseRev != null && body.baseRev !== curRev) {
-      return json(res, 409, { error: 'conflict', rev: curRev, state: cur });
-    }
-    delete body.state.active;              // in-progress workouts stay device-local
-    // "Reset everything" stamps the profile (`resetAt`, with `resetIds`: what it wiped). The stamp
-    // only moves forward: a write without it, or with an older one — a client from before it, a
-    // backup restored over the profile — keeps the stored stamp. Otherwise every device that saw
-    // the reset would take that copy for one older than the reset, and wipe it again on its next
-    // merge (frontend/src/lib/sync-merge.js).
-    const storedReset = Number(cur?.resetAt) || 0;
-    if (storedReset > (Number(body.state.resetAt) || 0)) {
-      body.state.resetAt = cur.resetAt;
-      if (cur.resetIds && typeof cur.resetIds === 'object') body.state.resetIds = cur.resetIds;
-      else delete body.state.resetIds;
-    }
-    body.state._rev = curRev + 1;          // server-owned; whatever the client sent is ignored
-    atomicWrite(stateFile(user.id), JSON.stringify(body.state));
-    // The stat cache cannot see this write on its own: mtime granularity is 4 ms here (ext4 on
-    // this kernel — 3901 of 3999 back-to-back same-size writes shared one timestamp), and a
-    // `_rev` going from 7 to 8 does not change the file's size, so two writes inside one 4 ms
-    // tick are the same (mtimeMs, size) key. A reader that sampled between them would then serve
-    // the old revision until some later write happened to land on a different tick. This is the
-    // only writer of a state file in the tree, so evicting here is the whole fix.
-    stateCache.delete(user.id);
+    // Conditional write: a `baseRev` that is not the current revision means this client last read
+    // an older document — another device has written since — and the copy it is about to push
+    // would silently drop that write. The current document travels back with the 409, so the
+    // client can merge and try again without a second request. No `baseRev` (a client from before
+    // revisions, or a deliberate replace such as a backup import) overwrites, as before.
+    // putUserState (store.js) is the compare-and-set: it reads the row, hands it to `decide`
+    // below, and only writes if `rev` still matches what `decide` saw — a concurrent write from
+    // another device between the read and the write is retried against the fresh row rather than
+    // silently lost, which a plain read-then-write across an await could otherwise allow here in
+    // a way the old synchronous file version never could.
+    const result = await putUserState(pool, user.id, (cur, curRev) => {
+      if (body.baseRev != null && body.baseRev !== curRev) return { conflict: true };
+      const next = { ...body.state };
+      delete next.active;                  // in-progress workouts stay device-local
+      // "Reset everything" stamps the profile (`resetAt`, with `resetIds`: what it wiped). The
+      // stamp only moves forward: a write without it, or with an older one — a client from before
+      // it, a backup restored over the profile — keeps the stored stamp. Otherwise every device
+      // that saw the reset would take that copy for one older than the reset, and wipe it again
+      // on its next merge (frontend/src/lib/sync-merge.js).
+      const storedReset = Number(cur?.resetAt) || 0;
+      if (storedReset > (Number(next.resetAt) || 0)) {
+        next.resetAt = cur.resetAt;
+        if (cur.resetIds && typeof cur.resetIds === 'object') next.resetIds = cur.resetIds;
+        else delete next.resetIds;
+      }
+      next._rev = curRev + 1;              // server-owned; whatever the client sent is ignored
+      return { state: next };
+    });
+    if (result.conflict) return json(res, 409, { error: 'conflict', rev: result.rev, state: result.state });
     // Starts (or stops) the grace clock of every stored file this write stopped (or started)
     // referencing. Bookkeeping only: the state is already saved, so nothing here may turn a
     // successful write into an error.
     if (MEDIA_ON) {
-      try { MEDIA.noteState(user.id, body.state); } catch (e) { console.error('media noteState', e); }
+      try { MEDIA.noteState(user.id, result.state); } catch (e) { console.error('media noteState', e); }
     }
-    json(res, 200, { ok: true, ts: body.state._ts || null, rev: body.state._rev });
+    json(res, 200, { ok: true, ts: result.state._ts || null, rev: result.rev });
   },
 
   'GET /api/push/public-key': async (req, res) => json(res, 200, { key: vapid.publicKey }),
@@ -2133,7 +2116,7 @@ const routes = {
   'POST /api/push/test': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    await sendPush(user.id, testPush(readStateCached(user.id)?.lang));
+    await sendPush(user.id, testPush((await readState(user.id))?.lang));
     json(res, 200, { ok: true });
   },
 
@@ -2148,7 +2131,7 @@ const routes = {
     const n = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN;
     if (!(n >= 1)) return json(res, 400, { error: 'seconds required' });
     const sec = Math.min(3600, Math.round(n));
-    scheduleRestTimer(user.id, deviceIdOf(body.deviceId), sec, readStateCached(user.id)?.lang);
+    scheduleRestTimer(user.id, deviceIdOf(body.deviceId), sec, (await readState(user.id))?.lang);
     json(res, 200, { ok: true });
   },
 
@@ -2178,11 +2161,12 @@ const routes = {
   },
 
   /* ---------- admin dashboard ---------- */
-  // One row per user, cheap enough for a personal instance (reads each state file once).
+  // One row per user, cheap enough for a personal instance (one user_state query each, in
+  // parallel — Postgres, not a directory of files, is what's paying for these now).
   'GET /api/admin/users': async (req, res) => {
     if (!requireAdmin(req, res)) return;
-    const users = db.users.map(u => {
-      const S = readState(u.id) || {};
+    const users = await Promise.all(db.users.map(async u => {
+      const S = (await readState(u.id)) || {};
       const workouts = records(S.workouts);
       const last = workouts[workouts.length - 1];
       return {
@@ -2197,7 +2181,7 @@ const routes = {
         // profiles apart), and only while the instance takes passwords at all.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null } : {})
       };
-    });
+    }));
     json(res, 200, { users, invite_only: INVITE_ONLY, ...(PASSWORD_LOGIN ? { password_login: true } : {}), now: Date.now() });
   },
 
@@ -2207,7 +2191,7 @@ const routes = {
     const id = new URL(req.url, 'http://x').searchParams.get('id');
     const u = db.users.find(x => x.id === id);
     if (!u) return json(res, 404, { error: 'no such user' });
-    const S = readState(u.id) || {};
+    const S = (await readState(u.id)) || {};
     json(res, 200, {
       user: {
         id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null,
@@ -2259,8 +2243,10 @@ const routes = {
     db.subs = (db.subs || []).filter(x => x.userId !== u.id);
     dropDeviceLinks(db, u.id);
     presence.delete(u.id);
-    // The training history and any Coach credential of theirs, both outside db.json.
-    try { fs.unlinkSync(stateFile(u.id)); } catch { /* already gone */ }
+    // The training history, in Postgres now — deleting the (still db.json-mirrored) users row
+    // cascades to user_state, same as `ON DELETE CASCADE` will do everywhere else once the rest
+    // of db.json moves. Any Coach credential of theirs stays outside both, on disk.
+    try { await pool.query('DELETE FROM users WHERE id = $1', [u.id]); } catch (e) { console.error('could not delete user_state for', u.id, e.message); }
     try { coachConfig.clearProfileAuth(u.id); } catch { /* nothing stored */ }
     // Their photos and videos — the one place a profile's folder under uploads/ is removed.
     try { MEDIA.removeUser(u.id); } catch (e) { console.error('media: could not remove uploads of', u.id, e.message); }
@@ -2465,18 +2451,24 @@ const server = http.createServer(async (req, res) => {
 server.requestTimeout = 30 * 60000;
 server.headersTimeout = 60000;
 
-// Connect and migrate before accepting any request. DATABASE_URL unset skips this entirely (see
-// its declaration above); set, a failure here — unreachable database or a broken migration — is
-// a boot failure, not something callers should ever see as a 500.
+// Connect and migrate before accepting any request. A failure here — unreachable database or a
+// broken migration — is a boot failure, not something callers should ever see as a 500.
 async function listen() {
-  if (DATABASE_URL) {
-    try {
-      const { count } = await connectAndMigrate(DATABASE_URL);
-      console.log(`postgres ready (${count} migration${count === 1 ? '' : 's'} applied)`);
-    } catch (e) {
-      console.error('postgres connection/migration failed:', e.message);
-      process.exit(1);
-    }
+  try {
+    const r = await connectAndMigrate(DATABASE_URL);
+    pool = r.pool;
+    console.log(`postgres ready (${r.count} migration${r.count === 1 ? '' : 's'} applied)`);
+  } catch (e) {
+    console.error('postgres connection/migration failed:', e.message);
+    process.exit(1);
+  }
+  // db.json is still what registration and login read and write (ISO-1403 finishes that part in
+  // a later run) — this just backfills the Postgres mirror store.js needs to satisfy user_state's
+  // foreign key, for every user already in db.json before this boot, same as syncUser does for
+  // one just registered. Sequential, not Promise.all: a personal instance has few enough users
+  // that boot time is not the concern, and a boot failure here should point at one clear id.
+  for (const u of db.users) {
+    try { await syncUser(pool, u); } catch (e) { console.error('could not mirror user into postgres', u.id, e.message); process.exit(1); }
   }
   // The port is read back off the listener rather than echoed from PORT, so the line states the
   // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose

@@ -68,7 +68,7 @@ test('noteState does nothing at all for a profile that never uploaded', t => {
   assert.equal(fs.existsSync(h.dir), false, 'no uploads folder is created by a state push');
 });
 
-test('the hourly sweep keeps referenced files and removes the rest only after the grace', t => {
+test('the hourly sweep keeps referenced files and removes the rest only after the grace', async t => {
   const h = setup(t);
   const keep = h.place('u1', M.jpeg()), drop = h.place('u1', M.jpeg(3000));
   h.S.set('u1', ref(keep));
@@ -76,74 +76,74 @@ test('the hourly sweep keeps referenced files and removes the rest only after th
   h.store.noteState('u1', ref(keep));
 
   h.clock.t += 14 * DAY - 1;
-  assert.deepEqual(h.store.sweep('u1'), { removed: 0, freedBytes: 0, skipped: false });
+  assert.deepEqual(await h.store.sweep('u1'), { removed: 0, freedBytes: 0, skipped: false });
   assert.equal(h.files('u1').length, 2, 'a day short of the grace: still there');
 
   h.clock.t += 1;
-  assert.deepEqual(h.store.sweep('u1'), { removed: 1, freedBytes: 3000, skipped: false });
+  assert.deepEqual(await h.store.sweep('u1'), { removed: 1, freedBytes: 3000, skipped: false });
   assert.deepEqual(h.files('u1'), [`${keep}.jpg`]);
   assert.deepEqual(h.store.usage('u1'), { bytes: 1000, count: 1, quotaBytes: 200 * 1048576 });
   assert.deepEqual(h.marks('u1'), {}, 'the mark goes with the file');
 });
 
-test('a file nobody marked yet starts its grace at the first sweep that sees it unreferenced', t => {
+test('a file nobody marked yet starts its grace at the first sweep that sees it unreferenced', async t => {
   const h = setup(t);
   const x = h.place('u1', M.jpeg());
   h.S.set('u1', ref());
-  assert.equal(h.store.sweep('u1').removed, 0);
+  assert.equal((await h.store.sweep('u1')).removed, 0);
   assert.deepEqual(h.marks('u1'), { [x]: h.clock.t });
   h.clock.t += 14 * DAY;
-  assert.equal(h.store.sweep('u1').removed, 1);
+  assert.equal((await h.store.sweep('u1')).removed, 1);
 });
 
-test('an explicit sweep (grace 0) removes every unreferenced file at once', t => {
+test('an explicit sweep (grace 0) removes every unreferenced file at once', async t => {
   const h = setup(t);
   const keep = h.place('u1', M.jpeg()), a = h.place('u1', M.png()), b = h.place('u1', M.gif(), 'gif');
   h.S.set('u1', ref(keep));
-  const r = h.store.sweep('u1', { graceMs: 0 });
+  const r = await h.store.sweep('u1', { graceMs: 0 });
   assert.equal(r.removed, 2);
   assert.deepEqual(h.files('u1'), [`${keep}.jpg`]);
   assert.ok(!h.store.has('u1', a) && !h.store.has('u1', b));
 });
 
-test('a profile whose state cannot be read is never swept — missing, unparsable or throwing', t => {
+test('a profile whose state cannot be read is never swept — missing, unparsable or throwing', async t => {
   const h = setup(t);
   for (const [uid, state] of [['gone', undefined], ['bad', null], ['arr', []], ['boom', new Error('EIO')]]) {
     h.place(uid, M.jpeg());
     if (state !== undefined) h.S.set(uid, state);
     h.clock.t += 30 * DAY;
-    const r = h.store.sweep(uid, { graceMs: 0 });
+    const r = await h.store.sweep(uid, { graceMs: 0 });
     assert.deepEqual(r, { removed: 0, freedBytes: 0, skipped: true }, uid);
     assert.equal(h.files(uid).length, 1, uid);
   }
 });
 
-test('an unreadable .gc.json is no marks: the grace starts over and nothing is deleted for it', t => {
+test('an unreadable .gc.json is no marks: the grace starts over and nothing is deleted for it', async t => {
   const h = setup(t);
   const x = h.place('u1', M.jpeg());
   h.S.set('u1', ref());
-  h.store.sweep('u1');                                   // marked now
+  await h.store.sweep('u1');                                   // marked now
   h.clock.t += 20 * DAY;
   fs.writeFileSync(path.join(h.dir, 'u1', '.gc.json'), '{"torn');
-  assert.equal(h.store.sweep('u1').removed, 0, 'a mark that cannot be read is not a mark');
+  assert.equal((await h.store.sweep('u1')).removed, 0, 'a mark that cannot be read is not a mark');
   assert.deepEqual(h.marks('u1'), { [x]: h.clock.t }, 'a fresh mark replaces the torn file');
   h.clock.t += 14 * DAY;
-  assert.equal(h.store.sweep('u1').removed, 1);
+  assert.equal((await h.store.sweep('u1')).removed, 1);
 });
 
-test('.gc.json turned into a directory: the hourly sweep deletes nothing, noteState throws for the caller to catch', t => {
+test('.gc.json turned into a directory: the hourly sweep deletes nothing, noteState throws for the caller to catch', async t => {
   const h = setup(t);
   h.place('u1', M.jpeg());
   h.S.set('u1', ref());
   fs.mkdirSync(path.join(h.dir, 'u1', '.gc.json'));
   h.clock.t += 60 * DAY;
-  assert.equal(h.store.sweep('u1').removed, 0);
+  assert.equal((await h.store.sweep('u1')).removed, 0);
   assert.equal(h.files('u1').length, 1);
   assert.throws(() => h.store.noteState('u1', { customEx: [] }));
   assert.equal(fs.existsSync(path.join(h.dir, 'u1', '.gc.json.tmp')), false, 'the failed write leaves no temp file');
 });
 
-test('sweepAll with an empty db.users removes no folder and no file, and says so once', t => {
+test('sweepAll with an empty db.users removes no folder and no file, and says so once', async t => {
   const h = setup(t);
   h.place('u1', M.jpeg());
   h.place('u2', M.jpeg());
@@ -151,7 +151,7 @@ test('sweepAll with an empty db.users removes no folder and no file, and says so
   h.S.set('u2', ref());
   h.clock.t += 60 * DAY;
   for (let i = 0; i < 3; i++) {
-    const r = h.store.sweepAll({ uids: [], graceMs: 0 });
+    const r = await h.store.sweepAll({ uids: [], graceMs: 0 });
     assert.equal(r.removed, 0);
     assert.equal(r.orphans, 2);
   }
@@ -160,13 +160,13 @@ test('sweepAll with an empty db.users removes no folder and no file, and says so
   assert.match(h.warnings[0], /belongs to no profile/);
 });
 
-test('sweepAll sweeps the profiles it is given, and only when their state reads', t => {
+test('sweepAll sweeps the profiles it is given, and only when their state reads', async t => {
   const h = setup(t);
   h.place('u1', M.jpeg());
   h.place('u2', M.jpeg());
   h.S.set('u1', ref());           // readable, references nothing
   // u2: no state at all
-  const r = h.store.sweepAll({ uids: ['u1', 'u2'], graceMs: 0 });
+  const r = await h.store.sweepAll({ uids: ['u1', 'u2'], graceMs: 0 });
   assert.equal(r.removed, 1);
   assert.equal(r.swept, 1);
   assert.equal(r.skipped, 1);
@@ -174,7 +174,7 @@ test('sweepAll sweeps the profiles it is given, and only when their state reads'
   assert.equal(h.files('u2').length, 1);
 });
 
-test('temp files: the hourly pass removes those older than an hour, boot removes them all', t => {
+test('temp files: the hourly pass removes those older than an hour, boot removes them all', async t => {
   const h = setup(t);
   h.place('u1', M.jpeg());
   const tmp = path.join(h.dir, 'u1', '.tmp');
@@ -184,14 +184,14 @@ test('temp files: the hourly pass removes those older than an hour, boot removes
   const old = new Date(h.clock.t - 2 * HOUR), fresh = new Date(h.clock.t - 10 * 60000);
   fs.utimesSync(path.join(tmp, 'old'), old, old);
   fs.utimesSync(path.join(tmp, 'new'), fresh, fresh);
-  const r = h.store.sweepAll({ uids: [] });
+  const r = await h.store.sweepAll({ uids: [] });
   assert.equal(r.tmp, 1);
   assert.deepEqual(fs.readdirSync(tmp), ['new']);
   assert.equal(h.store.cleanTmp(), 1);
   assert.deepEqual(fs.readdirSync(tmp), []);
 });
 
-test('dotfiles and unknown names are never blobs', t => {
+test('dotfiles and unknown names are never blobs', async t => {
   const h = setup(t);
   const x = h.place('u1', M.jpeg());
   const d = path.join(h.dir, 'u1');
@@ -201,7 +201,7 @@ test('dotfiles and unknown names are never blobs', t => {
   fs.writeFileSync(path.join(d, `.${'e'.repeat(64)}.jpg`), 'x');
   assert.deepEqual(h.store.usage('u1'), { bytes: 1000, count: 1, quotaBytes: 200 * 1048576 });
   h.S.set('u1', ref());
-  h.store.sweep('u1', { graceMs: 0 });
+  await h.store.sweep('u1', { graceMs: 0 });
   assert.deepEqual(fs.readdirSync(d).sort(), ['.gc.json', `.${'e'.repeat(64)}.jpg`, '.tmp', `${x}.svg`, 'notes.txt'].filter(n => n !== '.tmp').sort());
 });
 
@@ -253,19 +253,19 @@ test('a new upload nobody references yet is marked, so the grace also covers a p
 // workout starts its grace like any other.
 const wref = (...hashes) => ({ workouts: [{ id: 'w1', d: '2026-09-20', start: 1, end: 2, entries: [], media: hashes.map((h, i) => ({ kind: 'image', hash: h, mime: 'image/jpeg', size: 1, width: 1, height: 1, at: i + 1 })) }] });
 
-test('a file referenced only by a workout is never swept, whatever the grace', t => {
+test('a file referenced only by a workout is never swept, whatever the grace', async t => {
   const h = setup(t);
   const photo = h.place('u1', M.jpeg()), gone = h.place('u1', M.jpeg(3000));
   h.S.set('u1', wref(photo));
   assert.equal(h.store.noteState('u1', wref(photo)), true, 'the other file gets its mark');
   assert.deepEqual(Object.keys(h.marks('u1')), [gone]);
   h.clock.t += 365 * DAY;
-  assert.deepEqual(h.store.sweep('u1'), { removed: 1, freedBytes: 3000, skipped: false });
-  assert.deepEqual(h.store.sweep('u1', { graceMs: 0 }), { removed: 0, freedBytes: 0, skipped: false });
+  assert.deepEqual(await h.store.sweep('u1'), { removed: 1, freedBytes: 3000, skipped: false });
+  assert.deepEqual(await h.store.sweep('u1', { graceMs: 0 }), { removed: 0, freedBytes: 0, skipped: false });
   assert.deepEqual(h.files('u1'), [`${photo}.jpg`]);
 });
 
-test('a photo taken off a workout is marked by the next state push and swept after the grace', t => {
+test('a photo taken off a workout is marked by the next state push and swept after the grace', async t => {
   const h = setup(t);
   const a = h.place('u1', M.jpeg()), b = h.place('u1', M.jpeg(2000));
   h.S.set('u1', wref(a, b));
@@ -275,8 +275,8 @@ test('a photo taken off a workout is marked by the next state push and swept aft
   assert.equal(h.store.noteState('u1', wref(a)), true);
   assert.deepEqual(h.marks('u1'), { [b]: h.clock.t });
   h.clock.t += 14 * DAY - 1;
-  assert.equal(h.store.sweep('u1').removed, 0, 'inside the grace another device may still show it');
+  assert.equal((await h.store.sweep('u1')).removed, 0, 'inside the grace another device may still show it');
   h.clock.t += 1;
-  assert.deepEqual(h.store.sweep('u1'), { removed: 1, freedBytes: 2000, skipped: false });
+  assert.deepEqual(await h.store.sweep('u1'), { removed: 1, freedBytes: 2000, skipped: false });
   assert.deepEqual(h.files('u1'), [`${a}.jpg`]);
 });

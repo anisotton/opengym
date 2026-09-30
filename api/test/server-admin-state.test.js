@@ -8,13 +8,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundPort } from './helpers.mjs';
+import { tempData, spawnApi, seedUserState } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 
 // Same construction as server.js makeSession(): payload `uid:exp:sv`, HMAC-SHA256 over SECRET.
@@ -26,7 +22,7 @@ const ADMIN = 'u_adm_1', VICTIM = 'u_vic_1';
 const asAdmin = { Cookie: `gymsid=${mintSession(ADMIN)}`, 'Content-Type': 'application/json' };
 
 async function startServer(t) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-admin-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     users: [
@@ -34,21 +30,12 @@ async function startServer(t) {
       { id: VICTIM, name: 'Mallory', created: new Date().toISOString() }
     ], creds: [], subs: [], invites: []
   }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost' }
-  });
-  const h = { api: '', log: '', dataDir };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  // The boot line carries the port the listener bound, so it is both the address and the
-  // readiness signal — see boundPort in helpers.mjs for why the test does not pick one.
-  h.port = await boundPort(child, () => h.log);
-  h.api = `http://127.0.0.1:${h.port}`;
+  const h = await spawnApi(t, { dataDir });
   // The boot line is fine; anything that looks like a stack frame after this is a defect.
   h.stackFrames = () => h.log.split('\n').filter(l => /^\s+at /.test(l)).length;
-  h.plant = S => fs.writeFileSync(path.join(h.dataDir, `state-${VICTIM}.json`), JSON.stringify(S));
+  // Writes straight into user_state, bypassing PUT /api/data's own validation — simulating a
+  // document stored before that filter existed, same as writing state-<uid>.json directly did.
+  h.plant = S => seedUserState(h.databaseUrl, VICTIM, S, Number(S?._rev) || 1);
   h.get = async p => { const r = await fetch(`${h.api}${p}`, { headers: asAdmin }); return { status: r.status, body: await r.json() }; };
   return h;
 }
@@ -76,7 +63,7 @@ const DOCS = {
 test('GET /api/admin/user opens a profile whose stored state predates the entry filter', async t => {
   const h = await startServer(t);
   for (const [what, doc] of Object.entries(DOCS)) {
-    h.plant(doc);
+    await h.plant(doc);
     const r = await h.get(`/api/admin/user?id=${VICTIM}`);
     assert.equal(r.status, 200, `${what}: ${JSON.stringify(r.body)}`);
     // Every list the sheet counts and walks comes back usable — the drill-down renders it
@@ -87,12 +74,12 @@ test('GET /api/admin/user opens a profile whose stored state predates the entry 
     }
   }
   // The good entries are still there, and a routine's exercise count is a number in every case.
-  h.plant(DOCS['a null routine entry']);
+  await h.plant(DOCS['a null routine entry']);
   let r = await h.get(`/api/admin/user?id=${VICTIM}`);
   assert.deepEqual(r.body.routines, [{ id: 'r1', name: 'Full body', emoji: '💪', count: 1 }]);
   assert.deepEqual(r.body.workouts.map(w => w.id), ['w1']);
   assert.deepEqual(r.body.bodyweight, [okB]);
-  h.plant({ routines: [{ id: 'r2', name: 'Broken', ex: 'nope' }] });
+  await h.plant({ routines: [{ id: 'r2', name: 'Broken', ex: 'nope' }] });
   r = await h.get(`/api/admin/user?id=${VICTIM}`);
   assert.deepEqual(r.body.routines, [{ id: 'r2', name: 'Broken', count: 0 }]);   // an `ex` that is not a list counts as no exercises
   assert.equal(h.stackFrames(), 0, `stack traces in the log:\n${h.log}`);
@@ -101,7 +88,7 @@ test('GET /api/admin/user opens a profile whose stored state predates the entry 
 test('GET /api/admin/user leaves a workout\'s photos and videos out', async t => {
   const h = await startServer(t);
   const ref = { kind: 'image', hash: 'a'.repeat(64), mime: 'image/webp', size: 10, width: 8, height: 6, at: 1 };
-  h.plant({ workouts: [{ ...okW, media: [ref] }], routines: [okR], bodyweight: [okB], unit: 'kg' });
+  await h.plant({ workouts: [{ ...okW, media: [ref] }], routines: [okR], bodyweight: [okB], unit: 'kg' });
   const r = await h.get(`/api/admin/user?id=${VICTIM}`);
   assert.equal(r.status, 200);
   assert.deepEqual(r.body.workouts.map(w => w.id), ['w1']);
@@ -112,7 +99,7 @@ test('GET /api/admin/user leaves a workout\'s photos and videos out', async t =>
 test('the user list and the disable switch survive the same document', async t => {
   const h = await startServer(t);
   for (const [what, doc] of Object.entries(DOCS)) {
-    h.plant(doc);
+    await h.plant(doc);
     const r = await h.get('/api/admin/users');
     assert.equal(r.status, 200, what);
     const row = r.body.users.find(u => u.id === VICTIM);
@@ -122,7 +109,7 @@ test('the user list and the disable switch survive the same document', async t =
     assert.equal(row.workouts, Array.isArray(doc.workouts) ? doc.workouts.filter(w => w && typeof w === 'object' && !Array.isArray(w)).length : 0, what);
   }
   // The end state the whole thing is about: the account can be stopped from the dashboard.
-  h.plant(DOCS['a null routine entry']);
+  await h.plant(DOCS['a null routine entry']);
   const r = await fetch(`${h.api}/api/admin/user/disable`, { method: 'POST', headers: asAdmin, body: JSON.stringify({ id: VICTIM, disabled: true }) });
   assert.equal(r.status, 200);
   assert.equal(JSON.parse(fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8')).users.find(u => u.id === VICTIM).disabled, true);
@@ -137,7 +124,7 @@ test('the user list and the disable switch survive the same document', async t =
 // showed "last sync never" — only a push moved the document's `_ts`. A pull counts too.
 test('a pull shows as the last sync, in the list and the drill-down', async t => {
   const h = await startServer(t);
-  h.plant({ _rev: 3, workouts: [okW] });
+  await h.plant({ _rev: 3, workouts: [okW] });
   let row = (await h.get('/api/admin/users')).body.users.find(u => u.id === VICTIM);
   assert.equal(row.lastSync, null);
   const before = Date.now();
@@ -149,7 +136,7 @@ test('a pull shows as the last sync, in the list and the drill-down', async t =>
   // Kept across a restart: it is on the user record.
   assert.ok(JSON.parse(fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8')).users.find(u => u.id === VICTIM).lastPull >= before);
   // A later push still wins when it is the newer of the two.
-  h.plant({ _rev: 4, _ts: Date.now() + 60000, workouts: [okW] });
+  await h.plant({ _rev: 4, _ts: Date.now() + 60000, workouts: [okW] });
   row = (await h.get('/api/admin/users')).body.users.find(u => u.id === VICTIM);
   assert.ok(row.lastSync > Date.now());
 });

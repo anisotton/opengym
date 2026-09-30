@@ -7,13 +7,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundPort } from './helpers.mjs';
+import pg from 'pg';
+import { tempData, spawnApi, seedUserState } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 const mintSession = uid => {
   const payload = `${uid}:${Date.now() + 86400000}:0`;
@@ -22,7 +19,7 @@ const mintSession = uid => {
 const ADMIN = 'u_adm_1', ADMIN2 = 'u_adm_2', VICTIM = 'u_vic_1';
 const as = uid => ({ Cookie: `gymsid=${mintSession(uid)}`, 'Content-Type': 'application/json' });
 async function startServer(t, { twoAdmins = false } = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-del-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   const users = [
     { id: ADMIN, name: 'Adminna', created: new Date().toISOString(), admin: true },
@@ -35,31 +32,26 @@ async function startServer(t, { twoAdmins = false } = {}) {
     subs: [{ endpoint: 'https://push/victim', userId: VICTIM }, { endpoint: 'https://push/admin', userId: ADMIN }],
     invites: [{ code: 'CODE1', usedBy: VICTIM, usedAt: new Date().toISOString() }],
   }));
-  fs.writeFileSync(path.join(dataDir, `state-${VICTIM}.json`), JSON.stringify({ unit: 'kg', workouts: [], _rev: 3 }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost' },
-  });
-  const h = { api: '', log: '', dataDir };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  // The boot line carries the port the listener bound, so it is both the address and the
-  // readiness signal — see boundPort in helpers.mjs for why the test does not pick one.
-  h.port = await boundPort(child, () => h.log);
-  h.api = `http://127.0.0.1:${h.port}`;
+  const h = await spawnApi(t, { dataDir });
+  // Boot has mirrored VICTIM into Postgres by now, so their user_state row can be seeded.
+  await seedUserState(h.databaseUrl, VICTIM, { unit: 'kg', workouts: [], _rev: 3 }, 3);
   h.del = async (id, uid = ADMIN) => {
     const r = await fetch(`${h.api}/api/admin/user/delete`, { method: 'POST', headers: { ...as(uid), Origin: 'http://localhost:8080' }, body: JSON.stringify({ id }) });
     return { status: r.status, body: await r.json() };
   };
   h.db = () => JSON.parse(fs.readFileSync(path.join(h.dataDir, 'db.json'), 'utf8'));
+  h.stateRow = async uid => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT 1 FROM user_state WHERE user_id = $1', [uid])).rows[0] || null; }
+    finally { await pool.end(); }
+  };
   h.stackFrames = () => h.log.split('\n').filter(l => /^\s+at /.test(l)).length;
   return h;
 }
 
 test('removes the account and everything attached to it', async t => {
   const h = await startServer(t);
-  assert.ok(fs.existsSync(path.join(h.dataDir, `state-${VICTIM}.json`)));
+  assert.ok(await h.stateRow(VICTIM));
   const res = await h.del(VICTIM);
   assert.equal(res.status, 200);
 
@@ -67,7 +59,7 @@ test('removes the account and everything attached to it', async t => {
   assert.deepEqual(db.users.map(u => u.id), [ADMIN], 'the user is gone');
   assert.deepEqual(db.creds.map(c => c.userId), [ADMIN], 'their passkeys are gone');
   assert.deepEqual(db.subs.map(s => s.userId), [ADMIN], 'their push subscriptions are gone');
-  assert.equal(fs.existsSync(path.join(h.dataDir, `state-${VICTIM}.json`)), false, 'their history is gone');
+  assert.equal(await h.stateRow(VICTIM), null, 'their history is gone');
   // The code they joined with stays burned: it was used, and freeing it would quietly widen
   // an invite-only instance.
   assert.equal(db.invites[0].usedBy, VICTIM);

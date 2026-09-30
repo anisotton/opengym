@@ -9,16 +9,12 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { hashPassword } from '../password.js';
 import { hashLinkCode } from '../device-link.js';
 import { MAX_PASSKEYS } from '../passkeys-store.js';
-import { boundPort } from './helpers.mjs';
+import { tempData, spawnApi } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 const ORIGIN = 'http://localhost:8080';
 const b64u = b => Buffer.from(b).toString('base64url');
@@ -83,21 +79,13 @@ before(async () => { pwHash ??= await hashPassword(GOOD); });
 
 async function startServer(t, { env = {}, users = [], creds = [], deviceLinks } = {}) {
   pwHash ??= await hashPassword(GOOD);
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-pk-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({ users, creds, subs: [], invites: [], ...(deviceLinks ? { deviceLinks } : {}) }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN, RP_ID: 'localhost',
-      PASSWORD_LOGIN: '1', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env
-    }
+  const h = await spawnApi(t, {
+    dataDir,
+    env: { ORIGIN, PASSWORD_LOGIN: '1', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env }
   });
-  const h = { api: '', log: '', dataDir };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  h.api = `http://127.0.0.1:${await boundPort(child, () => h.log)}`;
   h.req = async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
     const r = await fetch(`${h.api}${p}`, {
       method,

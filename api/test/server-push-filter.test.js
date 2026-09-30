@@ -9,13 +9,9 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundPort } from './helpers.mjs';
+import { tempData, spawnApi } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 
 // Same construction as server.js makeSession(): payload `uid:exp:sv`, HMAC-SHA256 over SECRET.
@@ -32,24 +28,12 @@ const keys = {
 };
 
 async function startServer(t, subs = []) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-push-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     users: [{ id: 'u_test_1', name: 'One', created: new Date().toISOString() }], creds: [], subs, invites: []
   }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost' }
-  });
-  const h = { api: '', dataDir, log: '' };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  // The boot line carries the port the listener bound, so it is both the address and the
-  // readiness signal — see boundPort in helpers.mjs for why the test does not pick one.
-  h.port = await boundPort(child, () => h.log);
-  h.api = `http://127.0.0.1:${h.port}`;
-  return h;
+  return spawnApi(t, { dataDir });
 }
 
 test('subscribe refuses every spelling of a private IP literal and accepts public ones', async t => {
