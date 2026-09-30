@@ -1,0 +1,6 @@
+{
+  "_rev": 3,
+  "_ts": 1893452400000,
+  "unit": "kg",
+  "routines": [{ "id": "r1", "name": "Full body A", "ex": [{ "id": "0001", "sets": 3, "reps": 10 }] }]
+}

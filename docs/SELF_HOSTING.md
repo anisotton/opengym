@@ -518,6 +518,42 @@ API keys for the HTTPS providers (Anthropic, OpenAI, Gemini, a compatible endpoi
 other way round: they are in `./data/coach.json`, encrypted with `./data/secret`, so they *are*
 in this archive — and unreadable without the secret next to them, like everything else in it.
 
+### Migrating an existing instance's data into PostgreSQL (Phase 1)
+
+As of Phase 1c, `api/scripts/import-json.js` copies everything the API stored as JSON —
+`db.json`'s users, passkeys, push subscriptions, invites and device-pairing links, plus every
+profile's `state-<uid>.json` — into the `db` container's tables. The API itself still reads and
+writes the JSON files today (the switch is Phase 1b/ISO-1403); running this script now just gets
+an existing instance's data into PostgreSQL ahead of that switch, so there's no downtime and no
+rush to run it the moment you upgrade.
+
+1. **Back up `./data` first** (above) — the script only reads the JSON files, never writes or
+   moves them, but there's no reason to skip a backup before a bulk write to a new database.
+2. Bring the `db` container up if it isn't already (`docker compose up -d db`), then do a dry run:
+   ```bash
+   docker compose run --rm api node scripts/import-json.js --dry-run
+   ```
+   It prints one line per table: how many rows it read, and how many it would insert, update or
+   skip. A skip is either a malformed record or one pointing at a user id `db.json` doesn't have
+   (an orphaned `state-*.json`, say) — worth a look, though neither kind stops the import.
+3. Run it for real:
+   ```bash
+   docker compose run --rm api node scripts/import-json.js
+   ```
+   Everything happens in one transaction — either the whole import lands or none of it does. It's
+   also safe to run more than once: every table is upserted on its natural key (`users.id`,
+   `passkeys.id`, a subscription's `endpoint`…), and a profile's state is only overwritten by a
+   version with a *higher* revision than what's already stored in `user_state`, so re-running it
+   later — even after the API has been live on PostgreSQL for a while, Phase 1b onward — can never
+   clobber data newer than the JSON snapshot it's reading from.
+4. Spot-check the counts, e.g. `docker compose exec db psql -U ${POSTGRES_USER:-opengym}
+   ${POSTGRES_DB:-opengym} -c 'SELECT count(*) FROM users;'` (and the same for `passkeys`,
+   `invites`, `user_state`) against what you expect from `db.json`, then move on to whichever
+   version turns the API's PostgreSQL reads/writes on.
+
+`./data`'s JSON files are untouched by any of this — the switch away from them, and from `./data`
+as the source of truth, is a separate step, later.
+
 ## 7. Notifications
 
 openGym can push two kinds of alert to your phone/desktop, even when the app isn't open:

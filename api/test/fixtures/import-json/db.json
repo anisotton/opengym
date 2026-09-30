@@ -1,0 +1,62 @@
+{
+  "users": [
+    {
+      "id": "u-admin",
+      "name": "Admin",
+      "email": "admin@example.com",
+      "admin": true,
+      "sv": 2,
+      "pw": { "h": "hash-admin", "set": "2026-01-01T00:00:00.000Z" },
+      "created": "2026-01-01T00:00:00.000Z",
+      "lastPull": 1767225600000
+    },
+    {
+      "id": "u-member",
+      "name": "Member",
+      "invitedBy": "INVITE1",
+      "pwReset": { "h": "reset-hash", "exp": 1893456000000, "by": "u-admin" },
+      "created": "2026-01-02T00:00:00.000Z"
+    },
+    { "id": "u-no-name", "created": "2026-01-03T00:00:00.000Z" }
+  ],
+  "creds": [
+    {
+      "id": "cred-1",
+      "userId": "u-admin",
+      "publicKey": "pk-1",
+      "counter": 4,
+      "transports": ["internal", "hybrid"],
+      "name": "Laptop",
+      "created": "2026-01-01T00:05:00.000Z",
+      "lastUsed": "2026-01-10T00:00:00.000Z"
+    },
+    { "id": "cred-orphan", "userId": "u-ghost", "publicKey": "pk-2", "created": "2026-01-01T00:00:00.000Z" },
+    { "id": "cred-invalid", "userId": "u-admin", "created": "2026-01-01T00:00:00.000Z" }
+  ],
+  "subs": [
+    {
+      "userId": "u-admin",
+      "endpoint": "https://push.example/ep-1",
+      "keys": { "p256dh": "p256dh-1", "auth": "auth-1" },
+      "deviceId": "device-1",
+      "created": "2026-01-01T00:10:00.000Z"
+    },
+    { "userId": "u-ghost", "endpoint": "https://push.example/ep-orphan", "keys": { "p256dh": "x", "auth": "y" } }
+  ],
+  "invites": [
+    {
+      "code": "INVITE1",
+      "note": "for the member",
+      "createdBy": "u-admin",
+      "created": "2026-01-01T00:00:00.000Z",
+      "usedBy": "u-member",
+      "usedAt": "2026-01-02T00:00:00.000Z"
+    },
+    { "code": "INVITE-DANGLING", "createdBy": "u-ghost", "created": "2026-01-01T00:00:00.000Z" },
+    { "note": "missing code" }
+  ],
+  "deviceLinks": [
+    { "h": "linkhash-1", "userId": "u-admin", "exp": 1893456000000, "created": 1893452400000 },
+    { "h": "linkhash-orphan", "userId": "u-ghost", "exp": 1893456000000, "created": 1893452400000 }
+  ]
+}
