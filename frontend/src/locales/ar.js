@@ -1716,4 +1716,6 @@ export default {
   'Teal': 'أزرق مخضر',
   'Yellow': 'أصفر',
   'Enter how long it took — at least 1 minute.': 'أدخل المدة التي استغرقها — دقيقة واحدة على الأقل.',
+  'Conditioning for ballet.': 'لياقة بدنية للباليه.',
+  'Today’s strength is tomorrow’s lightness.': 'قوة اليوم هي خفة الغد.',
 }

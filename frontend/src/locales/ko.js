@@ -1663,4 +1663,6 @@ export default {
   'Teal': '청록',
   'Yellow': '노랑',
   'Enter how long it took — at least 1 minute.': '걸린 시간을 입력하세요 — 최소 1분.',
+  'Conditioning for ballet.': '발레를 위한 체력 컨디셔닝.',
+  'Today’s strength is tomorrow’s lightness.': '오늘의 힘이 내일의 가벼움이 됩니다.',
 }

@@ -1660,4 +1660,6 @@ export default {
   'Teal': 'Бірюзовий',
   'Yellow': 'Жовтий',
   'Enter how long it took — at least 1 minute.': 'Вкажи, скільки це тривало — щонайменше 1 хвилину.',
+  'Conditioning for ballet.': 'Фізична підготовка для балету.',
+  'Today’s strength is tomorrow’s lightness.': 'Сила сьогодні — легкість завтра.',
 }

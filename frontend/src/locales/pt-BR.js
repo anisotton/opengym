@@ -1008,6 +1008,9 @@ export const PT_BR_OVERRIDES = {
   'Teal': 'Turquesa',
   'Yellow': 'Amarelo',
   'Enter how long it took — at least 1 minute.': 'Informe quanto tempo levou — pelo menos 1 minuto.',
+  // Brilhart Fitness sign-in screen.
+  'Conditioning for ballet.': 'Condicionamento físico para o balé.',
+  'Today’s strength is tomorrow’s lightness.': 'A força de hoje é a leveza de amanhã.',
 }
 
 export default { ...pt, ...PT_BR_OVERRIDES }

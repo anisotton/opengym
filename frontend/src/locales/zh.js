@@ -1663,4 +1663,6 @@ export default {
   'Teal': '青色',
   'Yellow': '黄色',
   'Enter how long it took — at least 1 minute.': '请输入用时 — 至少 1 分钟。',
+  'Conditioning for ballet.': '芭蕾体能训练。',
+  'Today’s strength is tomorrow’s lightness.': '今天的力量，是明天的轻盈。',
 }

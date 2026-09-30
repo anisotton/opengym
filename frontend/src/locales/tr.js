@@ -1663,4 +1663,6 @@ export default {
   'Teal': 'Turkuaz',
   'Yellow': 'Sarı',
   'Enter how long it took — at least 1 minute.': 'Ne kadar sürdüğünü gir — en az 1 dakika.',
+  'Conditioning for ballet.': 'Bale için kondisyon.',
+  'Today’s strength is tomorrow’s lightness.': 'Bugünün gücü, yarının hafifliğidir.',
 }
