@@ -32,6 +32,26 @@ services:
         fi
     restart: "no"
 
+  # PostgreSQL (Phase 1, ISO-1387/1402). The API connects and migrates against this at boot; it
+  # does not read or write user data through it yet (that's Phase 1b, ISO-1403) — db.json and
+  # state-<uid>.json are still the source of truth. No port published: only the api service on
+  # this compose network ever needs to reach it.
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-opengym}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-opengym}
+      - POSTGRES_DB=${POSTGRES_DB:-opengym}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opengym} -d ${POSTGRES_DB:-opengym}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   # Passkey auth + per-user data (Node, no framework).
   # image: prebuilt (docker compose pull). build: from source (docker compose up --build).
   api:
@@ -45,12 +65,18 @@ services:
       context: ./api
       target: ${API_TARGET:-default}
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     env_file: .env
     environment:
       # The port the API listens on. web proxies to this same value, so the two
       # cannot drift — change it in .env and both follow.
       - PORT=${PORT:-3000}
       - DATA_DIR=/data
+      # Connects to the `db` service above by its compose service name — always reachable there,
+      # since compose only starts api once db reports healthy.
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-opengym}:${POSTGRES_PASSWORD:-opengym}@db:5432/${POSTGRES_DB:-opengym}
       # The API is reachable only through the web container here, and that container overwrites
       # X-Forwarded-For / X-Real-IP with the real peer — so the sign-in throttle may count
       # requests by those headers instead of lumping everyone in as "the web container".
@@ -107,3 +133,6 @@ services:
     volumes:
       - ./media/img:/usr/share/nginx/html/img:ro
       - ./media/gif:/usr/share/nginx/html/gif:ro
+
+volumes:
+  pgdata:

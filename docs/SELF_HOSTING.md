@@ -1,7 +1,8 @@
 # Self-hosting openGym
 
-openGym is two small containers (a web server and an API) plus a folder of your data.
-This guide takes you from "just cloned it" to "using it from my phone over the internet".
+openGym is three small containers (a web server, an API and a PostgreSQL database) plus a
+folder of your data. This guide takes you from "just cloned it" to "using it from my phone
+over the internet".
 
 ## 1. Run it locally (5 minutes)
 
@@ -28,6 +29,13 @@ curl http://localhost:8080/api/health      # {"ok":true,...}
 ```
 
 Logs: `docker compose logs -f`. Stop: `docker compose down`.
+
+The `db` service (`postgres:17-alpine`, data in the named volume `pgdata`) needs no attention on
+a fresh instance — `.env.example`'s defaults work as-is, and `api` waits for it to report healthy
+before starting. It is not yet where your accounts or workouts live (that is still `./data` —
+see "Backups" below); the API only connects and applies its migrations at boot so a later phase
+can switch onto it without a separate upgrade step. `POSTGRES_USER`/`POSTGRES_PASSWORD`/
+`POSTGRES_DB` and `DATABASE_URL` are the relevant variables — see `.env.example`.
 
 ## 2. Understand the passkey requirement (important)
 
@@ -472,6 +480,15 @@ Everything is in `./data`:
 ```bash
 tar czf opengym-backup-$(date +%F).tar.gz data/
 ```
+
+As of Phase 1, there's also the `db` container — empty of account/workout data for now (that's
+still `./data`, above), but worth including once Phase 1b starts writing to it:
+
+```bash
+docker compose exec db pg_dump -U ${POSTGRES_USER:-opengym} ${POSTGRES_DB:-opengym} > opengym-db-$(date +%F).sql
+```
+
+Restore into a fresh `db` volume with `docker compose exec -T db psql -U ${POSTGRES_USER:-opengym} ${POSTGRES_DB:-opengym} < opengym-db-<date>.sql`.
 
 That archive contains all profiles, passkeys and workout history — and, if the activity log is
 on, `audit.log` with everyone's sign-in times. Worth knowing before you ship the archive to a

@@ -8,7 +8,8 @@ to keep it that way — easy to read, easy to self-host.
 ```
 frontend/  React + Vite app (src/views, src/components, src/store, src/lib). Builds to static files.
            android/ + ios/ are the Capacitor shells for the standalone mobile app (docs/MOBILE.md).
-api/       backend — server.js (Node, no framework), one dependency (@simplewebauthn/server).
+api/       backend — server.js (Node, no framework). Deps: @simplewebauthn/server (passkeys),
+           web-push (notifications), pg (PostgreSQL — Phase 1 foundation, ISO-1402/1387).
 web/       multi-stage Dockerfile (builds frontend → nginx) + nginx.conf (serves app, proxies /api).
 media/     exercise img/gif (gitignored, fetched at runtime).
 docs/      self-hosting guide.
@@ -26,13 +27,19 @@ docker compose up -d --build      # api + web + media on :8080
 cd frontend && npm install && npm run dev
 # training logic (progression rules, 1RM, how a session is read back):
 cd frontend && npm test
+# api tests (server.js still uses db.json/state-*.json; this only checks it can connect and
+# migrate PostgreSQL at boot, see ISO-1402):
+cd api && npm test
+# the above skips anything that needs a real database; to also run those, against a throwaway
+# postgres:17-alpine container this starts and tears down itself:
+cd api && npm run test:pg
 ```
 
 ## Guidelines
 
 - **Keep it dependency-light.** The frontend uses React + Router + Zustand and nothing else;
-  new deps (front or back) are a hard sell. `api/` has two (`@simplewebauthn/server` for passkeys,
-  `web-push` for notifications) — keep it near that.
+  new deps (front or back) are a hard sell. `api/` has three (`@simplewebauthn/server` for
+  passkeys, `web-push` for notifications, `pg` for PostgreSQL) — keep it near that.
 - **Match the style.** Small components, clear names, comments only where the "why" isn't obvious.
   State lives in the Zustand store (`src/store`); pure helpers in `src/lib`.
 - **Don't commit** the exercise media (`media/`) or `data/` — they're gitignored.

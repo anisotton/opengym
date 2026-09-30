@@ -31,9 +31,16 @@ import {
 } from './passkeys-store.js';
 import { createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks } from './device-link.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
+import { connectAndMigrate } from './db.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
+// Phase 1 (ISO-1387/1402): the API connects and migrates PostgreSQL at boot, ahead of the actual
+// switch (ISO-1403) — every read/write below this still goes through db.json/state-<uid>.json.
+// Optional for now so the existing file-based test suite (none of it sets DATABASE_URL) keeps
+// booting exactly as before; the bundled docker-compose.yml always sets it, and Phase 1b will
+// make it mandatory once the API actually depends on it.
+const DATABASE_URL = process.env.DATABASE_URL || '';
 const RP_ID = process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
 const RP_NAME = process.env.RP_NAME || 'Brilhart Fitness';
@@ -2457,8 +2464,24 @@ const server = http.createServer(async (req, res) => {
 // every other route's body still has to arrive within five minutes (bodyDeadline above).
 server.requestTimeout = 30 * 60000;
 server.headersTimeout = 60000;
-// The port is read back off the listener rather than echoed from PORT, so the line states the
-// port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose it
-// (the tests spawn the server that way, and so does anyone running two instances on one box) has
-// no other way to learn it.
-server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
+
+// Connect and migrate before accepting any request. DATABASE_URL unset skips this entirely (see
+// its declaration above); set, a failure here — unreachable database or a broken migration — is
+// a boot failure, not something callers should ever see as a 500.
+async function listen() {
+  if (DATABASE_URL) {
+    try {
+      const { count } = await connectAndMigrate(DATABASE_URL);
+      console.log(`postgres ready (${count} migration${count === 1 ? '' : 's'} applied)`);
+    } catch (e) {
+      console.error('postgres connection/migration failed:', e.message);
+      process.exit(1);
+    }
+  }
+  // The port is read back off the listener rather than echoed from PORT, so the line states the
+  // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose
+  // it (the tests spawn the server that way, and so does anyone running two instances on one
+  // box) has no other way to learn it.
+  server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
+}
+listen();
