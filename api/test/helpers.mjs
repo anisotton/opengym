@@ -8,6 +8,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import pg from 'pg';
 
 /* The port a spawned server.js actually bound.
  *
@@ -51,6 +53,59 @@ export function tempData() {
 
 export function writeState(dir, uid, S) {
   fs.writeFileSync(path.join(dir, 'state-' + uid + '.json'), JSON.stringify(S));
+}
+
+/* PostgreSQL harness (ISO-1402). TEST_DATABASE_URL points at an admin/maintenance connection
+ * (typically the `postgres` database of a throwaway server — see scripts/test-with-pg.sh); each
+ * caller gets its own randomly-named database, so parallel test files never see each other's
+ * rows. Only the tests that actually exercise the database call this — everything else runs
+ * exactly as before, DATABASE_URL unset, server.js skipping PostgreSQL entirely. */
+
+// Missing TEST_DATABASE_URL is a clear, thrown failure, not a silent skip: a test that calls
+// this and gets no database back would otherwise look green while testing nothing.
+function adminUrl() {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      'TEST_DATABASE_URL is not set — run this test through `npm run test:pg` ' +
+      '(api/scripts/test-with-pg.sh), which starts an ephemeral PostgreSQL and sets it, ' +
+      'or export it yourself pointing at a disposable server.'
+    );
+  }
+  return url;
+}
+
+// A fresh, empty database — migrations are the caller's job (usually db.js's runMigrations).
+// Postgres identifiers can't be bound as query parameters, but the name is ours, hex-only, so
+// interpolating it directly is safe.
+export async function provisionTestDatabase() {
+  const base = adminUrl();
+  const name = 'opengym_test_' + crypto.randomBytes(8).toString('hex');
+  const admin = new pg.Pool({ connectionString: base });
+  try {
+    await admin.query(`CREATE DATABASE ${name}`);
+  } finally {
+    await admin.end();
+  }
+  const url = new URL(base);
+  url.pathname = '/' + name;
+  return {
+    databaseUrl: url.toString(),
+    async cleanup() {
+      const admin2 = new pg.Pool({ connectionString: base });
+      try {
+        // Drop any lingering connections first — a database with an open session cannot be
+        // dropped, and a test that crashed mid-query would otherwise leak it forever.
+        await admin2.query(
+          'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()',
+          [name]
+        );
+        await admin2.query(`DROP DATABASE IF EXISTS ${name}`);
+      } finally {
+        await admin2.end();
+      }
+    }
+  };
 }
 
 /** A profile that has consented and has some history — the usual starting point. */

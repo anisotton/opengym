@@ -7,10 +7,12 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:pg": "./scripts/test-with-pg.sh"
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.1.1",
+    "pg": "^8.23.0",
     "undici": "^7.29.0",
     "web-push": "^3.6.7"
   },

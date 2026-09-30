@@ -4,17 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-openGym is a self-hosted gym & body-weight tracker PWA. Two containers (`api` + `web`) plus a
-`./data` folder the user owns — no third-party account, no telemetry. Passkey (WebAuthn) login,
-installable as a home-screen app, optional Capacitor shells for standalone Android/iOS builds.
-License: AGPL-3.0-or-later.
+openGym is a self-hosted gym & body-weight tracker PWA. Three containers (`api` + `web` + `db`,
+PostgreSQL — Phase 1 foundation, ISO-1387/1402) plus a `./data` folder the user owns — no
+third-party account, no telemetry. Passkey (WebAuthn) login, installable as a home-screen app,
+optional Capacitor shells for standalone Android/iOS builds. License: AGPL-3.0-or-later.
 
 ## Project layout
 
 ```
 frontend/  React 19 + Vite app (src/views, src/components, src/store, src/lib). Builds to static files.
            android/ + ios/ are the Capacitor shells for the standalone mobile app (docs/MOBILE.md).
-api/       backend — server.js (Node, no framework), deps: @simplewebauthn/server, web-push.
+api/       backend — server.js (Node, no framework), deps: @simplewebauthn/server, web-push, pg.
 web/       multi-stage Dockerfile (builds frontend → nginx) + nginx.conf.template (serves app, proxies /api).
 mcp/       optional MCP server — read-only stdio bridge exposing a user's workouts/1RM/muscle
            balance to LLM clients (Claude Desktop, Cursor…). Not part of the Docker build; only
@@ -100,6 +100,11 @@ gated by env vars: `ADMIN_UIDS` (admin dashboard), `INVITE_ONLY` (signup needs a
 `ALLOW_GUEST` (client-only guest mode never hits the server at all), plus a rotating
 `data/audit.log` (JSONL) for sign-in/admin events. Web Push (`web-push`, VAPID keys
 auto-generated into `data/vapid.json`) drives rest-timer-over and day-reminder notifications.
+`db.js` connects to PostgreSQL (`DATABASE_URL`) and applies `migrations/NNN_*.sql` before the
+server starts listening — foundation laid in Phase 1a (ISO-1402) for the actual db.json/
+state-*.json read/write switch in Phase 1b (ISO-1403); `DATABASE_URL` is optional today, so the
+existing file-based test suite is unaffected. `api/scripts/test-with-pg.sh` (`npm run test:pg`)
+runs the suite against an ephemeral Postgres for the tests that do exercise it.
 
 ### MCP server (`mcp/src`)
 
@@ -121,16 +126,19 @@ notification code; it documents the exact env-var contract (`RP_ID`, `ORIGIN`, `
 
 ### Docker / deploy
 
-`docker-compose.yml` has three services: `media` (one-shot exercise-asset downloader, gitignored
-output), `api`, `web` (multi-stage build of `frontend/` served by nginx, which also proxies
-`/api` → `api` and serves the shared media volume — single origin, required for passkeys).
-`web/nginx.conf.template` is rendered from env vars at container start (`NGINX_PORT`, `BACKEND`,
-`PORT`), so host/port remapping works against prebuilt images without a rebuild.
+`docker-compose.yml` has four services: `media` (one-shot exercise-asset downloader, gitignored
+output), `db` (`postgres:17-alpine`, named volume `pgdata`, no host port published), `api`
+(`depends_on: db: condition: service_healthy`), `web` (multi-stage build of `frontend/` served
+by nginx, which also proxies `/api` → `api` and serves the shared media volume — single origin,
+required for passkeys). `web/nginx.conf.template` is rendered from env vars at container start
+(`NGINX_PORT`, `BACKEND`, `PORT`), so host/port remapping works against prebuilt images without
+a rebuild.
 
 ## Guidelines from CONTRIBUTING.md worth knowing before changing code
 
 - **Dependency-light is a hard constraint, not a preference.** Frontend: React + Router + Zustand
-  and nothing else. `api/`: two dependencies total. New dependencies are a hard sell either side.
+  and nothing else. `api/`: three dependencies total (`@simplewebauthn/server`, `web-push`, `pg`).
+  New dependencies are a hard sell either side.
 - Don't commit `media/` or `data/` (gitignored).
 - Training-logic changes (progression, 1RM, session read-back) need a unit test in `src/lib`
   beside the code, not just manual clicking-through.
