@@ -27,7 +27,7 @@ import { DEFAULT_LIMITS, MB } from './media-limits.js'
 export const BACKUP_JSON = 'opengym-backup.json'
 const MEDIA_ENTRY = /^media\/([0-9a-f]{64})\.(jpg|png|webp|gif|mp4|mov|webm)$/
 
-const README = `openGym backup with photos and videos
+const README = `Brilhart Fitness backup with photos and videos
 =====================================
 
 opengym-backup.json  your data - the same file "Export backup (JSON)" writes.
@@ -35,7 +35,7 @@ media/               the photos, GIFs and videos of your own exercises and of yo
                      workouts, each named by its SHA-256, plus the small previews
                      shown in lists.
 
-To bring it back: openGym -> Settings -> Import backup, and pick this .zip as it is.
+To bring it back: Brilhart Fitness -> Settings -> Import backup, and pick this .zip as it is.
 Do not unpack and re-zip it: the app reads zips that are stored, not compressed.
 `
 
@@ -86,7 +86,7 @@ const isBackup = d => !!d && typeof d === 'object' && !Array.isArray(d) && Array
  * Reads a picked backup, .json or .zip (told apart by its first bytes, not its name):
  * { state, files: [{ hash, entry }], zip }. `files` are the zip's media entries the state refers
  * to, not yet checked or stored — storeBackupMedia does that, once the import is confirmed.
- * Throws on anything that is not an openGym backup.
+ * Throws on anything that is not a Brilhart Fitness backup.
  */
 export async function readBackupFile(file) {
   let state, files = []
@@ -94,9 +94,9 @@ export async function readBackupFile(file) {
   if (zip) {
     const entries = await readZip(file)
     const json = entries.find(e => e.name === BACKUP_JSON)
-    if (!json) throw new Error('not an openGym backup')
+    if (!json) throw new Error('not a Brilhart Fitness backup')
     state = JSON.parse(await json.blob.text())
-    if (!isBackup(state)) throw new Error('not an openGym backup')
+    if (!isBackup(state)) throw new Error('not a Brilhart Fitness backup')
     const wanted = new Set(referencedFiles(state).map(f => f.hash))
     const seen = new Set()
     for (const e of entries) {
@@ -107,7 +107,7 @@ export async function readBackupFile(file) {
     }
   } else {
     state = JSON.parse(await file.text())
-    if (!isBackup(state)) throw new Error('not an openGym backup')
+    if (!isBackup(state)) throw new Error('not a Brilhart Fitness backup')
   }
   return { state: sanitizeCustomMedia(state), files, zip }
 }

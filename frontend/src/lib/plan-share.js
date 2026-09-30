@@ -1,7 +1,7 @@
 // Share a weekly plan.
 //
 // Two jobs:
-//  1. A small, self-contained file a friend can import into THEIR openGym — just the
+//  1. A small, self-contained file a friend can import into THEIR Brilhart Fitness — just the
 //     routines + the week schedule + the custom exercises those routines use. It never
 //     carries workouts, weigh-ins or settings, and importing MERGES (adds routines with
 //     fresh ids) so nothing the friend already has is touched.
@@ -26,7 +26,7 @@ const PLAN_UNITS = new Set(['kg', 'lb'])
 // A plan's numbers are in the unit that wrote it. Missing unit is deliberately legacy-compatible:
 // old files were read as already being in the recipient's unit, so keep their values unchanged.
 const planUnit = value => value === 'lbs' ? 'lb' : PLAN_UNITS.has(value) ? value : null
-const unitError = () => { throw new Error(t('this isn’t an openGym plan file')) }
+const unitError = () => { throw new Error(t('this isn’t a Brilhart Fitness plan file')) }
 
 function declaredPlanUnit(data) {
   let declared = null
@@ -202,7 +202,7 @@ export function parsePlan(raw, destinationUnit = 'kg') {
   const data = typeof raw === 'string' ? JSON.parse(raw) : raw
   const destination = planUnit(destinationUnit)
   if (!data || typeof data !== 'object' || Array.isArray(data) || !data.opengym_plan || !Array.isArray(data.routines) || !destination) {
-    throw new Error(t('this isn’t an openGym plan file'))
+    throw new Error(t('this isn’t a Brilhart Fitness plan file'))
   }
   const sourceUnit = declaredPlanUnit(data)
   const customEx = (Array.isArray(data.customEx) ? data.customEx : []).filter(c => c && c.id)
@@ -375,6 +375,9 @@ function weekHTML(S) {
  * schedule is left out and the routine's name is the page title.
  */
 export function planPrintHTML(S, owner, { routineId } = {}) {
+  // The domain varies by deployment (self-hosted, demo…), so it is read at print time rather
+  // than baked into the bundle. No footer link at all in a non-browser context (e.g. tests).
+  const appOrigin = typeof window !== 'undefined' && window.location ? window.location.origin : ''
   const unit = S.unit || 'kg'
   const single = routineId ? (S.routines || []).find(r => r.id === routineId) || null : null
   const routines = routineId ? [single].filter(Boolean) : (S.routines || []).filter(r => r.ex && r.ex.length)
@@ -437,13 +440,13 @@ export function planPrintHTML(S, owner, { routineId } = {}) {
 </style></head>
 <body><div class="doc">
   <header>
-    <div class="kicker">openGym</div>
+    <div class="kicker">Brilhart Fitness</div>
     <h1>${esc(title)}</h1>
     ${sub ? `<div class="sub">${sub}</div>` : ''}
   </header>
   ${week}
   ${body}
-  <footer>${esc(t('Made with openGym'))} · opengym.duarte-santos.ch</footer>
+  <footer>${esc(t('Made with Brilhart Fitness'))}${appOrigin ? ` · ${esc(appOrigin)}` : ''}</footer>
 </div></body></html>`
 }
 

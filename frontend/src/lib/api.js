@@ -82,7 +82,7 @@ async function exchange(url, init) {
   const body = parsed && data && typeof data === 'object' ? data : null
   // The body rides along on the error: a 409 from /api/data carries the server's document.
   if (!r.ok) { const e = new Error((body && body.error) || ('HTTP ' + r.status)); e.status = r.status; e.data = body || {}; throw e }
-  if (!body) throw failure(t('The server answered with something other than openGym data.'), 'bad-response', r.status)
+  if (!body) throw failure(t('The server answered with something other than Brilhart Fitness data.'), 'bad-response', r.status)
   return body
 }
 
@@ -192,7 +192,7 @@ export function apiUpload(path, blob, mime, { onProgress, idleMs = 60000, XHR = 
       if (body && typeof body !== 'object') body = null
       if (xhr.status >= 200 && xhr.status < 300) {
         if (body) resolve(body)
-        else reject(failure(t('The server answered with something other than openGym data.'), 'bad-response', xhr.status))
+        else reject(failure(t('The server answered with something other than Brilhart Fitness data.'), 'bad-response', xhr.status))
         return
       }
       if (xhr.status === 413 && !body) { reject(failure('HTTP 413', 'proxy-too-large', 413)); return }
@@ -218,7 +218,7 @@ export async function pairRedeem(serverBase, code) {
   }, TIMEOUT_GET_MS)
   // Anything that is not a pairing would be saved as one — and the phone would then send every
   // change to a server that never gave it a token.
-  if (!data.token || !data.user) throw failure(t('The server answered with something other than openGym data.'), 'bad-response', 200)
+  if (!data.token || !data.user) throw failure(t('The server answered with something other than Brilhart Fitness data.'), 'bad-response', 200)
   return data
 }
 

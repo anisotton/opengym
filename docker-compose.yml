@@ -35,7 +35,7 @@ services:
   # Passkey auth + per-user data (Node, no framework).
   # image: prebuilt (docker compose pull). build: from source (docker compose up --build).
   api:
-    image: ghcr.io/duartesantos8/opengym-api:latest
+    image: ghcr.io/anisotton/opengym-api:latest
     # Default target: no AI runtime, no AI dependency — the image every instance has always had.
     # To opt into the AI Coach, build the other target instead:
     #     API_TARGET=coach docker compose up --build api
@@ -55,6 +55,10 @@ services:
       # X-Forwarded-For / X-Real-IP with the real peer — so the sign-in throttle may count
       # requests by those headers instead of lumping everyone in as "the web container".
       - TRUST_PROXY=${TRUST_PROXY:-1}
+      # The public address of this instance (e-mail links, Stripe return URLs). Defaults to
+      # ORIGIN, which is right for almost everyone — only set it separately if the API is ever
+      # reachable at a different public address than the web origin.
+      - APP_URL=${APP_URL:-${ORIGIN}}
     volumes:
       - ./data:/data         # users, passkeys, per-user state, session secret — BACK THIS UP
                              # (and uploads/: the photos and videos of custom exercises)
@@ -66,7 +70,7 @@ services:
   # Builds the React frontend (multi-stage) and serves it, proxying /api → api
   # and the exercise media from the shared volume. Single origin for passkeys.
   web:
-    image: ghcr.io/duartesantos8/opengym-web:latest
+    image: ghcr.io/anisotton/opengym-web:latest
     build:
       context: .
       dockerfile: web/Dockerfile
@@ -97,6 +101,9 @@ services:
       # The largest photo or video upload nginx passes to the API. Keep it above
       # MEDIA_VIDEO_MAX_MB (40 by default), which the api service reads from .env.
       - MEDIA_UPLOAD_MAX=${MEDIA_UPLOAD_MAX:-48m}
+      # The public address of this instance. The entrypoint substitutes it into the served
+      # index.html's og:url/og:image tags — no rebuild per environment.
+      - APP_URL=${APP_URL:-${ORIGIN}}
     volumes:
       - ./media/img:/usr/share/nginx/html/img:ro
       - ./media/gif:/usr/share/nginx/html/gif:ro

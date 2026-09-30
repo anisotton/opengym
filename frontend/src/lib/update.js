@@ -1,14 +1,16 @@
-// Update check — compares the installed version (__APP_VERSION__) against
-// the latest release tag on GitLab and optionally downloads + installs the APK.
+// Update check — compares the installed version (__APP_VERSION__) against the latest release
+// tag on a GitLab-shaped releases feed, and optionally downloads + installs the APK.
 //
-// The GitLab releases API is public for this project, so no token is needed.
+// UPDATE_FEED is null: this fork does not publish a release feed of its own yet, so
+// checkForUpdate() resolves without ever reaching the network. The fetch-and-compare mechanism
+// (fetchLatest, below) is kept intact and independently testable for whenever UPDATE_FEED points
+// at a real GitLab-API-shaped feed again.
 // On Android (Capacitor), the APK asset is downloaded to the cache directory
 // and handed to the system installer via a content:// URI.
 
 import { MOBILE } from './mobile.js'
 
-const GITLAB_PROJECT_ID = 'DuarteSantos8%2Fopengym'
-const RELEASES_URL = `https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/releases`
+export const UPDATE_FEED = null
 
 /**
  * Compares two semver strings (e.g. "1.2.11" vs "1.3.0").
@@ -22,8 +24,12 @@ const RELEASES_URL = `https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/re
  * carries it.
  */
 function compareSemver(a, b) {
-  const pa = a.replace(/^v/, '').split('+')[0].split('.').map(Number)
-  const pb = b.replace(/^v/, '').split('+')[0].split('.').map(Number)
+  // parseInt, not Number: a running version can carry a pre-release suffix on top of build
+  // metadata ("0.0.0-alpha"), and Number("0-alpha") is NaN where parseInt reads the leading
+  // digits and stops. NaN propagated silently as "equal" (falsy || 0), so a release compared
+  // as x.y.0 against a suffixed patch and some real updates went unnoticed.
+  const pa = a.replace(/^v/, '').split('+')[0].split('.').map(s => parseInt(s, 10) || 0)
+  const pb = b.replace(/^v/, '').split('+')[0].split('.').map(s => parseInt(s, 10) || 0)
   for (let i = 0; i < 3; i++) {
     const diff = (pa[i] || 0) - (pb[i] || 0)
     if (diff > 0) return 1
@@ -32,27 +38,37 @@ function compareSemver(a, b) {
   return 0
 }
 
+const NO_UPDATE = { hasUpdate: false, latestVersion: __APP_VERSION__, apkUrl: null, hashUrl: null }
+
 /**
- * Checks the GitLab releases API for a newer version.
+ * Checks UPDATE_FEED for a newer version. Resolves to NO_UPDATE without any network call when
+ * UPDATE_FEED is unset (the default for this fork).
  * Returns { hasUpdate, latestVersion, apkUrl, hashUrl } or throws on network failure.
  *   - hasUpdate: true if the latest release tag is newer than the running build
  *   - latestVersion: the semver string of the latest release (without "v" prefix)
  *   - apkUrl: direct download URL of the first .apk asset, or null
  *   - hashUrl: direct download URL of the .apk.sha256 hash file, or null
  */
-// One request per app session: Settings is opened often, gitlab.com does not need to hear
-// about it every time. The promise is cached, a failure is not.
+// One request per app session: Settings is opened often, a configured feed does not need to
+// hear about it every time. The promise is cached, a failure is not.
 let cached = null
 export function resetUpdateCheck() { cached = null }
 export async function checkForUpdate() {
-  if (!cached) cached = fetchLatest().catch(e => { cached = null; throw e })
+  if (!UPDATE_FEED) return NO_UPDATE
+  if (!cached) cached = fetchLatest(UPDATE_FEED).catch(e => { cached = null; throw e })
   return cached
 }
-async function fetchLatest() {
-  const res = await fetch(RELEASES_URL + '?per_page=1')
-  if (!res.ok) throw new Error(`GitLab API ${res.status}`)
+
+/**
+ * The fetch-and-compare mechanism, kept independently testable (and reusable once a real feed
+ * is configured) regardless of whether checkForUpdate() is currently wired to call it.
+ * `feedUrl` is a GitLab releases-API-shaped endpoint (…/releases).
+ */
+export async function fetchLatest(feedUrl) {
+  const res = await fetch(feedUrl + '?per_page=1')
+  if (!res.ok) throw new Error(`Release feed ${res.status}`)
   const releases = await res.json()
-  if (!releases.length) return { hasUpdate: false, latestVersion: __APP_VERSION__, apkUrl: null, hashUrl: null }
+  if (!releases.length) return NO_UPDATE
 
   const latest = releases[0]
   const latestVersion = latest.tag_name.replace(/^v/, '')
@@ -91,11 +107,9 @@ export async function sha256(buffer) {
  * @param {function|null} onProgress - Called with (received, total) bytes during download, or null
  */
 export async function downloadAndInstall(url, expectedHash = null, onProgress = null) {
-  if (!MOBILE) {
-    // On web, just open the release page
-    window.open('https://gitlab.com/DuarteSantos8/opengym/-/releases', '_blank', 'noopener')
-    return
-  }
+  // The in-app installer only ever runs from the MOBILE Android update row (Settings.jsx),
+  // which is itself gated on UPDATE_FEED — nothing calls this on the web build.
+  if (!MOBILE) return
 
   const { Filesystem, Directory } = await import('@capacitor/filesystem')
 

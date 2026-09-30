@@ -21,7 +21,7 @@ import { mediaStore } from '../lib/media-store.js'
 import { syncMedia, fetchToStore } from '../lib/media-sync.js'
 import { getMediaStatus, subscribeMediaStatus, pendingRefCount } from '../lib/media-owed.js'
 import { limitsFrom, fmtMB, MB } from '../lib/media-limits.js'
-import { checkForUpdate, downloadAndInstall } from '../lib/update.js'
+import { checkForUpdate, downloadAndInstall, UPDATE_FEED } from '../lib/update.js'
 import { forgetCoach } from '../lib/coach-api.js'
 import { starterPlanSheet, confirmSheet, importFromApp, importFromHevy, equipmentProfileSheet, plateInventorySheet, menuSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
@@ -76,15 +76,17 @@ export default function Settings() {
     // The in-app updater installs an .apk, so it only applies to the native Android build.
     // On iOS and the web this check is skipped and the update row never appears. isAndroid()
     // already answers false off the mobile build; the MOBILE check on top keeps the web bundle
-    // from even asking (and from calling gitlab.com on every Settings visit).
-    if (!MOBILE) return
+    // from even asking. UPDATE_FEED is unset for this fork (no release feed published yet), so
+    // checkForUpdate() itself never reaches the network either way — the gate here just skips
+    // asking isAndroid() for nothing.
+    if (!MOBILE || !UPDATE_FEED) return
     isAndroid().then(ok => { setAndroid(ok); if (ok) checkForUpdate().then(setUpdateInfo).catch(() => {}) })
   }, [])
 
   // The same check, on demand: the automatic one is silent when it finds nothing or cannot
-  // reach gitlab.com, and a person who taps "Check for updates" deserves an answer either way.
+  // reach the feed, and a person who taps "Check for updates" deserves an answer either way.
   const checkNow = async () => {
-    if (checking) return
+    if (checking || !UPDATE_FEED) return
     setChecking(true)
     try {
       const info = await checkForUpdate()
@@ -134,9 +136,9 @@ export default function Settings() {
           }
         },
       })
-    } else {
+    } else if (UPDATE_FEED) {
       // Update available but no APK asset — open the releases page
-      window.open('https://gitlab.com/DuarteSantos8/opengym/-/releases', '_blank', 'noopener')
+      window.open(UPDATE_FEED, '_blank', 'noopener')
     }
   }
 
@@ -289,20 +291,20 @@ export default function Settings() {
     {!(MOBILE && user) && <Section title={MOBILE ? t('Your data') : DEMO ? t('Demo') : t('Account')}>
       {MOBILE ? <>
         <Row icon="lock" iconTint="var(--acc)" title={t('All data stays on this phone')} subtitle={t('No account, no cloud — back it up anytime with Export below.')} />
-        <Row icon="link" iconTint="var(--indigo)" title={t('Connect to my server')} subtitle={t('Sync this device to your own self-hosted openGym instead.')} accessory="chevron"
+        <Row icon="link" iconTint="var(--indigo)" title={t('Connect to my server')} subtitle={t('Sync this device to your own self-hosted Brilhart Fitness instead.')} accessory="chevron"
           onClick={connectServer} />
         <KeptChangesRows />
       </> : DEMO ? <>
         <Row icon="sparkles" iconTint="var(--acc)" title={t('You’re in the demo')} subtitle={t('Example data, stored only in this browser — change anything you like.')} />
         <Row icon="reset" iconTint="var(--blue)" title={t('Reset demo data')} accessory="chevron"
           onClick={() => confirmSheet({ title: t('Reset demo data?'), message: t('Puts the example plan, workouts and weigh-ins back the way they started.'), confirmText: t('Reset'), onConfirm: () => { resetDemo(); nav('/home'); toast(t('Demo data reset')) } })} />
-        <Row icon="rocket" iconTint="var(--indigo)" title={t('Self-host openGym')} subtitle={t('Passkey sign-in, sync across your devices, your own data.')} accessory="chevron"
+        <Row icon="rocket" iconTint="var(--indigo)" title={t('Self-host Brilhart Fitness')} subtitle={t('Passkey sign-in, sync across your devices, your own data.')} accessory="chevron"
           onClick={() => window.open(REPO, '_blank', 'noopener')} />
       </> : user ? <>
         {user.admin && <Row icon="wrench" iconTint="var(--indigo)" title={t('Admin dashboard')} accessory="chevron" onClick={() => nav('/admin')} />}
         <PasskeysRow state={passkeys.st} changed={credsChanged} />
         <DeviceLinkRow state={passkeys.st} />
-        <Row icon="link" iconTint="var(--blue)" title={t('Pair the mobile app')} subtitle={t('Connect the openGym app on your phone to this account.')} accessory="chevron"
+        <Row icon="link" iconTint="var(--blue)" title={t('Pair the mobile app')} subtitle={t('Connect the Brilhart Fitness app on your phone to this account.')} accessory="chevron"
           onClick={() => useUI.getState().openSheet(close => <PairSheet close={close} />)} />
         {pwOn && <PasswordRow version={credsV} />}
         <Row icon="signOut" iconTint="var(--red)" title={t('Sign out')} danger onClick={signOutHere} />
@@ -328,7 +330,7 @@ export default function Settings() {
     {/* ---------- the Coach on a phone: through the paired server, or with the user's own key ---------- */}
     {MOBILE && <Section title={t('AI Coach')}>
       <Row icon="sparkles" iconTint="var(--acc)" title={t('AI Coach')} accessory="chevron"
-        subtitle={coachLocal?.mode === 'server' ? t('Runs on your openGym server') : coachLocal?.mode === 'byok' ? t('Runs on this phone with your own API key') : t('Off — choose how the Coach should run.')}
+        subtitle={coachLocal?.mode === 'server' ? t('Runs on your Brilhart Fitness server') : coachLocal?.mode === 'byok' ? t('Runs on this phone with your own API key') : t('Off — choose how the Coach should run.')}
         onClick={() => nav('/coach/setup')} />
     </Section>}
 
@@ -547,7 +549,7 @@ export default function Settings() {
       {/* 14 is AUTO_BACKUP_KEEP in lib/mobile.js, written out because the Settings tests mock
           that module wholesale; mobile.autobackup.test.js pins the two together. */}
       {MOBILE && <Row icon="history" iconTint="var(--blue)" title={t('Auto-backup on changes')}
-        subtitle={t('Saves a dated copy to Documents/openGym after finishing a workout or editing a routine, and keeps the newest {0} — point a sync app at that folder, or copy it out by hand.', 14)}>
+        subtitle={t('Saves a dated copy to Documents/Brilhart Fitness after finishing a workout or editing a routine, and keeps the newest {0} — point a sync app at that folder, or copy it out by hand.', 14)}>
         <Switch checked={!!S.autoBackup} onChange={v => update(s => { s.autoBackup = v })} />
       </Row>}
       <Row icon="trash" iconTint="var(--red)" title={t('Reset everything')} danger onClick={resetEverything} />
@@ -561,24 +563,21 @@ export default function Settings() {
     {!MOBILE && <Section title={t('Tip')}>
       <Row icon="lightbulb" iconTint="var(--yellow)"
         title={IS_ANDROID ? t('In Chrome: ⋮ menu → Add to Home screen') : t('In Safari: Share → Add to Home Screen')}
-        subtitle={t('to install openGym as a full-screen app.') + ' ' + (user ? t('Your data syncs with your profile — sign in anywhere to see it.') : t('Guest data stays on this device — export a backup now and then!'))} />
+        subtitle={t('to install Brilhart Fitness as a full-screen app.') + ' ' + (user ? t('Your data syncs with your profile — sign in anywhere to see it.') : t('Guest data stays on this device — export a backup now and then!'))} />
     </Section>}
 
-    {/* ---------- updates: the last thing on the page, so keeping openGym current is one tap ----------
-        On Android the row is always there — it checks on demand and installs when a release is
-        newer (checksum verified, see onUpdateRowClick). On the web the app updates with its
-        server, so the row points at the APK for the phone instead. iOS has no APK: nothing. */}
-    {(!MOBILE || android) && <Section title={t('Updates')}
-      footer={MOBILE ? t('Releases are checked on gitlab.com. The download is verified against its checksum before the installer opens.') : t('The web app updates together with your server. The Android app installs its own updates from here.')}>
-      {MOBILE
-        ? <Row icon="download" iconTint="var(--acc)"
-            title={updateInfo?.hasUpdate ? t('Update to openGym v{0}', updateInfo.latestVersion) : t('Check for updates')}
-            subtitle={checking ? t('Checking…') : t('You have v{0}', __APP_VERSION__)}
-            accessory="chevron"
-            onClick={() => (updateInfo?.hasUpdate ? onUpdateRowClick() : checkNow())} />
-        : <Row icon="download" iconTint="var(--acc)" title={t('Get the Android app')}
-            subtitle={t('Download the APK from opengym.duarte-santos.ch')} accessory="chevron"
-            onClick={() => window.open('https://opengym.duarte-santos.ch/#download', '_blank', 'noopener')} />}
+    {/* ---------- updates: the last thing on the page, so keeping Brilhart Fitness current is one tap ----------
+        Android only — it checks on demand and installs when a release is newer (checksum
+        verified, see onUpdateRowClick). Nothing on the web (the app updates with its server) or
+        iOS (no APK). UPDATE_FEED is unset for this fork (no release feed published yet), so the
+        whole section stays hidden until one exists — there's nothing to check against. */}
+    {MOBILE && android && UPDATE_FEED && <Section title={t('Updates')}
+      footer={t('Releases are checked automatically. The download is verified against its checksum before the installer opens.')}>
+      <Row icon="download" iconTint="var(--acc)"
+        title={updateInfo?.hasUpdate ? t('Update to Brilhart Fitness v{0}', updateInfo.latestVersion) : t('Check for updates')}
+        subtitle={checking ? t('Checking…') : t('You have v{0}', __APP_VERSION__)}
+        accessory="chevron"
+        onClick={() => (updateInfo?.hasUpdate ? onUpdateRowClick() : checkNow())} />
     </Section>}
 
     {/* The version, at the bottom of Settings — which is where the support template has been
@@ -586,7 +585,7 @@ export default function Settings() {
         address bar and no about box, so without this there is no way to tell which build you
         are running, or whether an update actually installed. */}
     <div className="dim small" style={{ textAlign: 'center', marginTop: 4, lineHeight: 1.6 }}>
-      openGym v{__APP_VERSION__} · {t('free & open source (AGPL v3)')}<br />
+      Brilhart Fitness v{__APP_VERSION__} · {t('free & open source (AGPL v3)')}<br />
       <a href="https://github.com/anisotton/opengym" target="_blank" rel="noopener">source code</a> · exercise data: hasaneyldrm/exercises-dataset (MIT)<br />
       exercise images and animations © <a href="https://gymvisual.com/" target="_blank" rel="noopener">Gym visual</a>
     </div>
@@ -764,7 +763,7 @@ function PushCard({ S, update, toast }) {
           (S.reminder?.tz ? ' ' + t('Timezone: {0} (auto-detected, updates if you travel).', S.reminder.tz) : '')
         : null}
     >
-      <Row icon="bell" iconTint="var(--red)" title={t('Push notifications')} subtitle={t('Rest-timer alerts, even if openGym is closed.')}>
+      <Row icon="bell" iconTint="var(--red)" title={t('Push notifications')} subtitle={t('Rest-timer alerts, even if Brilhart Fitness is closed.')}>
         <Switch checked={on} disabled={busy} onChange={toggle} />
       </Row>
       {on && (
@@ -884,7 +883,7 @@ function PairSheet({ close }) {
   return <>
     <h3>{t('Pair the mobile app')}</h3>
     <div className="muted small" style={{ marginBottom: 14 }}>
-      {t('On the openGym app, choose “Connect to my server”, then enter this address and the code below. It expires in 5 minutes.')}
+      {t('On the Brilhart Fitness app, choose “Connect to my server”, then enter this address and the code below. It expires in 5 minutes.')}
     </div>
     {err ? <div className="dim small">{err}</div> : (
       <div className="card" style={{ textAlign: 'center', fontSize: 30, fontWeight: 700, letterSpacing: '.16em', padding: '18px 0' }}>

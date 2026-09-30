@@ -9,7 +9,7 @@ test('localizes every server-generated notification in pt-BR', () => {
     tag: 'rest-timer',
   });
   assert.deepEqual(testPush('pt-BR'), {
-    title: 'openGym',
+    title: 'Brilhart Fitness',
     body: 'Notificação de teste ✅ — é assim que os alertas aparecem.',
     tag: 'test',
   });

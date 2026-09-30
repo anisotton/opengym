@@ -25,7 +25,7 @@ export function restTimerPush(lang) {
 }
 
 export function testPush(lang) {
-  return { title: 'openGym', body: copyFor(lang).testBody, tag: 'test' };
+  return { title: 'Brilhart Fitness', body: copyFor(lang).testBody, tag: 'test' };
 }
 
 export function dayReminderPush(lang, routine) {
