@@ -29,7 +29,10 @@ async function startServer(t, { twoAdmins = false } = {}) {
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     users,
     creds: [{ id: 'c-victim', userId: VICTIM, publicKey: 'x' }, { id: 'c-admin', userId: ADMIN, publicKey: 'y' }],
-    subs: [{ endpoint: 'https://push/victim', userId: VICTIM }, { endpoint: 'https://push/admin', userId: ADMIN }],
+    subs: [
+      { endpoint: 'https://push/victim', userId: VICTIM, keys: { p256dh: 'p', auth: 'a' } },
+      { endpoint: 'https://push/admin', userId: ADMIN, keys: { p256dh: 'p', auth: 'a' } }
+    ],
     invites: [{ code: 'CODE1', usedBy: VICTIM, usedAt: new Date().toISOString() }],
   }));
   const h = await spawnApi(t, { dataDir });
@@ -45,8 +48,8 @@ async function startServer(t, { twoAdmins = false } = {}) {
     try { return (await pool.query('SELECT 1 FROM user_state WHERE user_id = $1', [uid])).rows[0] || null; }
     finally { await pool.end(); }
   };
-  // users/invites moved off db.json onto PostgreSQL (ISO-1403) — creds/subs have not moved yet
-  // and still read straight off h.db().
+  // users/invites/push subscriptions moved off db.json onto PostgreSQL (ISO-1403) — creds have
+  // not moved yet and still read straight off h.db().
   h.users = async () => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
     try { return (await pool.query('SELECT id FROM users ORDER BY created_at')).rows.map(r => r.id); }
@@ -55,6 +58,11 @@ async function startServer(t, { twoAdmins = false } = {}) {
   h.invites = async () => {
     const pool = new pg.Pool({ connectionString: h.databaseUrl });
     try { return (await pool.query('SELECT code, used_by FROM invites ORDER BY created_at')).rows; }
+    finally { await pool.end(); }
+  };
+  h.subs = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT user_id FROM push_subscriptions ORDER BY created_at')).rows.map(r => r.user_id); }
     finally { await pool.end(); }
   };
   h.stackFrames = () => h.log.split('\n').filter(l => /^\s+at /.test(l)).length;
@@ -70,7 +78,7 @@ test('removes the account and everything attached to it', async t => {
   assert.deepEqual(await h.users(), [ADMIN], 'the user is gone');
   const db = h.db();
   assert.deepEqual(db.creds.map(c => c.userId), [ADMIN], 'their passkeys are gone');
-  assert.deepEqual(db.subs.map(s => s.userId), [ADMIN], 'their push subscriptions are gone');
+  assert.deepEqual(await h.subs(), [ADMIN], 'their push subscriptions are gone');
   assert.equal(await h.stateRow(VICTIM), null, 'their history is gone');
   // The code they joined with stays burned: it was used, and freeing it would quietly widen
   // an invite-only instance.

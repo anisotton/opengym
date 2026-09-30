@@ -38,7 +38,8 @@ import {
   setPasswordReset, bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder,
   deleteUser, upsertUser, backfillPasswordResetBy,
   createSession, getSession, revokeSession,
-  createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite
+  createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
+  upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe
 } from './store.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -271,21 +272,26 @@ function pushEndpointError(raw) {
 // belongs to the device that started the rest); a subscription stored without one — an older
 // client — still gets everything, as before.
 async function sendPush(userId, payload, deviceId) {
-  let subs = db.subs.filter(s => s.userId === userId);
+  let subs = await getUserSubs(pool, userId);
   if (deviceId && subs.some(s => s.deviceId === deviceId)) subs = subs.filter(s => s.deviceId === deviceId);
   if (!subs.length) return;
   const body = JSON.stringify(payload);
-  let dirty = false;
+  // Pruning a dead or refused subscription is bookkeeping, not the send. Most callers do not
+  // await this function at all (the rest-timer setTimeout, the Coach proposal hook), so a
+  // Postgres delete that fails right now would turn the throw into an unhandled rejection and
+  // take the process down — caught and logged per row instead. A row this leaves behind is
+  // pruned again the next time a send to it fails, same as before.
+  const prune = endpoint => deleteSub(pool, endpoint).catch(e => console.error('push: could not prune dead subscription', e.message));
   let next = 0;
   const worker = async () => {
     while (next < subs.length) {
       const sub = subs[next++];
       // Re-judged before every send: PUSH_AGENT never sees a literal address, so an endpoint
-      // that is private (however it got into db.json) is dropped here rather than connected to.
+      // that is private (however it got into the database) is dropped here rather than connected to.
       const bad = pushEndpointError(sub.endpoint);
       if (bad) {
         console.error('push endpoint refused', userId, bad);
-        db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint); dirty = true;
+        await prune(sub.endpoint);
         continue;
       }
       // urgency 'high' is the one lever we have over delivery speed — iOS/Android throttle
@@ -302,20 +308,11 @@ async function sendPush(userId, payload, deviceId) {
         // signature — a subscription made against a key this instance no longer has (data/vapid.json
         // regenerated). Neither will ever deliver again; keeping them only hides the fact from the
         // Settings toggle, which reads the browser's side. The client re-subscribes on its next boot.
-        if (e.statusCode === 404 || e.statusCode === 410 || e.statusCode === 403) {
-          db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint); dirty = true;
-        }
+        if (e.statusCode === 404 || e.statusCode === 410 || e.statusCode === 403) await prune(sub.endpoint);
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(PUSH_CONCURRENCY, subs.length) }, worker));
-  // Pruning dead subscriptions is bookkeeping, not the send. Most callers do not await this
-  // function at all (the rest-timer setTimeout, the Coach proposal hook), so a ./data that cannot
-  // be written right now — disk full, read-only mount, EIO — would turn the throw into an
-  // unhandled rejection and take the process down. The row is already gone from db.subs in
-  // memory, so only the copy on disk lags: the next saveDb() that succeeds, from any route,
-  // writes it out, and a restart re-reads the old file and prunes it again on the next send.
-  if (dirty) { try { saveDb(); } catch (e) { console.error('push: could not save db.json', e.message); } }
 }
 
 // Rest-timer alerts: client schedules on start/extend, cancels on skip or on-screen completion —
@@ -397,8 +394,9 @@ setInterval(async () => {
   // land before `pool` exists at all.
   if (!pool) return;
   usersCache = await getAllUsers(pool);
+  const withPush = await getUserIdsWithPush(pool);
   for (const user of usersCache) {
-    if (!db.subs.some(s => s.userId === user.id)) continue;
+    if (!withPush.has(user.id)) continue;
     // One user's state is one user's problem: a shape this tick cannot read is logged and
     // skipped, not allowed to take the process — and everyone else's reminders — down with it.
     // PUT /api/data refuses the obvious shapes, but a document written before it did answers to
@@ -2189,24 +2187,18 @@ const routes = {
     const bad = pushEndpointError(sub.endpoint);
     if (bad) return json(res, 400, { error: bad });
     // Only the two keys the push protocol needs are kept: `sub` is caller-supplied and would
-    // otherwise put arbitrary fields into db.json, which every admin route reads back out.
+    // otherwise put arbitrary fields into the row, which every admin route reads back out.
     const keys = { p256dh: String(sub.keys.p256dh), auth: String(sub.keys.auth) };
     const deviceId = deviceIdOf(body.deviceId);
     // An upsert: the client re-sends its subscription on every boot (lib/push.js) so a row this
-    // instance lost — pruned after a dead send, a rebuilt db.json — comes back without anyone
-    // touching Settings. The same endpoint sent again keeps its original `created`.
-    const prev = db.subs.find(s => s.endpoint === sub.endpoint);
-    db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint);
+    // instance lost — pruned after a dead send — comes back without anyone touching Settings.
+    // The same endpoint sent again keeps its original `created` (upsertSub's ON CONFLICT never
+    // touches created_at).
+    await upsertSub(pool, { userId: user.id, endpoint: sub.endpoint, keys, deviceId });
     // A browser holds one subscription per device, so this cap is far above real use. Without
     // it a single account could pile up endpoints without limit — every one of them a target
-    // sendPush() would then contact, and a whole rewrite of db.json per addition.
-    const mine = db.subs.filter(s => s.userId === user.id);
-    if (mine.length >= MAX_SUBS_PER_USER) {
-      const drop = new Set(mine.slice(0, mine.length - MAX_SUBS_PER_USER + 1).map(s => s.endpoint));
-      db.subs = db.subs.filter(s => !drop.has(s.endpoint));
-    }
-    db.subs.push({ userId: user.id, endpoint: sub.endpoint, keys, ...(deviceId ? { deviceId } : {}), created: prev?.created || new Date().toISOString() });
-    saveDb();
+    // sendPush() would then contact.
+    await capUserSubs(pool, user.id, MAX_SUBS_PER_USER);
     json(res, 200, { ok: true });
   },
 
@@ -2217,15 +2209,14 @@ const routes = {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const endpoint = new URL(req.url, 'http://x').searchParams.get('endpoint') || '';
-    json(res, 200, { subscribed: db.subs.some(s => s.userId === user.id && s.endpoint === endpoint) });
+    json(res, 200, { subscribed: await subStatus(pool, user.id, endpoint) });
   },
 
   'POST /api/push/unsubscribe': async (req, res) => {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
-    db.subs = db.subs.filter(s => !(s.userId === user.id && s.endpoint === body.endpoint));
-    saveDb();
+    await unsubscribe(pool, user.id, body.endpoint);
     json(res, 200, { ok: true });
   },
 
@@ -2291,7 +2282,7 @@ const routes = {
         workouts: workouts.length,
         lastWorkout: last ? last.d : null,
         lastSync: lastSyncOf(u, S),
-        hasPush: db.subs.some(s => s.userId === u.id),
+        hasPush: await hasPush(pool, u.id),
         live: livePresence(u.id),
         // The sign-in e-mail is an admin's to see (to hand out a reset code, to tell two
         // profiles apart), and only while the instance takes passwords at all.
@@ -2355,12 +2346,10 @@ const routes = {
     if (isAdmin(u) && (await getAllUsers(pool)).filter(isAdmin).length <= 1) return json(res, 400, { error: 'cannot delete the last admin' });
     const name = u.name;
     db.creds = (db.creds || []).filter(c => c.userId !== u.id);
-    db.subs = (db.subs || []).filter(x => x.userId !== u.id);
     dropDeviceLinks(db, u.id);
     presence.delete(u.id);
-    // The row itself — cascades to user_state, same as `ON DELETE CASCADE` will do everywhere
-    // else once the rest of db.json (creds/subs/deviceLinks, just filtered out above by hand)
-    // moves here too.
+    // The row itself — cascades to user_state and push_subscriptions (`ON DELETE CASCADE`),
+    // same as it will for creds/deviceLinks, just filtered out above by hand, once they move here too.
     await deleteUser(pool, u.id);
     try { coachConfig.clearProfileAuth(u.id); } catch { /* nothing stored */ }
     // Their photos and videos — the one place a profile's folder under uploads/ is removed.
@@ -2609,6 +2598,14 @@ async function listen() {
     try { await upsertInvite(pool, i); } catch (e) { console.error('could not migrate invite into postgres', i.code, e.message); process.exit(1); }
   }
   delete db.invites;
+  // Same idea, for push subscriptions — not fatal on failure, unlike users/invites above: a
+  // subscription this fails to carry over (a dangling userId nobody has, a malformed db.json
+  // entry) is not data anyone can lose in a way that matters, since the client re-sends its
+  // subscription itself on its next boot (lib/push.js).
+  for (const s of db.subs) {
+    try { await upsertSub(pool, s); } catch (e) { console.error('could not migrate push subscription into postgres', s.endpoint, e.message); }
+  }
+  delete db.subs;
   // The port is read back off the listener rather than echoed from PORT, so the line states the
   // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose
   // it (the tests spawn the server that way, and so does anyone running two instances on one

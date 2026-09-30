@@ -1,9 +1,7 @@
 /* PostgreSQL-backed access for the pieces of db.json / state-<uid>.json converted so far
- * (ISO-1403, Phase 1b): a profile's training data (user_state) and now `users` itself — identity,
- * passwords, admin/disabled flags, session_version. `passkeys` (db.creds), invites, push
- * subscriptions and device links are still db.json for now; `users.invited_by`/`password_reset_by`
- * keep their FK targets but nothing here writes `invited_by` yet (see createUser/upsertUser) since
- * invites have nowhere in Postgres to point at until they move too.
+ * (ISO-1403, Phase 1b): a profile's training data (user_state), `users` itself — identity,
+ * passwords, admin/disabled flags, session_version — invites, and now push subscriptions.
+ * `passkeys` (db.creds) and device links are still db.json for now.
  */
 
 // { state, rev } — state is null and rev is 0 for a profile that has never pushed, exactly what
@@ -355,4 +353,76 @@ export async function upsertInvite(pool, { code, note, createdBy, created, usedB
     if (e.code !== '23503') throw e; // not foreign_key_violation
     await pool.query(sql, [values[0], values[1], null, values[3], values[4], values[5]]);
   }
+}
+
+/* ---------- push subscriptions ----------
+ * One row per browser/device, keyed on its own `endpoint` (unique) rather than on the user —
+ * `user_id` is just which account a send belongs to. `upsertSub`'s ON CONFLICT (endpoint) is the
+ * same "the client re-sends its subscription on every boot" upsert db.json always did: the SET
+ * clause never touches created_at, so a row's original created date survives being sent again.
+ */
+
+function rowToSub(row) {
+  return {
+    userId: row.user_id, endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth },
+    ...(row.device_id ? { deviceId: row.device_id } : {}),
+    created: row.created_at.toISOString()
+  };
+}
+
+export async function upsertSub(pool, { userId, endpoint, keys, deviceId, created }) {
+  await pool.query(
+    `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, device_id, created_at)
+     VALUES ($1,$2,$3,$4,$5, COALESCE($6, now()))
+     ON CONFLICT (endpoint) DO UPDATE SET
+       user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, device_id = EXCLUDED.device_id`,
+    [userId, endpoint, keys.p256dh, keys.auth, deviceId || null, created ? new Date(created) : null]
+  );
+}
+
+// MAX_SUBS_PER_USER enforcement: drop the oldest rows of this user beyond `max`, keeping the
+// newest — same intent as db.json's `mine.slice(0, ...)` did, now as one DELETE.
+export async function capUserSubs(pool, userId, max) {
+  await pool.query(
+    `DELETE FROM push_subscriptions WHERE user_id = $1 AND id NOT IN (
+       SELECT id FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2
+     )`,
+    [userId, max]
+  );
+}
+
+export async function getUserSubs(pool, userId) {
+  const { rows } = await pool.query('SELECT * FROM push_subscriptions WHERE user_id = $1', [userId]);
+  return rows.map(rowToSub);
+}
+
+// The reminder tick's own filter, done once per tick rather than once per user (getUserSubs in a
+// loop would be a query per account every 10 s) — same shape db.subs.some(...) let it check
+// in memory before this moved.
+export async function getUserIdsWithPush(pool) {
+  const { rows } = await pool.query('SELECT DISTINCT user_id FROM push_subscriptions');
+  return new Set(rows.map(r => r.user_id));
+}
+
+export async function hasPush(pool, userId) {
+  const { rows } = await pool.query('SELECT 1 FROM push_subscriptions WHERE user_id = $1 LIMIT 1', [userId]);
+  return rows.length > 0;
+}
+
+export async function subStatus(pool, userId, endpoint) {
+  const { rows } = await pool.query(
+    'SELECT 1 FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [userId, endpoint]
+  );
+  return rows.length > 0;
+}
+
+// Send-time pruning (a dead or refused endpoint) and Settings' unsubscribe both just need the
+// row gone — the first by endpoint alone (sendPush already filtered to the one user's rows), the
+// second scoped to the caller's own account so one user can never unsubscribe another's device.
+export async function deleteSub(pool, endpoint) {
+  await pool.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [endpoint]);
+}
+
+export async function unsubscribe(pool, userId, endpoint) {
+  await pool.query('DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [userId, endpoint]);
 }

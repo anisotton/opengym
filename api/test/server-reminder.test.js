@@ -72,7 +72,9 @@ test('a non-array workouts in user_state is logged and skipped by the reminder t
   const keys = { p256dh: 'p', auth: 'a' };
   // localhost resolves to a loopback address, which PUSH_AGENT refuses — the send that follows the
   // reminder fails locally and quietly, with no socket leaving this machine
-  const subs = USERS.map(u => ({ userId: u.id, endpoint: 'https://localhost/x', keys, created: new Date().toISOString() }));
+  // distinct endpoints: push_subscriptions.endpoint is unique across every account, same as two
+  // real browsers never sharing one.
+  const subs = USERS.map(u => ({ userId: u.id, endpoint: `https://localhost/${u.id}`, keys, created: new Date().toISOString() }));
   const h = await startServer(t, subs);
 
   const routines = [{ id: 'r1', name: 'Full body', emoji: '💪', ex: [] }];

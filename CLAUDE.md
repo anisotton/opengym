@@ -117,9 +117,14 @@ that foreign-key column, because an invite code minted before this migration and
 db.json cannot be referenced from a Postgres row at boot. `invites.used_by` deliberately carries no
 foreign key (unlike `created_by`, which does): `admin/user/delete` relies on a burned code staying
 burned even after the account that burned it is gone, or deleting a user would quietly free their
-invite back up on an invite-only instance. `db.json` (passkey credentials, push subscriptions,
-device links) has **not** moved yet — that's the rest of ISO-1403, in a later run — and is still a
-flat file under `DATA_DIR`, written with a write-temp-then-rename atomic pattern (`atomicWrite`).
+invite back up on an invite-only instance. Push subscriptions live in Postgres too now
+(`push_subscriptions`, one row per browser/device keyed on its own unique `endpoint`); a dead or
+refused endpoint is pruned with a plain `DELETE`, caught and logged rather than awaited by most
+callers (the rest-timer `setTimeout`, the Coach proposal hook), so a query that fails right now
+can no longer turn into an unhandled rejection that takes the process down — the row is just
+pruned again next time a send to it fails. `db.json` (passkey credentials, device links) has **not**
+moved yet — that's the rest of ISO-1403, in a later run — and is still a flat file under
+`DATA_DIR`, written with a write-temp-then-rename atomic pattern (`atomicWrite`).
 `api/coach/jobs.js` still reads `state-<uid>.json` directly and is not migrated by this pass — a
 real gap until it moves too (see the issue's final comment: Coach stops seeing data for anyone who
 syncs after this ships, until it does). Auth is WebAuthn passkeys (`@simplewebauthn/server`) plus a
