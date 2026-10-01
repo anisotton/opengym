@@ -24,6 +24,7 @@ import SyncBanner from './components/SyncBanner.jsx'
 import RestTimer from './components/RestTimer.jsx'
 import TimerFlash from './components/TimerFlash.jsx'
 import { openDeviceLinkRedeem } from './components/Passkeys.jsx'
+import { needsEmailPromptDue, openNeedsEmailPrompt } from './components/AccountEmail.jsx'
 import Login from './views/Login.jsx'
 import MobileOnboarding from './views/MobileOnboarding.jsx'
 import Home from './views/Home.jsx'
@@ -132,6 +133,15 @@ function Shell() {
     linkOffered.current = true
     openDeviceLinkRedeem()
   }, [ready, linkCode])
+  // Account from before ISO-1397 that still has no e-mail (ISO-1398): once per sign-in, at most
+  // once every 7 days while it stays unset (needsEmailPromptDue, its own local deferral) — never
+  // blocks the app either way.
+  const needsEmailOffered = useRef(false)
+  useEffect(() => {
+    if (!ready || !user?.needsEmail || needsEmailOffered.current || !needsEmailPromptDue()) return
+    needsEmailOffered.current = true
+    openNeedsEmailPrompt()
+  }, [ready, user?.id, user?.needsEmail])
   useEffect(() => {
     const onScroll = () => {
       // Modals pins the body while a sheet is open; scrollY is 0 then, not a position.
