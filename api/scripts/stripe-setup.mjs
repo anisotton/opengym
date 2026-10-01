@@ -25,10 +25,12 @@ const PLANS = [
   { env: 'STRIPE_PRICE_MONTHLY', nickname: 'Mensal', unit_amount: 8900, recurring: { interval: 'month', interval_count: 1 } },
   { env: 'STRIPE_PRICE_QUARTERLY', nickname: 'Trimestral', unit_amount: 23700, recurring: { interval: 'month', interval_count: 3 } },
   { env: 'STRIPE_PRICE_YEARLY', nickname: 'Anual', unit_amount: 76800, recurring: { interval: 'year', interval_count: 1 } },
-  // One-time, not recurring: added as a second Checkout line item only on an account's first-ever
-  // subscription (api/billing.js's createCheckoutSession) — see the issue for why a one-time Price
-  // rather than a second recurring one at a different amount.
-  { env: 'STRIPE_PRICE_INTRO', nickname: 'Primeiro mês', unit_amount: 199, recurring: null }
+  // Recurring, not one-time: ISO-1392 rules out a real Stripe trial (there is no `trialing`
+  // status), so a first-ever Checkout sells this Price alone — one billing cycle, `active` from
+  // the first invoice — and api/billing.js's webhook converts the subscription into a two-phase
+  // Subscription Schedule that moves to the chosen plan's Price after that one cycle. A one-time
+  // Price can't be a schedule phase, which is why this one has to be recurring too.
+  { env: 'STRIPE_PRICE_INTRO', nickname: 'Primeiro mês', unit_amount: 199, recurring: { interval: 'month', interval_count: 1 } }
 ];
 
 if (DRY_RUN) {

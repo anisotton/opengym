@@ -1718,10 +1718,16 @@ paths:
         only way this route ever answers without a `status`, so a client can tell "no billing on
         this instance" apart from "no subscription yet" (`status: "none"`) without a 404.
 
-        `active` is what the app shows the read-only banner on: true for `trialing` (the R$1,99
-        first month, already charged) and `active`; false for everything else, including a
-        `canceled` subscription past its `currentPeriodEnd`. `firstFullCharge` is set once
-        `invoice.paid` reports the first post-trial invoice, and never changes after that.
+        There is no `trialing`: per ISO-1392's status-mapping table, the R$1,99 first month is a
+        sub-state of `active`, surfaced as `firstPeriod: true` rather than a different `status` —
+        a first-ever Checkout sells one cycle of the intro Price directly (no Stripe trial), so the
+        subscription is `active` from its first invoice. `active` is what the app shows the
+        read-only banner on: true for `status` `active` or `past_due` (Stripe still retrying a
+        failed renewal — issue rule, never an immediate block); false otherwise, including a
+        `canceled` subscription past its `currentPeriodEnd`. `nextChargeAmount`/`nextChargeDate`
+        describe the upcoming invoice — the full plan price even while `firstPeriod` is still true.
+        `firstFullCharge` is set once `invoice.paid` reports the first post-intro invoice, and
+        never changes after that.
       responses:
         '200':
           description: Current billing state.
@@ -1731,12 +1737,13 @@ paths:
                 type: object
                 properties:
                   enabled: { type: boolean }
-                  status: { type: string, enum: [none, trialing, active, past_due, canceled, incomplete, incomplete_expired, unpaid] }
+                  status: { type: string, enum: [none, active, past_due, canceled, incomplete, incomplete_expired, unpaid] }
                   active: { type: boolean }
                   plan: { oneOf: [{ type: string, enum: [monthly, quarterly, yearly] }, { type: 'null' }] }
-                  currentPeriodEnd: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  firstPeriod: { type: boolean, description: Still on the R$1,99 first cycle. }
+                  nextChargeDate: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  nextChargeAmount: { oneOf: [{ type: integer, description: Centavos. }, { type: 'null' }] }
                   cancelAtPeriodEnd: { type: boolean }
-                  trialEnd: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
                   firstFullCharge:
                     oneOf:
                       - type: object
@@ -1745,7 +1752,7 @@ paths:
                           amount: { type: integer, description: Centavos. }
                           currency: { type: string }
                       - type: 'null'
-              example: { enabled: true, status: "trialing", active: true, plan: "monthly", currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEnd: "2026-10-31T00:00:00.000Z", firstFullCharge: null }
+              example: { enabled: true, status: "active", active: true, plan: "monthly", firstPeriod: true, nextChargeDate: "2026-10-31T00:00:00.000Z", nextChargeAmount: 8900, cancelAtPeriodEnd: false, firstFullCharge: null }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/billing/checkout:
@@ -1755,16 +1762,17 @@ paths:
       summary: Start a Stripe Checkout Session for one of the three plans
       description: |
         Requires a verified e-mail (Phase 2) — refused with 403 otherwise, since the renewal and
-        trial-ending notices this phase sends have nowhere to go without one. Creates the account's
+        first-period notices this phase sends have nowhere to go without one. Creates the account's
         Stripe customer on first use.
 
-        There is no free trial: the Checkout Session is `mode: subscription` with a 30-day trial
-        and, on an account's first-ever subscription only, an extra one-time Price
-        (`STRIPE_PRICE_INTRO`) in the same session, so the first month is actually charged R$1,99
-        at checkout instead of being free. An account that already had a subscription before
-        (cancelled or otherwise) does not get the intro price again — the trial still applies, but
-        the first invoice after it is the plan's full rate. `trialing` counts as an active
-        subscription everywhere else in the API.
+        There is no free trial and no Stripe `trialing` status (ISO-1392): an account's first-ever
+        Checkout Session sells one cycle of `STRIPE_PRICE_INTRO` alone (R$1,99), so the subscription
+        is `active` from its first invoice; the webhook then converts it into a Subscription
+        Schedule that moves to the chosen plan's own Price after that one cycle.
+        `GET /api/billing/status`'s `firstPeriod` is how a client tells the two apart, since `status`
+        itself never changes between them. An account that already had a subscription before
+        (cancelled or otherwise) does not get the intro price again — Checkout sells the chosen
+        plan's Price directly, full price from the start.
       requestBody:
         required: true
         content:
@@ -1839,13 +1847,16 @@ paths:
         `stripe listen`) is acknowledged without being applied a second time (`duplicate: true`).
 
         Handled event types: `checkout.session.completed` (links the Stripe customer to the
-        account), `customer.subscription.created` / `.updated` (records status, plan,
-        `current_period_end`, `cancel_at_period_end`, `trial_end`), `customer.subscription.deleted`
-        (account goes read-only), `customer.subscription.trial_will_end` (fires the Phase-2
-        trial-ending e-mail — Stripe's own trial e-mails never go out in the sandbox), `invoice.paid`
-        (confirms a renewal, and records `firstFullCharge` the first time the post-trial invoice
-        lands) and `invoice.payment_failed` (the account stays exactly as active as it already was;
-        Stripe retries on its own schedule before eventually cancelling).
+        account), `customer.subscription.created` (on a first-ever subscription, still on the intro
+        Price, converts it into a two-phase Subscription Schedule rather than recording it as-is —
+        see `createBillingCheckout`) / `.updated` (records status, plan, `firstPeriod`,
+        `current_period_end`, `cancel_at_period_end`), `customer.subscription.deleted` (account goes
+        read-only), `customer.subscription.trial_will_end` (fires the Phase-2 first-period-ending
+        e-mail — Stripe's own trial e-mails never go out in the sandbox, and don't apply here
+        regardless, since there is no Stripe trial in this design), `invoice.paid` (confirms a
+        renewal, and records `firstFullCharge` the first time a full-price invoice lands after a
+        first period) and `invoice.payment_failed` (moves the account to `past_due`, which still
+        writes — Stripe retries on its own schedule before eventually cancelling).
       requestBody:
         required: true
         content:
@@ -3362,8 +3373,9 @@ components:
     SubscriptionRequired:
       description: >-
         No active subscription (tag `billing`) — only while the instance has `STRIPE_API_KEY`/
-        `STRIPE_WEBHOOK_SECRET` set; off otherwise. `trialing` and `active` both count. Reading and
-        exporting the account's history are never gated this way, only this write.
+        `STRIPE_WEBHOOK_SECRET` set; off otherwise. `canWrite` (api/billing.js): `active` or
+        `past_due` both count, nothing else. Reading and exporting the account's history are never
+        gated this way, only this write.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

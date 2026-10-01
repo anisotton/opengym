@@ -712,6 +712,25 @@ export async function getLatestSubscription(pool, userId) {
   return rows.length ? rowToSubscription(rows[0]) : null;
 }
 
+// Still in the R$1,99 first period, next (full-price) charge within 3 days, not yet mailed about
+// it — server.js's own periodic tick (billing.js's tickFirstPeriodNotices). There is no Stripe
+// trial in this design (ISO-1392), so there is no `trial_will_end` webhook to hook the warning
+// e-mail off; this is that notice's replacement, checked on our own clock instead of Stripe's.
+// `firstPeriodNoticeSent` is set once a hook call succeeds, the same "never send it twice" shape
+// as every other one-time claim in this file, just without needing atomicity — one instance, one
+// tick at a time (server.js never runs two of these concurrently).
+export async function getSubscriptionsDueForFirstPeriodNotice(pool) {
+  const { rows } = await pool.query(`
+    SELECT * FROM subscriptions
+    WHERE data->>'firstPeriod' = 'true'
+      AND data->>'status' = 'active'
+      AND data->>'firstPeriodNoticeSent' IS NULL
+      AND (data->>'currentPeriodEnd')::timestamptz <= now() + interval '3 days'
+      AND (data->>'currentPeriodEnd')::timestamptz > now()
+  `);
+  return rows.map(rowToSubscription);
+}
+
 // Whether this account has ever had a subscription row at all, regardless of its current status —
 // the once-per-account R$1,99 intro price check (POST /api/billing/checkout): true forever once
 // true once, so cancelling and coming back always prices at the plan's full recurring rate.

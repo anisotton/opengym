@@ -46,10 +46,10 @@ import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from '.
 import { sendMail } from './mail.js';
 import { renderVerifyEmail } from './mail-templates/verify-email.js';
 import { renderRecoverEmail } from './mail-templates/recover-access.js';
-import { renderTrialEndingEmail } from './mail-templates/trial-ending.js';
+import { renderPreChargeNotice } from './mail-templates/pre-charge-notice.js';
 import {
   BILLING_ON, getStripe, hasActiveAccess, createCheckoutSession, createPortalSession,
-  billingStatus, applyStripeEvent, setTrialWillEndHook
+  billingStatus, applyStripeEvent, setFirstPeriodNoticeHook, tickFirstPeriodNotices, nextChargeAmountCents
 } from './billing.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -2830,24 +2830,32 @@ coachJobs.setProposalHook((uid, pending) => {
 startCadence({ users: () => usersCache, userNow });
 startWarmup();
 
-/* ---------- billing: trial-ending notice (ISO-1393) ---------- */
-// Fired from the subscription's own `customer.subscription.trial_will_end` webhook, 3 days before
-// the R$1,99 month turns into the first full-price invoice — the issue asks not to depend on
-// Stripe's own trial e-mails, which never go out in the sandbox. `sub.metadata.plan` is the plan
-// name createCheckoutSession stamped onto subscription_data at checkout; no lookup needed.
-const PLAN_LABEL = { monthly: 'Mensal', quarterly: 'Trimestral', yearly: 'Anual' };
-setTrialWillEndHook(async (uid, sub) => {
+/* ---------- billing: first-period-ending notice (ISO-1393) ---------- */
+// There is no Stripe trial in this design (ISO-1392: the R$1,99 month is a sub-state of `active`,
+// never `trialing`), so there is no `trial_will_end` webhook to hook the warning e-mail off —
+// tickFirstPeriodNotices (billing.js) checks on our own clock instead, hourly, which is plenty
+// granular against a 3-day window. Off entirely when BILLING_ON is off: an instance that never
+// configured Stripe can never have a subscription row for this to find anyway.
+// renderPreChargeNotice is ISO-1397's own catalog entry, written for exactly this moment ("nothing
+// calls this yet ... Phase 3 is what sends it") — reused rather than duplicated.
+setFirstPeriodNoticeHook(async (uid, sub) => {
   const user = await getUserById(pool, uid);
   if (!user?.email) return; // nothing mailed an account with no address to mail
-  const planLabel = PLAN_LABEL[sub.metadata?.plan] || 'Individual';
-  const d = sub.trial_end ? new Date(sub.trial_end * 1000) : null;
-  const chargeDate = d
+  const cents = nextChargeAmountCents(sub);
+  const amount = cents != null
+    ? (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+    : 'o valor do seu plano';
+  const d = sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
+  const billingDate = d
     ? `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`
     : 'em breve';
-  const { subject, text: body, html } = renderTrialEndingEmail({ name: user.name, planLabel, chargeDate });
+  const { subject, text: body, html } = renderPreChargeNotice({ name: user.name, amount, billingDate });
   try { await sendMail({ to: user.email, subject, text: body, html }); }
-  catch (e) { console.error('mail: could not send trial-ending e-mail', e.message); }
+  catch (e) { console.error('mail: could not send pre-charge notice e-mail', e.message); }
 });
+if (BILLING_ON) setInterval(() => {
+  tickFirstPeriodNotices(pool).catch(e => console.error('billing: first-period notice tick failed', e));
+}, 60 * 60000).unref();
 
 // node's requestTimeout is one number for every route, and it is half an hour (below) for the
 // sake of one: a video uploaded over a slow uplink. Every other request keeps node's old five

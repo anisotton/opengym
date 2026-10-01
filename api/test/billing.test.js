@@ -1,8 +1,18 @@
-/* Stripe billing (ISO-1393): webhook signature/idempotency, status transitions, and the 402 write
-   gate. Real server.js in a child, real PostgreSQL (billing.js's own HTTP calls to Stripe are
-   never exercised here — only webhook processing, which is pure local verification plus writes to
-   our own tables). STRIPE_API_KEY only needs to look like a key; nothing in this file calls out to
-   api.stripe.com. */
+/* Stripe billing (ISO-1393, contract fixed by ISO-1392): webhook signature/idempotency, status
+   transitions, and the 402 write gate. Real server.js in a child, real PostgreSQL (billing.js's
+   own HTTP calls to Stripe are never exercised here — only webhook processing, which is pure local
+   verification plus writes to our own tables). STRIPE_API_KEY only needs to look like a key;
+   nothing in this file calls out to api.stripe.com.
+
+   None of the simulated webhook events below carry `scheduleTo` in their subscription metadata —
+   that is what tells applyStripeEvent's 'customer.subscription.created' case to call
+   stripe.subscriptionSchedules.create/update (billing.js), a real network call this file cannot
+   make with a fake key. Each event here instead represents the subscription exactly as it would
+   already look once that conversion has happened — e.g. a first-period report is a plain `created`
+   or `updated` event whose item price is the intro Price and whose metadata has no `scheduleTo` —
+   which is also exactly the shape of the real follow-up `updated` event Stripe's own conversion
+   fires. The conversion call itself is covered only by the pending Stripe-sandbox validation (see
+   the ISO-1393 comment thread), not by this suite. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -21,6 +31,9 @@ function mintSession(uid, sv = 0) {
 }
 const headers = uid => ({ Cookie: `gymsid=${mintSession(uid)}`, 'Content-Type': 'application/json' });
 
+const INTRO_PRICE = 'price_intro_test';
+const MONTHLY_PRICE = 'price_monthly_test';
+
 async function startServer(t, { users } = {}) {
   const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
@@ -30,7 +43,8 @@ async function startServer(t, { users } = {}) {
     env: {
       STRIPE_API_KEY: 'sk_test_unused',
       STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
-      STRIPE_PRICE_MONTHLY: 'price_monthly_test'
+      STRIPE_PRICE_MONTHLY: MONTHLY_PRICE,
+      STRIPE_PRICE_INTRO: INTRO_PRICE
     }
   });
 }
@@ -50,12 +64,13 @@ async function postWebhook(api, event) {
   return { status: r.status, body: await r.json() };
 }
 
+// `priceId` defaults to the full monthly price — a returning-subscriber or already-converted
+// shape. Pass `priceId: INTRO_PRICE` to simulate still being in the first (R$1,99) period.
 const sub = (id, overrides) => ({
-  id, object: 'subscription', status: 'trialing', customer: 'cus_1',
-  items: { data: [{ price: { id: 'price_monthly_test' } }] },
+  id, object: 'subscription', status: 'active', customer: 'cus_1',
+  items: { data: [{ price: { id: MONTHLY_PRICE, unit_amount: 8900 } }] },
   current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400,
   cancel_at_period_end: false,
-  trial_end: Math.floor(Date.now() / 1000) + 30 * 86400,
   metadata: { userId: 'u_bill_1', plan: 'monthly' },
   ...overrides
 });
@@ -90,7 +105,7 @@ test('POST /api/billing/webhook: a repeated event id is acknowledged once and ap
   assert.equal(second.body.duplicate, true);
 
   const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_1') }).then(r => r.json());
-  assert.equal(status.status, 'trialing');
+  assert.equal(status.status, 'active');
   assert.equal(status.plan, 'monthly');
 });
 
@@ -99,34 +114,49 @@ test('POST /api/billing/webhook: subscription status transitions reach GET /api/
   const h = await startServer(t, { users });
   const status = async () => fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_1') }).then(r => r.json());
 
-  // trialing — the R$1,99 month, already charged at Checkout
-  let r = await postWebhook(h.api, stripeEvent('customer.subscription.created', sub('sub_lifecycle')));
+  // First period: active from the first invoice, not a Stripe trial — `firstPeriod` is what tells
+  // the UI apart from the ongoing-subscriber case, and `nextChargeAmount` already shows the
+  // upcoming FULL plan charge even though the subscription's current item is still the intro price.
+  let r = await postWebhook(h.api, stripeEvent('customer.subscription.created', sub('sub_lifecycle', {
+    items: { data: [{ price: { id: INTRO_PRICE, unit_amount: 199 } }] }
+  })));
   assert.equal(r.status, 200);
   let s = await status();
-  assert.equal(s.status, 'trialing');
-  assert.equal(s.active, true, 'trialing counts as active access');
+  assert.equal(s.status, 'active');
+  assert.equal(s.active, true);
+  assert.equal(s.firstPeriod, true);
+  assert.equal(s.nextChargeAmount, 8900, 'the upcoming charge is the full monthly price, not R$1.99');
 
-  // first full-price invoice: status flips to active and firstFullCharge is recorded once
+  // The schedule's phase change: the subscription's item is now the chosen plan's price.
+  r = await postWebhook(h.api, stripeEvent('customer.subscription.updated', sub('sub_lifecycle')));
+  assert.equal(r.status, 200);
+
+  // The first full-price invoice: firstFullCharge is recorded once, keyed off the invoice's own
+  // line price rather than billing_reason — robust regardless of event ordering.
   r = await postWebhook(h.api, stripeEvent('invoice.paid', {
     id: 'in_1', object: 'invoice', subscription: 'sub_lifecycle', customer: 'cus_1',
-    billing_reason: 'subscription_cycle', amount_paid: 8900, currency: 'brl', created: Math.floor(Date.now() / 1000)
+    lines: { data: [{ price: { id: MONTHLY_PRICE } }] },
+    amount_paid: 8900, currency: 'brl', created: Math.floor(Date.now() / 1000)
   }));
   assert.equal(r.status, 200);
   s = await status();
   assert.equal(s.status, 'active');
   assert.equal(s.active, true);
+  assert.equal(s.firstPeriod, false, 'no longer in the first period once the full invoice landed');
   assert.equal(s.firstFullCharge.amount, 8900);
+  assert.equal(s.nextChargeAmount, 8900, 'now read straight off the subscription item, same amount');
 
-  // a failed renewal invoice does not take access away — Stripe retries before cancelling
+  // A failed renewal moves the account to past_due — it still writes (issue rule: Stripe retries
+  // before cancelling).
   r = await postWebhook(h.api, stripeEvent('invoice.payment_failed', {
     id: 'in_2', object: 'invoice', subscription: 'sub_lifecycle', customer: 'cus_1'
   }));
   assert.equal(r.status, 200);
   s = await status();
-  assert.equal(s.status, 'active', 'status untouched by a failed invoice');
-  assert.equal(s.active, true);
+  assert.equal(s.status, 'past_due');
+  assert.equal(s.active, true, 'past_due still writes');
 
-  // the Portal's cancellation, once the period actually ends
+  // The Portal's cancellation, once the period actually ends.
   r = await postWebhook(h.api, stripeEvent('customer.subscription.deleted', sub('sub_lifecycle', { status: 'canceled' })));
   assert.equal(r.status, 200);
   s = await status();
@@ -134,7 +164,7 @@ test('POST /api/billing/webhook: subscription status transitions reach GET /api/
   assert.equal(s.active, false);
 });
 
-test('PUT /api/data: 402 without an active subscription, 200 once trialing', async t => {
+test('PUT /api/data: 402 without a subscription, 200 once active, 200 while past_due, 402 once canceled', async t => {
   const users = [{ id: 'u_bill_2', name: 'Two', created: new Date().toISOString() }];
   const h = await startServer(t, { users });
   const put = () => fetch(`${h.api}/api/data`, {
@@ -151,9 +181,16 @@ test('PUT /api/data: 402 without an active subscription, 200 once trialing', asy
   assert.equal(get.status, 200);
 
   await postWebhook(h.api, stripeEvent('customer.subscription.created', sub('sub_gate', { metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
-
   r = await put();
-  assert.equal(r.status, 200, 'a trialing subscription lifts the 402');
+  assert.equal(r.status, 200, 'an active subscription (first period or not) lifts the 402');
+
+  await postWebhook(h.api, stripeEvent('customer.subscription.updated', sub('sub_gate', { status: 'past_due', metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
+  r = await put();
+  assert.equal(r.status, 200, 'past_due still writes — Stripe is still retrying');
+
+  await postWebhook(h.api, stripeEvent('customer.subscription.deleted', sub('sub_gate', { status: 'canceled', metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
+  r = await put();
+  assert.equal(r.status, 402, 'canceled goes back to read-only');
 });
 
 test('PUT /api/data: no 402 at all when billing is not configured', async t => {

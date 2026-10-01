@@ -616,9 +616,12 @@ there's nothing left to "switch on": upgrading is the switch.
 Off until you set both `STRIPE_API_KEY` and `STRIPE_WEBHOOK_SECRET` (`.env.example`) — without
 them the `billing` routes are a 404, `GET /api/billing/status` answers `{"enabled":false}`, and
 `PUT /api/data` never refuses a write. On, it adds three plans billed monthly, quarterly or
-yearly, no free trial: the first month is R$ 1,99 on any plan (once per account — cancelling and
-coming back pays the full rate), charged immediately at Checkout alongside a 30-day trial on the
-subscription itself; `trialing` counts as a fully active account.
+yearly, no free trial: the first month is R$ 1,99 on any plan, once per account (cancelling and
+coming back pays the full rate). There is no Stripe trial anywhere in this: a first-ever Checkout
+sells only the recurring intro Price for one cycle — the subscription is `active` from its first
+invoice — and the webhook converts it into a Subscription Schedule that moves to the chosen plan's
+own Price after that cycle, so the only statuses an account ever reports are `active`, `past_due`
+(Stripe still retrying a failed renewal) or `canceled`/`unpaid`, never `trialing`.
 
 1. **Create the Product and Prices.** `cd api && STRIPE_API_KEY=rk_... npm run stripe:setup`
    creates one Product and four Prices (the three plans plus the R$ 1,99 intro) in whichever
@@ -649,17 +652,25 @@ What each route does:
   or cancelling. Cancelling there is always "at period end", no proration: access continues until
   `current_period_end`, and the account only goes read-only once that date passes and the
   subscription's `deleted` webhook actually lands.
-- `GET /api/billing/status` — plan, status, `currentPeriodEnd`, `cancelAtPeriodEnd`, and
-  `firstFullCharge` (date and amount) once the trial's first full-price invoice has landed.
+- `GET /api/billing/status` — `status`, `plan`, `firstPeriod` (still on the R$ 1,99 cycle),
+  `nextChargeDate`/`nextChargeAmount` (the upcoming invoice — the full plan price even while
+  `firstPeriod` is true), `cancelAtPeriodEnd`, and `firstFullCharge` (date and amount) once the
+  first full-price invoice has landed.
 - `POST /api/billing/webhook` — verifies `Stripe-Signature` against the raw body with
   `STRIPE_WEBHOOK_SECRET` and is idempotent by `event.id`, so a Stripe retry (or the same event
   forwarded twice by `stripe listen`) is acknowledged without being applied again.
 
-A failed renewal (`invoice.payment_failed`) never takes access away by itself — Stripe retries
-automatically on its own schedule before it eventually cancels the subscription. Three days
-before the trial's first full-price invoice, `customer.subscription.trial_will_end` sends the
-account a warning e-mail through the same mail driver as account confirmation (section 4) —
-deliberately not Stripe's own trial-ending e-mails, which don't fire in the sandbox at all.
+A failed renewal (`invoice.payment_failed`) moves the account to `past_due` but never takes access
+away by itself — `past_due` still writes; Stripe retries automatically on its own schedule before
+it eventually cancels the subscription. Three days before the schedule's phase change turns the
+R$ 1,99 month into a full-price one, `customer.subscription.trial_will_end` sends the account a
+warning e-mail through the same mail driver as account confirmation (section 4) — deliberately not
+Stripe's own trial e-mails, which don't fire in the sandbox at all (and don't apply here regardless,
+since there is no Stripe trial in this design — see above).
+
+Whether an account may write at all is one function, `canWrite(subscription)` in `api/billing.js`:
+`active` or `past_due`, nothing else. Everything that gates on a subscription — the 402 on
+`PUT /api/data`, `GET /api/billing/status`'s own `active` field — reads through that one place.
 
 Forms of payment are configured once in the Dashboard (Settings → Payment methods), never in
 code — Checkout never names them, so nothing here needs changing to add or remove one.
