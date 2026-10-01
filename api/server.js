@@ -26,21 +26,44 @@ import {
   normalizeEmail, maskEmail
 } from './password.js';
 import { createBackoff, createWindow } from './rate-limit.js';
-import {
-  listPasskeys, addPasskeyRecord, renamePasskeyRecord, removePasskeyRecord, passkeyRemovalRefused, MAX_PASSKEYS
-} from './passkeys-store.js';
-import { createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks } from './device-link.js';
+import { MAX_PASSKEYS } from './passkeys-store.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
-import { connectAndMigrate } from './db.js';
+import { connectAndMigrate, withTransaction } from './db.js';
+import {
+  getUserState, getUserStateRev, putUserState,
+  getUserById, getAllUsers, createUser, setPassword, removePassword, rehashPassword,
+  setPasswordReset, bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder,
+  deleteUser, upsertUser, backfillPasswordResetBy,
+  createSession, getSession, revokeSession,
+  createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
+  upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
+  createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
+  listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
+  removePasskey, touchPasskeyUse, upsertPasskey
+} from './store.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
-// Phase 1 (ISO-1387/1402): the API connects and migrates PostgreSQL at boot, ahead of the actual
-// switch (ISO-1403) — every read/write below this still goes through db.json/state-<uid>.json.
-// Optional for now so the existing file-based test suite (none of it sets DATABASE_URL) keeps
-// booting exactly as before; the bundled docker-compose.yml always sets it, and Phase 1b will
-// make it mandatory once the API actually depends on it.
+// Phase 1b (ISO-1403): db.json and a profile's training data (state-<uid>.json) have both moved
+// onto PostgreSQL (store.js) — mandatory from here on, including api/coach/jobs.js's own
+// readState/listUserIds (jobs.setPool(pool), in listen() below). db.json itself is read exactly
+// once more, at boot (readBootDb below), to migrate whatever an instance upgrading from before
+// this phase still has on disk; nothing after that reads or writes it again.
 const DATABASE_URL = process.env.DATABASE_URL || '';
+if (!DATABASE_URL) {
+  console.error('DATABASE_URL is required (PostgreSQL holds profile state — see docs/SELF_HOSTING.md)');
+  process.exit(1);
+}
+let pool; // set once connectAndMigrate() resolves, in listen() below
+// A snapshot of every user, refreshed each reminder tick (below) — the one thing left that reads
+// the account list synchronously: the account-lockout backoff's `keep` predicate (ACCOUNT_FAILS)
+// and coach/cadence.js's tick, handed this as `deps.users()`. Up to one tick stale
+// (REMINDER_TICK_MS, 10s in production) — fine for both: a lockout entry that lingers a beat past
+// a password removal, a weekly cadence check against a user list a few seconds old. Everything
+// cadence.js reads *about* a user (their state, their Coach record) is read fresh on every tick
+// regardless, through jobs.js's own Postgres-backed readState — only the list of who to check is
+// this snapshot.
+let usersCache = [];
 const RP_ID = process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
 const RP_NAME = process.env.RP_NAME || 'Brilhart Fitness';
@@ -101,36 +124,41 @@ const secretFile = path.join(DATA, 'secret');
 if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
 const SECRET = fs.readFileSync(secretFile, 'utf8').trim();
 
+// db.json itself is only ever read once more, at boot (readBootDb below) — the one-time
+// migration of whatever an instance upgrading from before ISO-1403 still has on disk. Nothing
+// after boot reads or writes it: every collection it used to hold lives in PostgreSQL now.
 const dbFile = path.join(DATA, 'db.json');
-let db = { users: [], creds: [], subs: [], invites: [] };
-try { db = JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch {}
-db.subs = db.subs || [];
-db.invites = db.invites || [];
-db.deviceLinks = db.deviceLinks || [];   // unused one-time device links, hashed (device-link.js)
 const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
-// 0600: db.json holds passkey credential material. It used to be covered by a blanket 0700 on
-// the whole directory; now that the directory stays traversable, the file carries its own mode.
-function saveDb() { atomicWrite(dbFile, JSON.stringify(db, null, 2), 0o600); }
+function readBootDb() {
+  let db = { users: [], creds: [], subs: [], invites: [], deviceLinks: [] };
+  try { db = JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch { /* no db.json — a fresh instance */ }
+  db.users = db.users || []; db.creds = db.creds || []; db.subs = db.subs || [];
+  db.invites = db.invites || []; db.deviceLinks = db.deviceLinks || [];
+  return db;
+}
 function atomicWrite(file, content, mode) {
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, content, mode ? { mode } : undefined);
   fs.renameSync(tmp, file);
 }
-const stateFile = uid => path.join(DATA, 'state-' + uid.replace(/[^a-zA-Z0-9_-]/g, '') + '.json');
 // When a profile last fetched its document (GET /api/data). The document's own `_ts` moves only
 // on a push, so a device that only ever read — a second phone, a profile that trains elsewhere
 // and just looks — showed "last sync never" in the admin dashboard (QA 1.3.9). Kept on the user
 // record and written at most every ten minutes per profile, since every foreground return pulls.
 const PULL_NOTE_MS = 10 * 60 * 1000;
-function notePull(user, now = Date.now()) {
+async function notePull(user, now = Date.now()) {
   if (user.lastPull && now - user.lastPull < PULL_NOTE_MS) return;
   user.lastPull = now;
-  try { saveDb(); } catch (e) { console.error('db save failed', e.message); }
+  try { await touchLastPull(pool, user.id, now); } catch (e) { console.error('db save failed', e.message); }
 }
 // The later of the last push and the last pull.
 const lastSyncOf = (u, S) => Math.max(S?._ts || 0, u?.lastPull || 0) || null;
-function readState(uid) {
-  try { return JSON.parse(fs.readFileSync(stateFile(uid), 'utf8')); } catch { return null; }
+// A profile's training data (ISO-1403) — PostgreSQL's user_state table, not state-<uid>.json.
+// Kept as its own async function, rather than calling getUserState(pool, uid) at every call site,
+// so callers that only want the document (media.js's injected readState, the reminder tick, the
+// admin views) do not also have to know about `pool` or unwrap `{ state, rev }` themselves.
+async function readState(uid) {
+  return (await getUserState(pool, uid)).state;
 }
 // An entry is an object a reader can dereference, and `records` is every entry of a stored
 // list. PUT /api/data drops the rest on the way in — a null workout, a routine that is a
@@ -161,7 +189,7 @@ webpush.setVapidDetails(VAPID_SUBJECT, vapid.publicKey, vapid.privateKey);
       the request itself uses, not in a prior pass. A literal IP address never goes through
       that lookup at all — Node hands it straight to connect() — so literals are judged by
       pushEndpointError instead: at subscribe, and again in sendPush for an endpoint that got
-      into db.json some other way.
+      into storage some other way.
    2. PUSH_TIMEOUT_MS: an endpoint that accepts TCP and then stalls used to hang the request
       handler that awaited it, indefinitely. web-push sets no timeout of its own.
    3. PUSH_CONCURRENCY: one small request must not turn into an unbounded burst of outbound
@@ -250,21 +278,26 @@ function pushEndpointError(raw) {
 // belongs to the device that started the rest); a subscription stored without one — an older
 // client — still gets everything, as before.
 async function sendPush(userId, payload, deviceId) {
-  let subs = db.subs.filter(s => s.userId === userId);
+  let subs = await getUserSubs(pool, userId);
   if (deviceId && subs.some(s => s.deviceId === deviceId)) subs = subs.filter(s => s.deviceId === deviceId);
   if (!subs.length) return;
   const body = JSON.stringify(payload);
-  let dirty = false;
+  // Pruning a dead or refused subscription is bookkeeping, not the send. Most callers do not
+  // await this function at all (the rest-timer setTimeout, the Coach proposal hook), so a
+  // Postgres delete that fails right now would turn the throw into an unhandled rejection and
+  // take the process down — caught and logged per row instead. A row this leaves behind is
+  // pruned again the next time a send to it fails, same as before.
+  const prune = endpoint => deleteSub(pool, endpoint).catch(e => console.error('push: could not prune dead subscription', e.message));
   let next = 0;
   const worker = async () => {
     while (next < subs.length) {
       const sub = subs[next++];
       // Re-judged before every send: PUSH_AGENT never sees a literal address, so an endpoint
-      // that is private (however it got into db.json) is dropped here rather than connected to.
+      // that is private (however it got into the database) is dropped here rather than connected to.
       const bad = pushEndpointError(sub.endpoint);
       if (bad) {
         console.error('push endpoint refused', userId, bad);
-        db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint); dirty = true;
+        await prune(sub.endpoint);
         continue;
       }
       // urgency 'high' is the one lever we have over delivery speed — iOS/Android throttle
@@ -281,20 +314,11 @@ async function sendPush(userId, payload, deviceId) {
         // signature — a subscription made against a key this instance no longer has (data/vapid.json
         // regenerated). Neither will ever deliver again; keeping them only hides the fact from the
         // Settings toggle, which reads the browser's side. The client re-subscribes on its next boot.
-        if (e.statusCode === 404 || e.statusCode === 410 || e.statusCode === 403) {
-          db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint); dirty = true;
-        }
+        if (e.statusCode === 404 || e.statusCode === 410 || e.statusCode === 403) await prune(sub.endpoint);
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(PUSH_CONCURRENCY, subs.length) }, worker));
-  // Pruning dead subscriptions is bookkeeping, not the send. Most callers do not await this
-  // function at all (the rest-timer setTimeout, the Coach proposal hook), so a ./data that cannot
-  // be written right now — disk full, read-only mount, EIO — would turn the throw into an
-  // unhandled rejection and take the process down. The row is already gone from db.subs in
-  // memory, so only the copy on disk lags: the next saveDb() that succeeds, from any route,
-  // writes it out, and a restart re-reads the old file and prunes it again on the next send.
-  if (dirty) { try { saveDb(); } catch (e) { console.error('push: could not save db.json', e.message); } }
 }
 
 // Rest-timer alerts: client schedules on start/extend, cancels on skip or on-screen completion —
@@ -365,46 +389,26 @@ const hhmmToMin = v => {
 // Minutes since the reminder's time on the user's clock; negative before it, NaN when either
 // side does not parse. Same-day only — a 23:55 reminder is not owed at 00:05 the next day.
 const minutesLate = (time, now) => hhmmToMin(now.hhmm) - hhmmToMin(time);
-// The tick reads every subscribed user's state file every 10 s. Most of those files do not
-// change between ticks; a stat is far cheaper than a read and a parse of a state that can be
-// megabytes, and it keeps the tick short — a slow tick was one more way to miss the minute.
-//
-// What it holds is a whole parsed state per user, and a state can be megabytes, so the two
-// bounds below are what keep it a cache rather than a leak on an instance with more than one
-// person on it: an entry nobody has touched for ten minutes is dropped, and the map never holds
-// more than STATE_CACHE_MAX users. Map iteration order is insertion order, so re-inserting on
-// every hit makes the first key the least recently hit one — which is the one to evict.
-const STATE_CACHE_MAX = 64;
-// Ten minutes: far longer than the gap between a client's polls (30 s) or the reminder tick's
-// (10 s), so nobody who is actually using the instance is ever evicted by age; the tests shorten
-// it, as they do REMINDER_TICK_MS.
-const STATE_CACHE_TTL_MS = Math.max(50, +(process.env.STATE_CACHE_TTL_MS || 600000) || 600000);
-const stateCache = new Map(); // uid -> { mtimeMs, size, hitAt, S }
-function readStateCached(uid) {
-  let st;
-  try { st = fs.statSync(stateFile(uid)); } catch { stateCache.delete(uid); return null; }
-  const now = Date.now();
-  for (const [k, v] of stateCache) if (now - v.hitAt > STATE_CACHE_TTL_MS) stateCache.delete(k);
-  const hit = stateCache.get(uid);
-  stateCache.delete(uid);                       // re-inserted below, so the map stays in hit order
-  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
-    hit.hitAt = now;
-    stateCache.set(uid, hit);
-    return hit.S;
-  }
-  const S = readState(uid);
-  stateCache.set(uid, { mtimeMs: st.mtimeMs, size: st.size, hitAt: now, S });
-  while (stateCache.size > STATE_CACHE_MAX) stateCache.delete(stateCache.keys().next().value);
-  return S;
-}
-setInterval(() => {
-  for (const user of db.users) {
-    if (!db.subs.some(s => s.userId === user.id)) continue;
-    // One user's state file is one user's problem: a shape this tick cannot read is logged and
+// The tick reads every subscribed user's state every 10 s. It used to hold a file-stat cache here
+// (mtime/size keyed) because parsing a multi-MB JSON file off disk on every pass was the expensive
+// part; a `SELECT state FROM user_state` does not pay that cost; Postgres, not this process, is
+// what decides how a query the size doesn't change gets served twice in a row.
+setInterval(async () => {
+  // REMINDER_TICK_MS can be set well under the time listen() takes to connect, migrate and
+  // backfill (tests do this deliberately, to keep the wait short) — this tick's own interval is
+  // registered at module load, before any of that starts, so the first one or two firings can
+  // land before `pool` exists at all.
+  if (!pool) return;
+  usersCache = await getAllUsers(pool);
+  const withPush = await getUserIdsWithPush(pool);
+  for (const user of usersCache) {
+    if (!withPush.has(user.id)) continue;
+    // One user's state is one user's problem: a shape this tick cannot read is logged and
     // skipped, not allowed to take the process — and everyone else's reminders — down with it.
-    // PUT /api/data refuses the obvious shapes, but a file already on disk answers to nobody.
+    // PUT /api/data refuses the obvious shapes, but a document written before it did answers to
+    // nobody.
     try {
-      const S = readStateCached(user.id);
+      const S = await readState(user.id);
       if (!S?.reminder?.on) continue;
       const now = userNow(S.reminder.tz || 'UTC');
       if (!now) continue;
@@ -417,7 +421,7 @@ setInterval(() => {
       const routine = (S.routines || []).find(r => r?.id === rid);
       console.log('reminder firing', user.id, rid);
       user.lastReminder = now.date;
-      saveDb();
+      await setLastReminder(pool, user.id, now.date);
       sendPush(user.id, dayReminderPush(S.lang, routine));
     } catch (e) {
       console.error('reminder tick', user.id, e);
@@ -442,15 +446,20 @@ function verifySig(token) {
   } catch { return null; }
   return payload;
 }
-// Session payload is `<uid>:<expiry>:<version>`, where the version is the user's `sv` counter.
-// Bumping `sv` (POST /api/logout/all) makes every cookie ever handed out for that account stop
-// verifying, which is the only revocation there was before short of deleting ./data/secret and
-// signing out the whole instance. Cookies minted before `sv` existed have no third field and are
-// read as version 0, matching a user who has never bumped — they stay valid until they expire.
+// Session payload is `<uid>:<expiry>:<version>[:<sessionId>]`. `version` is the user's `sv`
+// counter — bumping it (POST /api/logout/all) still invalidates every cookie for the account at
+// once, the way it always did. `sessionId` (ISO-1403) is a `sessions` row, for POST /api/logout to
+// revoke the one cookie that made the request instead of every one of the account's — see
+// sessionOf below for the revocation check, and store.js for the table. Cookies minted before
+// either field existed have fewer than four parts, and are read as version 0 / no session to
+// revoke, matching what they always meant — they stay valid until they expire or `sv` moves, same
+// as before this table existed. That includes every cookie a test forges directly against SECRET
+// without going through a real login: nothing here requires a `sessions` row to exist.
 const sessionVersion = user => user.sv || 0;
-function makeSession(user) {
+async function makeSession(user, userAgent) {
   const exp = Date.now() + SESSION_DAYS * 86400000;
-  return sign(user.id + ':' + exp + ':' + sessionVersion(user));
+  const sid = await createSession(pool, { userId: user.id, expiresAt: exp, userAgent });
+  return sign(`${user.id}:${exp}:${sessionVersion(user)}:${sid}`);
 }
 // With the __Host- prefix the *browser* guarantees the cookie is host-only (no Domain attribute
 // is even allowed) — which is what stops a sibling subdomain, e.g. anything-else.example.com
@@ -487,7 +496,7 @@ function cookieToken(req) {
 }
 // The session behind a request: { user, exp, bearer } — `bearer` when it came in an Authorization
 // header (a paired phone) rather than the cookie — or null for no valid session at all.
-function sessionOf(req) {
+async function sessionOf(req) {
   // The paired mobile app has no cookie jar shared with the API's origin, so it carries the same
   // signed token in an Authorization header instead — same payload, same verification below.
   const auth = req.headers.authorization || '';
@@ -496,23 +505,48 @@ function sessionOf(req) {
   if (!tok) return null;
   const payload = verifySig(tok);
   if (!payload) return null;
-  const [uid, exp, ver] = payload.split(':');
+  const [uid, exp, ver, sid] = payload.split(':');
   if (!uid || +exp < Date.now()) return null;
-  const user = db.users.find(u => u.id === uid) || null;
+  // A fourth field is a real sessions row (ISO-1403) — revoked (POST /api/logout) or gone
+  // (nothing prunes this table yet, but a wiped database would leave old cookies pointing at
+  // nothing) makes the cookie invalid regardless of what `sv` says. No fourth field: nothing to
+  // check here, same as before this table existed.
+  if (sid) {
+    const session = await getSession(pool, sid);
+    if (!session || session.revoked || session.userId !== uid) return null;
+  }
+  const user = await getUserById(pool, uid);
   if (!user) return null;
   if (user.disabled) return null;           // disabled accounts are locked out everywhere
   // Missing third field = pre-versioning cookie = version 0. Anything non-numeric is a malformed
   // payload (it still had to pass the HMAC, so this is belt-and-braces) and is refused outright.
   const claimed = ver === undefined ? 0 : Number(ver);
   if (!Number.isInteger(claimed) || claimed !== sessionVersion(user)) return null;
-  return { user, exp: +exp, bearer: !cookie };
+  return { user, exp: +exp, bearer: !cookie, sid: sid || null };
 }
-function readSession(req) {
-  return sessionOf(req)?.user || null;
+async function readSession(req) {
+  return (await sessionOf(req))?.user || null;
+}
+// Re-checks the session after some awaited work (a slow hash, a WebAuthn ceremony) that a request
+// handler needs to know nobody else changed things out from under — a password change, "sign out
+// everywhere" or an admin disable landing in between. Under the old in-memory db.json, `user` was
+// a live reference into the same array every route read, so a straight `readSession(req) !== user`
+// caught that: any of those mutated the very object `user` pointed at, in place. With PostgreSQL,
+// every read is a fresh row — `user` is a snapshot, not a reference — so object identity can never
+// match again and that comparison would reject every request. Comparing the account id and the
+// session version — the same version `sessionOf` already re-validates the cookie's claim against —
+// is what that check actually meant. `sv` defaults to `user`'s own, for the common case of "has
+// anything happened to this account since we last looked"; a caller mid-ceremony (the passkey-add
+// flow) passes the version stamped on the challenge instead, since that may predate `user` itself.
+// Returns the fresh user on success, so a caller that wants the up-to-date row doesn't have to ask
+// twice — null otherwise.
+async function sessionStillValid(req, user, sv = sessionVersion(user)) {
+  const fresh = await readSession(req);
+  return fresh?.id === user.id && sessionVersion(fresh) === sv ? fresh : null;
 }
 // Guard for /api/admin/* — resolves the caller and 401/403s if they aren't an admin.
-function requireAdmin(req, res) {
-  const user = readSession(req);
+async function requireAdmin(req, res) {
+  const user = await readSession(req);
   if (!user) { json(res, 401, { error: 'not signed in' }); return null; }
   // Only the 403 is recorded: a 401 is any unauthenticated bot poking /api/admin/*, and
   // logging those would bury the events an operator actually wants to see.
@@ -520,8 +554,8 @@ function requireAdmin(req, res) {
   return user;
 }
 const expireCookie = name => `${name}=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
-function sessionCookie(user) {
-  const fresh = `${COOKIE}=${makeSession(user)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
+async function sessionCookie(user, userAgent) {
+  const fresh = `${COOKIE}=${await makeSession(user, userAgent)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
   // Signing in also retires any pre-upgrade cookie, so nobody is left carrying an unprefixed one
   // (or a shadowing copy of it) alongside the new session.
   return COOKIE === LEGACY_COOKIE ? [fresh] : [fresh, expireCookie(LEGACY_COOKIE)];
@@ -624,6 +658,13 @@ function json(res, code, obj, extraHeaders) {
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
+// Thrown inside withTransaction(pool, ...) by either registration route below to roll back a
+// user row that was about to be created on top of an invite another request consumed first — see
+// consumeInvite in store.js. Caught right outside the transaction, never anywhere else.
+class InviteRaceError extends Error {}
+// Same idea, for POST /api/device-link/verify: thrown when burnDeviceLink claims zero rows —
+// another request already burned this code — to roll back before insertPasskey ever runs.
+class DeviceLinkRaceError extends Error {}
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0, over = false; const chunks = [];
@@ -685,15 +726,15 @@ setInterval(() => { for (const [k, v] of presence) if (Date.now() - v.updatedAt 
 /* ---------- audit log ---------- */
 // Who signed in, who tried and failed, and what an admin changed. One JSON object per line in
 // ./data/audit.log, appended and never rewritten in place. It deliberately does not live in
-// db.json: that file is rewritten whole on every save, and the login/register handshakes are
-// unauthenticated and unthrottled by design (see SECURITY.md; only the optional password routes
-// are throttled, below), so an audit trail in there would turn one bogus request into a full
-// db.json rewrite. A line torn by a crash costs one event and is dropped on read.
+// PostgreSQL alongside everything else: the login/register handshakes are unauthenticated and
+// unthrottled by design (see SECURITY.md; only the optional password routes are throttled,
+// below), so an audit trail in a table there would turn one bogus request into a row nobody
+// asked for. A line torn by a crash costs one event and is dropped on read.
 //
-// On by default. It records strictly less than the instance already holds — every account is in
-// db.json and every workout is in state-<uid>.json, both readable by any admin — and a security
-// feature that ships switched off protects nobody. IP addresses are the exception: off unless you
-// ask for them, because they are the one field here that says where somebody physically is.
+// On by default. It records strictly less than the instance already holds — every account and
+// every workout is already in the database, readable by any admin — and a security feature that
+// ships switched off protects nobody. IP addresses are the exception: off unless you ask for
+// them, because they are the one field here that says where somebody physically is.
 const AUDIT_ON = !/^(0|false|no|off)$/i.test(process.env.AUDIT_LOG || '');
 const AUDIT_MAX = Math.max(0, +(process.env.AUDIT_MAX || 5000) || 0);     // 0 = no count cap
 const AUDIT_DAYS = Math.max(0, +(process.env.AUDIT_DAYS || 90) || 0);     // 0 = no age cap
@@ -819,7 +860,7 @@ const ADDR_FAILS = createBackoff({ free: 20, baseMs: 30000, maxMs: 15 * 60000, f
 const ACCOUNT_FAILS = createBackoff({
   free: 5, baseMs: 60000, maxMs: 3600000, forgetMs: 24 * 3600000,
   // At most one per profile with a password, so this cannot grow without bound.
-  keep: k => k.startsWith('acct:') && hasPassword(db.users.find(u => u.id === k.slice(5)))
+  keep: k => k.startsWith('acct:') && hasPassword(usersCache.find(u => u.id === k.slice(5)))
 });
 setInterval(() => { AUTH_BURST.sweep(); ADDR_FAILS.sweep(); ACCOUNT_FAILS.sweep(); }, 60000).unref();
 
@@ -900,14 +941,18 @@ const hasPassword = u => !!(u && u.pw && typeof u.pw.h === 'string');
 // PASSWORD_LOGIN off, a password kept from when it was on neither signs in nor proves anything
 // (proveOwner), and does not keep a profile's last passkey in place.
 const passwordWayIn = u => PASSWORD_LOGIN && hasPassword(u);
-const passwordHolder = k => db.users.find(u => hasPassword(u) && nameKey(u.name) === k) || null;
+async function passwordHolder(k) {
+  const users = await getAllUsers(pool);
+  return users.find(u => hasPassword(u) && nameKey(u.name) === k) || null;
+}
 const holdsName = u => hasPassword(u) || !!(u.pwReset && u.pwReset.exp > Date.now());
 // An e-mail is a second name to sign in with (see "e-mail as a sign-in name" below), so a name
 // is also taken by another profile's e-mail — only ever relevant for a name with an "@" in it.
-const nameTaken = (name, exceptId) => {
+async function nameTaken(name, exceptId) {
   const k = nameKey(name);
-  return db.users.some(u => u.id !== exceptId && ((holdsName(u) && nameKey(u.name) === k) || u.email === k));
-};
+  const users = await getAllUsers(pool);
+  return users.some(u => u.id !== exceptId && ((holdsName(u) && nameKey(u.name) === k) || u.email === k));
+}
 
 /* ---------- e-mail as a sign-in name ----------
    Optional, per profile, and only while PASSWORD_LOGIN is on: an address someone may type at the
@@ -938,8 +983,14 @@ const nameTaken = (name, exceptId) => {
    written to the audit log or the console (maskEmail), is not part of /api/me, the Coach, the
    MCP bridge or anything shared, and only its owner (GET /api/account/password) and an admin
    (the user list) ever see it. */
-const emailHolder = e => db.users.find(u => hasPassword(u) && u.email === e) || null;
-const emailTaken = (e, exceptId) => db.users.some(u => u.id !== exceptId && (u.email === e || (holdsName(u) && nameKey(u.name) === e)));
+async function emailHolder(e) {
+  const users = await getAllUsers(pool);
+  return users.find(u => hasPassword(u) && u.email === e) || null;
+}
+async function emailTaken(e, exceptId) {
+  const users = await getAllUsers(pool);
+  return users.some(u => u.id !== exceptId && (u.email === e || (holdsName(u) && nameKey(u.name) === e)));
+}
 const EMAIL_ERRORS = {
   invalid: { error: 'that is not an e-mail address', code: 'email-invalid' },
   taken: { error: 'another profile already uses this e-mail address', code: 'email-taken' }
@@ -948,16 +999,16 @@ const EMAIL_ERRORS = {
 // what older clients still send — an address typed there works too) or `email` (only an address).
 // `key` is what wrong passwords are counted against: the account when there is one, otherwise the
 // identifier as folded, so an unknown one is paused exactly like a known one.
-function loginTarget(body) {
+async function loginTarget(body) {
   const onlyEmail = body.identifier === undefined && body.name === undefined;
   const k = nameKey(text(body.identifier ?? body.name ?? body.email).slice(0, 300));
   if (!k) return null;
-  const resolve = () => (k.includes('@') ? emailHolder(k) : null) || (onlyEmail ? null : passwordHolder(k));
-  const user = resolve();
+  const resolve = async () => (k.includes('@') ? await emailHolder(k) : null) || (onlyEmail ? null : await passwordHolder(k));
+  const user = await resolve();
   return { k, user, resolve, email: k.includes('@'), key: user ? acctKey(user) : 'id:' + k };
 }
 const acctKey = u => 'acct:' + u.id;
-const passkeyCount = u => db.creds.filter(c => c.userId === u.id).length;
+const passkeyCount = u => countPasskeys(pool, u.id);
 const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u) });
 const POLICY_ERRORS = {
   'too-short': `the password needs at least ${MIN_LENGTH} characters`,
@@ -970,13 +1021,20 @@ const WRONG = { error: 'wrong name or password', code: 'bad-credentials' };
 // A new password ends every other session of the account, the way "sign out everywhere" does,
 // pending pairing codes and device links included; the caller's own is re-issued by the route.
 // Always a new record, never an edit of the old one: a check still running against the old one
-// tells the two apart by that (see POST /api/login/password).
-function setPassword(user, h) {
-  user.pw = { h, set: new Date().toISOString() };
+// tells the two apart by that (see POST /api/login/password). Named apart from store.js's
+// setPassword, which this calls — that one is just the users-table write, this is everything a
+// route setting a new password needs done. Mutates `user` in place (for the rest of the caller's
+// handler — publicUser(user), sessionCookie(user) — to see the new state without a re-fetch) the
+// same way the file-backed version did, even though `user` is a snapshot now, not a live
+// reference: nothing else holds this particular object.
+async function changePassword(user, h) {
+  const set = new Date().toISOString();
+  await setPassword(pool, user.id, { h, set });
+  user.pw = { h, set };
   delete user.pwReset;
-  user.sv = sessionVersion(user) + 1;
+  user.sv = await bumpSessionVersion(pool, user.id);
   for (const [k, v] of pairings) if (v.uid === user.id) pairings.delete(k);
-  dropDeviceLinks(db, user.id);
+  await dropDeviceLinks(pool, user.id);
 }
 
 // A passkey assertion made just now by the signed-in account itself — how someone who has no
@@ -986,8 +1044,8 @@ function setPassword(user, h) {
 // to belong to this account.
 async function passkeyStepUp(user, body) {
   const c = takeChallenge(body.cid);
-  const cred = c?.kind === 'login' && db.creds.find(x => x.id === body.credential?.id && x.userId === user.id);
-  if (!cred) return false;
+  const cred = c?.kind === 'login' && await getPasskeyById(pool, body.credential?.id);
+  if (!cred || cred.userId !== user.id) return false;
   try {
     const v = await verifyAuthenticationResponse({
       response: body.credential, expectedChallenge: c.challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
@@ -995,8 +1053,7 @@ async function passkeyStepUp(user, body) {
       credential: { id: cred.id, publicKey: b64uToBuf(cred.publicKey), counter: cred.counter, transports: cred.transports }
     });
     if (!v.verified) return false;
-    cred.counter = v.authenticationInfo.newCounter;
-    cred.lastUsed = new Date().toISOString();
+    await touchPasskeyUse(pool, cred.id, v.authenticationInfo.newCounter);
     return true;
   } catch { return false; }
 }
@@ -1092,9 +1149,9 @@ async function removeEmail(req, res, user, body) {
   if (!user.email) return json(res, 200, { ok: true, email: null });
   const proof = await proveOwner(req, res, user, body, 'email-remove');
   if (!proof) return;
-  if (readSession(req) !== user) return json(res, 401, { error: 'not signed in' });
+  if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
   delete user.email;
-  saveDb();
+  await setEmail(pool, user.id, null);
   audit(req, 'auth.email.remove', { user, msg: proof });
   json(res, 200, { ok: true, email: null });
 }
@@ -1102,7 +1159,7 @@ async function removeEmail(req, res, user, body) {
 const passwordRoutes = {
   'POST /api/login/password': async (req, res) => {
     const body = await readBody(req);
-    const target = loginTarget(body);
+    const target = await loginTarget(body);
     const pw = typeof body.password === 'string' ? body.password : '';
     if (!target || !pw) return json(res, 400, { error: 'name and password required', code: 'missing' });
     const check = passwordAttempt(req, res, target.key);
@@ -1117,29 +1174,41 @@ const passwordRoutes = {
     // may have replaced since (each puts a new record in user.pw or none; only a rehash edits it
     // in place). A session signed now would carry the account's *new* session version and outlive
     // the "signed out everywhere" that came with it, so the old password gets nothing; it is not
-    // counted as a wrong one either.
-    const still = () => hasPassword(user) && user.pw === rec && target.resolve() === user;
-    if (!still()) {
+    // counted as a wrong one either. Resolves to the fresh row rather than a boolean, so the rest
+    // of the handler reads `disabled` and everything else off data from after the await too — under
+    // db.json `user` was a live reference and picked up a concurrent disable/change on its own;
+    // every read here is its own row now, so nothing past this point may still use the stale `user`.
+    const stillHas = async h => {
+      const fresh = await target.resolve();
+      return fresh?.id === user.id && hasPassword(fresh) && fresh.pw.h === h ? fresh : null;
+    };
+    let fresh = await stillHas(rec.h);
+    if (!fresh) {
       check.void();
       return json(res, 401, WRONG);
     }
-    if (user.disabled) {
+    if (fresh.disabled) {
       check.void();
-      audit(req, 'auth.password.fail', { ok: false, user, msg: 'account-disabled' });
+      audit(req, 'auth.password.fail', { ok: false, user: fresh, msg: 'account-disabled' });
       return json(res, 403, { error: 'this account has been disabled', code: 'disabled' });
     }
     check.ok();
     // A hash made with older parameters is replaced now, while the password is at hand.
     if (needsRehash(rec.h)) {
+      let h;
       try {
-        const h = await hashPassword(pw);
-        if (still()) { rec.h = h; saveDb(); }
+        h = await hashPassword(pw);
+        if (await stillHas(rec.h)) await rehashPassword(pool, user.id, h);
       } catch (e) { if (!(e instanceof BusyError)) throw e; }
-      // The same question again: the password may have changed while the new hash was made.
-      if (!still()) return json(res, 401, WRONG);
+      // The same question again: the password may have changed while the new hash was made. If
+      // the rehash write above never happened (stillHas(rec.h) was already false, or hashPassword
+      // itself threw BusyError), the stored hash is still rec.h, not h (possibly still undefined),
+      // and this correctly fails the same way either way.
+      fresh = h ? await stillHas(h) : null;
+      if (!fresh) return json(res, 401, WRONG);
     }
-    audit(req, 'auth.password.ok', { user });
-    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
+    audit(req, 'auth.password.ok', { user: fresh });
+    json(res, 200, { user: publicUser(fresh) }, { 'Set-Cookie': await sessionCookie(fresh, req.headers['user-agent']) });
   },
 
   // For browsers that cannot make a passkey at all: plain http on a LAN address, some Firefox
@@ -1149,9 +1218,8 @@ const passwordRoutes = {
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required', code: 'missing' });
     const code = text(body.code).trim().toUpperCase();
-    const invite = () => db.invites.find(i => i.code === code && !i.usedBy && !i.revoked);
     if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
-    if (INVITE_ONLY && !invite()) {
+    if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
       audit(req, 'auth.register.denied', { ok: false, name, msg: 'invite-rejected' });
       strikeAddress(req, 'signup');
       return json(res, 403, { error: 'a valid invite code is required', code: 'invite' });
@@ -1159,7 +1227,7 @@ const passwordRoutes = {
     const problem = passwordProblem(body.password, name);
     if (problem) return policyError(res, problem);
     const taken = () => json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
-    if (nameTaken(name)) return taken();
+    if (await nameTaken(name)) return taken();
     // An e-mail is optional here. One already in use counts against the address, the way it
     // does in Settings: this route needs no session, so it is the cheaper place to ask. Whether
     // it is in use is only answered after the hash and the invite check that follows it, so on
@@ -1174,33 +1242,46 @@ const passwordRoutes = {
     };
     if (email && addressPaused(req, res, 'email')) return;
     const h = await hashPassword(body.password);
-    let inv = null;
-    if (INVITE_ONLY) {
-      inv = invite();
-      if (!inv) {
+    // Re-checked once more right before the insert: everything since the first nameTaken/
+    // emailTaken awaited (the invite check, the hash), and a second request could have landed.
+    if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
+      audit(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
+      return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
+    }
+    if (await nameTaken(name)) return taken();
+    if (email && await emailTaken(email)) return emailRefused();
+    const created = new Date().toISOString();
+    const user = { id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}) };
+    if (INVITE_ONLY) user.invitedBy = code;
+    // createUser and consumeInvite commit or fail together: an invite consumed by a request whose
+    // user row then never landed (the unique-name/e-mail race below) would be burned for nothing,
+    // and a user row created on top of an invite another request consumed first (InviteRaceError)
+    // has to be undone, not left behind with no invite to show for it. createUser's own UNIQUE
+    // constraint on email is the actual backstop if two requests still land together on that.
+    try {
+      await withTransaction(pool, async client => {
+        await createUser(client, user);
+        if (INVITE_ONLY && !(await consumeInvite(client, code, user.id))) throw new InviteRaceError();
+      });
+    } catch (e) {
+      if (e instanceof InviteRaceError) {
         audit(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
         return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
       }
+      if (e.code === '23505') return email ? emailRefused() : taken(); // unique_violation
+      throw e;
     }
-    if (nameTaken(name)) return taken();
-    // No await from here to the push: nothing can take the address between this check and it.
-    if (email && emailTaken(email)) return emailRefused();
-    const created = new Date().toISOString();
-    const user = { id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}) };
-    if (inv) { user.invitedBy = inv.code; inv.usedBy = user.id; inv.usedAt = created; }
-    db.users.push(user);
-    saveDb();
-    audit(req, 'auth.register.ok', { user, msg: inv ? inv.code + ' · password' : 'password' });
-    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
+    audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? code + ' · password' : 'password' });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   // What Settings shows: whether a password is set, and whether it could be removed.
   'GET /api/account/password': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     json(res, 200, {
-      set: hasPassword(user), setAt: user.pw?.set || null, passkeys: passkeyCount(user),
-      name: user.name, nameTaken: nameTaken(user.name, user.id),
+      set: hasPassword(user), setAt: user.pw?.set || null, passkeys: await passkeyCount(user),
+      name: user.name, nameTaken: await nameTaken(user.name, user.id),
       // Only the owner's own session is ever handed their address.
       email: user.email || null
     });
@@ -1209,30 +1290,29 @@ const passwordRoutes = {
   // Set or change. Proof first: the current password when there is one, or a passkey assertion
   // made for this request (which is also how a forgotten password is replaced by its owner).
   'POST /api/account/password': async (req, res) => {
-    const s = sessionOf(req);
+    const s = await sessionOf(req);
     if (!s) return json(res, 401, { error: 'not signed in' });
     const { user } = s;
     const body = await readBody(req);
     const problem = passwordProblem(body.next, user.name);
     if (problem) return policyError(res, problem);
     const taken = () => json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
-    if (nameTaken(user.name, user.id)) return taken();
+    if (await nameTaken(user.name, user.id)) return taken();
     const proof = await proveOwner(req, res, user, body, 'password');
     if (!proof) return;
     const h = await hashPassword(body.next);
     // Everything above awaited: an admin reset, a disable or "sign out everywhere" may have ended
     // this session in the meantime, and a password set now would outlive that.
-    if (sessionOf(req)?.user !== user) return json(res, 401, { error: 'not signed in' });
-    if (nameTaken(user.name, user.id)) return taken();
+    if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
+    if (await nameTaken(user.name, user.id)) return taken();
     const first = !hasPassword(user);
-    setPassword(user, h);
+    await changePassword(user, h);
     // Whatever pause wrong guesses put on this account was about a password that no longer exists.
     ACCOUNT_FAILS.clear(acctKey(user));
-    saveDb();
     audit(req, first ? 'auth.password.set' : 'auth.password.change', { user, msg: proof });
     // This session carries on under the new version: a new cookie, or a new token for a phone.
-    if (s.bearer) return json(res, 200, { ok: true, token: makeSession(user) });
-    json(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(user) });
+    if (s.bearer) return json(res, 200, { ok: true, token: await makeSession(user, req.headers['user-agent']) });
+    json(res, 200, { ok: true }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   // Never the last way in: a profile with no passkey keeps its password, because nothing else
@@ -1241,23 +1321,24 @@ const passwordRoutes = {
   // refusal the profile's state already decides spends no passkey prompt and no password check.
   // Existing sessions are left alone; "sign out everywhere" ends them.
   'DELETE /api/account/password': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     const lastWayIn = () => json(res, 409, { error: 'the password is the only way into this profile', code: 'last-way-in' });
     if (!hasPassword(user)) return json(res, 200, { ok: true });
-    if (!passkeyCount(user)) return lastWayIn();
+    if (!(await passkeyCount(user))) return lastWayIn();
     const proof = await proveOwner(req, res, user, body, 'password-remove');
     if (!proof) return;
     // Everything above awaited: the session may have ended, and the profile's last passkey may
-    // have been removed by a request that ran alongside this one.
-    if (readSession(req) !== user) return json(res, 401, { error: 'not signed in' });
-    if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
-    if (!hasPassword(user)) return json(res, 200, { ok: true });
-    if (!passkeyCount(user)) return lastWayIn();
-    delete user.pw;
-    saveDb();
-    audit(req, 'auth.password.remove', { user });
+    // have been removed by a request that ran alongside this one. Checked again against fresh
+    // data (sessionStillValid's return), not the snapshot from before those awaits.
+    const fresh = await sessionStillValid(req, user);
+    if (!fresh) return json(res, 401, { error: 'not signed in' });
+    if (!hasPassword(fresh)) return json(res, 200, { ok: true });
+    if (!(await passkeyCount(fresh))) return lastWayIn();
+    delete fresh.pw;
+    await removePassword(pool, fresh.id);
+    audit(req, 'auth.password.remove', { user: fresh });
     json(res, 200, { ok: true });
   },
 
@@ -1268,7 +1349,7 @@ const passwordRoutes = {
   // account, so asking whether an address is in use costs a passkey prompt or a password check
   // and runs out after a few tries (see "e-mail as a sign-in name" above).
   'POST /api/account/email': async (req, res) => {
-    const s = sessionOf(req);
+    const s = await sessionOf(req);
     if (!s) return json(res, 401, { error: 'not signed in' });
     const { user } = s;
     const body = await readBody(req);
@@ -1285,10 +1366,9 @@ const passwordRoutes = {
     if (paused()) return;
     const proof = await proveOwner(req, res, user, body, 'email');
     if (!proof) return;
-    if (sessionOf(req)?.user !== user) return json(res, 401, { error: 'not signed in' });
+    if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
     if (paused()) return;
-    if (emailTaken(email, user.id)) {
-      if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
+    if (await emailTaken(email, user.id)) {
       strikeAddress(req, 'email');
       ADDR_FAILS.fail(acct);
       audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
@@ -1296,12 +1376,22 @@ const passwordRoutes = {
     }
     const first = !user.email;
     user.email = email;
-    saveDb();
+    try {
+      await setEmail(pool, user.id, email);
+    } catch (e) {
+      if (e.code === '23505') { // unique_violation — lost a race to another request
+        strikeAddress(req, 'email');
+        ADDR_FAILS.fail(acct);
+        audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
+        return json(res, 409, EMAIL_ERRORS.taken);
+      }
+      throw e;
+    }
     audit(req, first ? 'auth.email.set' : 'auth.email.change', { user, msg: proof + ' · ' + maskEmail(email) });
     json(res, 200, { ok: true, email });
   },
   'DELETE /api/account/email': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     removeEmail(req, res, user, await readBody(req));
   },
@@ -1313,22 +1403,21 @@ const passwordRoutes = {
   // shown once and stored only as a hash. Admin accounts are refused, as they are by disable —
   // one admin must not be able to take over another's login.
   'POST /api/admin/user/password-reset': async (req, res) => {
-    const admin = requireAdmin(req, res); if (!admin) return;
+    const admin = await requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
-    const u = db.users.find(x => x.id === body.id);
+    const u = await getUserById(pool, body.id);
     if (!u) return json(res, 404, { error: 'no such user' });
     if (isAdmin(u)) return json(res, 400, { error: 'an admin sets their own password in Settings' });
-    if (nameTaken(u.name, u.id)) return json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
+    if (await nameTaken(u.name, u.id)) return json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
     const code = makeResetCode();
-    delete u.pw;
-    u.pwReset = { h: hashResetCode(code), exp: Date.now() + RESET_TTL_MS, by: admin.id };
-    u.sv = sessionVersion(u) + 1;
+    const exp = Date.now() + RESET_TTL_MS;
+    await setPasswordReset(pool, u.id, { h: hashResetCode(code), exp, by: admin.id });
+    u.sv = await bumpSessionVersion(pool, u.id);
     for (const [k, v] of pairings) if (v.uid === u.id) pairings.delete(k);
-    dropDeviceLinks(db, u.id);
+    await dropDeviceLinks(pool, u.id);
     presence.delete(u.id);
-    saveDb();
     audit(req, 'admin.password.reset', { user: admin, target: u });
-    json(res, 200, { ok: true, name: u.name, code, expires: u.pwReset.exp });
+    json(res, 200, { ok: true, name: u.name, code, expires: exp });
   },
 
   'POST /api/login/password-reset': async (req, res) => {
@@ -1341,8 +1430,11 @@ const passwordRoutes = {
     // 60-bit code that lives a day, and would let anyone who knows the name keep the real code
     // refused for that whole day — after the reset has already removed the old password.
     if (addressPaused(req, res, 'password')) return;
-    const find = () => db.users.find(u => u.pwReset && (nameKey(u.name) === k || u.email === k) && resetCodeMatches(code, u.pwReset)) || null;
-    const user = find();
+    const find = async () => {
+      const users = await getAllUsers(pool);
+      return users.find(u => u.pwReset && (nameKey(u.name) === k || u.email === k) && resetCodeMatches(code, u.pwReset)) || null;
+    };
+    const user = await find();
     const invalid = () => json(res, 400, { error: 'that reset code is wrong or has expired', code: 'reset-invalid' });
     const taken = () => json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
     if (!user) {
@@ -1357,16 +1449,15 @@ const passwordRoutes = {
     // The code is good and stays good until a password is actually set with it.
     const problem = passwordProblem(body.next, user.name);
     if (problem) return policyError(res, problem);
-    if (nameTaken(user.name, user.id)) return taken();
+    if (await nameTaken(user.name, user.id)) return taken();
     const h = await hashPassword(body.next);
     // Single use: a second request that raced this one through the hash finds the code gone.
-    if (find() !== user) return invalid();
-    if (nameTaken(user.name, user.id)) return taken();
-    setPassword(user, h);
+    if ((await find())?.id !== user.id) return invalid();
+    if (await nameTaken(user.name, user.id)) return taken();
+    await changePassword(user, h);
     ACCOUNT_FAILS.clear(acctKey(user));
-    saveDb();
     audit(req, 'auth.password.reset', { user });
-    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   }
 };
 
@@ -1392,8 +1483,8 @@ const passwordRoutes = {
 // Sessions are not tied to the passkey that opened them — a session is `uid:expiry:version`,
 // nothing more — so removing a passkey stops it signing in again but does not end a session it
 // already opened. "Sign out everywhere" does that, and Settings says so where a passkey is removed.
-const passkeyState = u => {
-  const passkeys = listPasskeys(db, u.id);
+const passkeyState = async u => {
+  const passkeys = await listPasskeys(pool, u.id);
   // `password`: whether the password can confirm an addition or a removal (proveOwner) — only
   // while password sign-in is on. `lastWayIn`: whether removing any one passkey would be refused.
   return { passkeys, password: passwordWayIn(u), lastWayIn: passkeys.length + (passwordWayIn(u) ? 1 : 0) <= 1 };
@@ -1406,16 +1497,19 @@ const notSignedIn = res => json(res, 401, { error: 'not signed in' });
 // at sign-up, so an authenticator files the new passkey under the same account; the passkeys the
 // profile has already are excluded, so an authenticator that holds one of them says so instead of
 // making a second.
-const moreOptions = user => generateRegistrationOptions({
-  rpName: RP_NAME, rpID: RP_ID,
-  userID: Buffer.from(user.id), userName: user.name, userDisplayName: user.name,
-  attestationType: 'none',
-  authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
-  excludeCredentials: db.creds.filter(c => c.userId === user.id).map(c => ({ id: c.id, transports: c.transports || [] }))
-});
+const moreOptions = async user => {
+  const mine = await listPasskeys(pool, user.id);
+  return generateRegistrationOptions({
+    rpName: RP_NAME, rpID: RP_ID,
+    userID: Buffer.from(user.id), userName: user.name, userDisplayName: user.name,
+    attestationType: 'none',
+    authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
+    excludeCredentials: mine.map(c => ({ id: c.id, transports: c.transports || [] }))
+  });
+};
 
-// The second half of either ceremony: the new passkey as a db.creds row, or null once the
-// refusal has been answered and audited as `ev`.
+// The second half of either ceremony: the new passkey as a candidate row (not yet inserted), or
+// null once the refusal has been answered and audited as `ev`.
 async function newPasskey(req, res, c, body, ev, user) {
   let verification;
   try {
@@ -1446,31 +1540,30 @@ async function newPasskey(req, res, c, body, ev, user) {
 
 const passkeyRoutes = {
   'GET /api/account/passkeys': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return notSignedIn(res);
-    json(res, 200, passkeyState(user));
+    json(res, 200, await passkeyState(user));
   },
 
   // Adding one from Settings, step one: the proof, then the options. The proof is spent here; the
   // challenge that comes back is good for five minutes, for this profile, under this session
   // version — "sign out everywhere" in between ends the ceremony with everything else.
   'POST /api/account/passkeys/options': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
-    if (passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
+    if ((await passkeyCount(user)) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const proof = await proveOwner(req, res, user, body, 'passkey-add');
     if (!proof) return;
     // Awaited: a sign-out everywhere, a disable or an admin reset may have ended this session.
-    if (readSession(req) !== user) return notSignedIn(res);
-    if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
+    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
     const options = await moreOptions(user);
     const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'add', sv: sessionVersion(user), proof });
     json(res, 200, { cid, options });
   },
 
   'POST /api/account/passkeys/verify': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
     const c = takeChallenge(text(body.cid));
@@ -1480,25 +1573,23 @@ const passkeyRoutes = {
     }
     const cred = await newPasskey(req, res, c, body, 'auth.passkey.fail', user);
     if (!cred) return;
-    if (readSession(req) !== user || sessionVersion(user) !== c.sv) return notSignedIn(res);
-    const added = addPasskeyRecord(db, user.id, cred);
+    if (!(await sessionStillValid(req, user, c.sv))) return notSignedIn(res);
+    const added = await insertPasskey(pool, user.id, cred);
     if (added.error) {
       audit(req, 'auth.passkey.fail', { ok: false, user, msg: added.code });
       return json(res, 409, { error: added.error, code: added.code });
     }
-    saveDb();
     audit(req, 'auth.passkey.add', { user, msg: c.proof });
-    json(res, 200, { ok: true, ...passkeyState(user) });
+    json(res, 200, { ok: true, ...(await passkeyState(user)) });
   },
 
   'POST /api/account/passkeys/rename': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
-    const r = renamePasskeyRecord(db, user.id, text(body.id), body.name);
+    const r = await renamePasskey(pool, user.id, text(body.id), body.name);
     if (r.error) return json(res, 404, { error: r.error, code: r.code });
-    saveDb();
-    json(res, 200, { ok: true, ...passkeyState(user) });
+    json(res, 200, { ok: true, ...(await passkeyState(user)) });
   },
 
   // `?id=` — the credential id from the list; the body carries the same proof adding one takes
@@ -1509,37 +1600,34 @@ const passkeyRoutes = {
   // passkey is removed because it is lost or not trusted, and a code made with it just before — by
   // whoever holds it — would otherwise add a fresh one right after.
   'DELETE /api/account/passkeys': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const id = new URL(req.url, 'http://x').searchParams.get('id') || '';
     const body = await readBody(req);
     const refuse = r => json(res, r.code === 'last-way-in' ? 409 : 404, { error: r.error, code: r.code });
-    const refused = passkeyRemovalRefused(db, user.id, id, passwordWayIn(user) ? 1 : 0);
+    const refused = await passkeyRemovalRefused(pool, user.id, id, passwordWayIn(user) ? 1 : 0);
     if (refused) return refuse(refused);
     const proof = await proveOwner(req, res, user, body, 'passkey-remove');
     if (!proof) return;
-    if (readSession(req) !== user) return notSignedIn(res);
-    if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
-    const r = removePasskeyRecord(db, user.id, id, passwordWayIn(user) ? 1 : 0);
+    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
+    const r = await removePasskey(pool, user.id, id, passwordWayIn(user) ? 1 : 0);
     if (r.error) return refuse(r);
-    dropDeviceLinks(db, user.id);
-    saveDb();
+    await dropDeviceLinks(pool, user.id);
     audit(req, 'auth.passkey.remove', { user, msg: r.row.name || null });
-    json(res, 200, { ok: true, ...passkeyState(user) });
+    json(res, 200, { ok: true, ...(await passkeyState(user)) });
   },
 
   // Makes the code another device redeems below. Same proof as adding a passkey here, because the
   // code is how a passkey gets added there.
   'POST /api/account/device-link': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
-    if (passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
+    if ((await passkeyCount(user)) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const proof = await proveOwner(req, res, user, body, 'device-link');
     if (!proof) return;
-    if (readSession(req) !== user) return notSignedIn(res);
-    const { code, link } = createDeviceLink(db, user.id);
-    saveDb();
+    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
+    const { code, link } = await createDeviceLink(pool, user.id);
     audit(req, 'auth.link.create', { user, msg: proof });
     json(res, 200, { code, expires: link.exp });
   },
@@ -1556,32 +1644,33 @@ const passkeyRoutes = {
   'POST /api/device-link/options': async (req, res) => {
     const body = await readBody(req);
     if (addressPaused(req, res, 'link')) return;
-    const link = findDeviceLink(db, text(body.code));
+    const link = await findDeviceLink(pool, text(body.code));
     if (!link) {
       strikeAddress(req, 'link');
       audit(req, 'auth.link.fail', { ok: false, msg: 'link-invalid' });
       return json(res, 400, LINK_INVALID);
     }
-    const user = db.users.find(u => u.id === link.userId);
+    const user = await getUserById(pool, link.userId);
     if (!user || user.disabled) {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'user-unavailable' });
       return json(res, 400, LINK_INVALID);
     }
-    if (passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
+    if ((await passkeyCount(user)) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const options = await moreOptions(user);
     const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'link', lh: link.h });
     json(res, 200, { cid, options, id: user.id, name: user.name });
   },
 
   // Step two: the new passkey is stored, the code is burned, and this device is signed in by the
-  // passkey it just made — the same cookie a passkey sign-in sets. Of two requests racing with one
-  // code, the first to finish wins and the other finds it gone.
+  // passkey it just made — the same cookie a passkey sign-in sets. Of two requests racing with
+  // one code, only the one whose DELETE inside the transaction below actually claims the row
+  // ever reaches insertPasskey; the other is told the code is gone before it creates anything.
   'POST /api/device-link/verify': async (req, res) => {
     const body = await readBody(req);
     if (addressPaused(req, res, 'link')) return;
     const code = text(body.code);
     const c = takeChallenge(text(body.cid));
-    const link = findDeviceLink(db, code);
+    const link = await findDeviceLink(pool, code);
     if (!link) {
       strikeAddress(req, 'link');
       audit(req, 'auth.link.fail', { ok: false, msg: 'link-invalid' });
@@ -1591,26 +1680,47 @@ const passkeyRoutes = {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired — try again' });
     }
-    const owner = db.users.find(u => u.id === link.userId);
+    const owner = await getUserById(pool, link.userId);
     const cred = await newPasskey(req, res, c, body, 'auth.link.fail', owner || { id: link.userId });
     if (!cred) return;
-    // Everything above awaited: the code may have been used, replaced or dropped since (a sign-out
-    // everywhere, a new password, a disable), and the profile may be gone or locked.
-    const user = db.users.find(u => u.id === link.userId);
-    if (findDeviceLink(db, code) !== link || !user || user.disabled) {
+    // Everything above awaited: the profile may be gone or locked since (a sign-out everywhere,
+    // a new password, a disable) — checked fresh, not against `owner` from before the ceremony.
+    const user = await getUserById(pool, link.userId);
+    if (!user || user.disabled) {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'link-invalid' });
       return json(res, 400, LINK_INVALID);
     }
-    const added = addPasskeyRecord(db, user.id, cred);
-    if (added.error) {
-      audit(req, 'auth.link.fail', { ok: false, user, msg: added.code });
-      return json(res, 409, { error: added.error, code: added.code });
+    // Redeeming the link is itself a first use, same as the credential this profile signed up
+    // with — created and lastUsed together, not left unset until a later sign-in.
+    //
+    // The burn and the insert commit together, burn first: burning without a passkey to show
+    // for it would strand the owner with no code left to retry, so a failed insertPasskey (a
+    // colliding credential id) rolls the burn back too, leaving the code usable again. Burning
+    // first, rather than after, is what makes the burn the actual single-use gate — a second
+    // request racing the same code finds nothing left to claim and never reaches insertPasskey
+    // at all, rather than both requests re-checking the link is "still there" (true of both,
+    // right up until whichever of them runs its own DELETE second) and both getting in.
+    const now = new Date().toISOString();
+    let added;
+    try {
+      await withTransaction(pool, async client => {
+        if (!(await burnDeviceLink(client, link.h))) throw new DeviceLinkRaceError();
+        added = await insertPasskey(client, user.id, { ...cred, created: now, lastUsed: now });
+        if (added.error) throw new HttpError(409, added.error);
+      });
+    } catch (e) {
+      if (e instanceof DeviceLinkRaceError) {
+        audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'link-invalid' });
+        return json(res, 400, LINK_INVALID);
+      }
+      if (e instanceof HttpError) {
+        audit(req, 'auth.link.fail', { ok: false, user, msg: added.code });
+        return json(res, e.status, { error: e.message, code: added.code });
+      }
+      throw e;
     }
-    added.row.lastUsed = added.row.created;
-    burnDeviceLink(db, link);
-    saveDb();
     audit(req, 'auth.link.ok', { user, msg: added.row.name || null });
-    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   }
 };
 
@@ -1647,12 +1757,12 @@ function mediaThrottle(req, user, win) {
   throw new MediaError(429, 'locked', { retryAfter: wait }, { 'Retry-After': String(wait) });
 }
 // Removes files that no profile's readable state has referenced for MEDIA_GC_GRACE_DAYS. Only
-// profiles in db.json are swept, and only when their state parses (see media.js for why a
+// profiles with a users row are swept, and only when their state parses (see media.js for why a
 // missing anything never means "delete"). First pass a few minutes after boot, so an instance
 // that is redeployed more often than hourly still gets one.
-function mediaSweepAll() {
+async function mediaSweepAll() {
   try {
-    const r = MEDIA.sweepAll({ uids: db.users.map(u => u.id) });
+    const r = await MEDIA.sweepAll({ uids: (await getAllUsers(pool)).map(u => u.id) });
     if (r.removed || r.tmp) console.log(`media: swept ${r.removed} unreferenced file(s), ${(r.freedBytes / 1048576).toFixed(1)} MB, ${r.tmp} stale upload(s)`);
   } catch (e) { console.error('media: sweep failed', e); }
 }
@@ -1694,7 +1804,7 @@ const mediaRoutes = {
   // hash, the magic bytes, the caps, the quota and the free disk; this route only adds the
   // session and the hourly budget.
   'PUT /api/media/{hash}': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) { MEDIA.discard(req); return json(res, 401, { error: 'not signed in' }); }
     try { mediaThrottle(req, user, MEDIA_BURST); } catch (e) { MEDIA.discard(req); throw e; }
     req.allowSlowBody?.();   // a signed-in upload within its budget may take the half hour
@@ -1702,7 +1812,7 @@ const mediaRoutes = {
     json(res, r.status, r.body);
   },
   'GET /api/media/{hash}': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     // Only ever the caller's own folder: another profile's file is exactly as missing as one
     // that was never uploaded.
@@ -1713,7 +1823,7 @@ const mediaRoutes = {
   // Which of these the server does not have, so a device uploads only those. Answered from the
   // in-memory list of the caller's own folder.
   'POST /api/media/missing': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     const hashes = body.hashes;
@@ -1725,11 +1835,11 @@ const mediaRoutes = {
   // "Reset everything": every file the caller's current state does not reference goes now,
   // without the grace. A state that cannot be read removes nothing.
   'POST /api/media/sweep': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     await readBody(req);
     mediaThrottle(req, user, MEDIA_SWEEPS);
-    const r = MEDIA.sweep(user.id, { graceMs: 0 });
+    const r = await MEDIA.sweep(user.id, { graceMs: 0 });
     audit(req, 'media.sweep', { user, msg: `${r.removed} file(s), ${(r.freedBytes / 1048576).toFixed(1)} MB${r.skipped ? ', state unreadable' : ''}` });
     json(res, 200, { removed: r.removed, freedBytes: r.freedBytes, usage: MEDIA.usage(user.id) });
   }
@@ -1737,7 +1847,7 @@ const mediaRoutes = {
 
 /* ---------- routes ---------- */
 const routes = {
-  'GET /api/health': async (req, res) => json(res, 200, { ok: true, users: db.users.length }),
+  'GET /api/health': async (req, res) => json(res, 200, { ok: true, users: (await getAllUsers(pool)).length }),
 
   // Public config the login screen needs before anyone is signed in. `coach` is absent unless
   // the instance has both switched the Coach on and successfully connected a provider — the
@@ -1767,7 +1877,7 @@ const routes = {
       // Public like the two flags above: the caps are not a secret, and the absence of the
       // block is how the app knows this server does not take photos and videos at all.
       ...(MEDIA_ON ? { media: mediaConfig(MEDIA_LIMITS) } : {}),
-      ...(readSession(req) ? { coach: coachConfig.publicConfig() } : {})
+      ...((await readSession(req)) ? { coach: coachConfig.publicConfig() } : {})
     });
   },
 
@@ -1779,11 +1889,11 @@ const routes = {
   // ended the old one — and a revoked token never gets this far. A browser's cookie is left
   // alone: signing in renews it, as before.
   'GET /api/me': async (req, res) => {
-    const s = sessionOf(req);
+    const s = await sessionOf(req);
     if (!s) return json(res, 401, { error: 'not signed in' });
     const { user } = s;
     const renew = s.bearer && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) }, ...(renew ? { token: makeSession(user) } : {}) });
+    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) }, ...(renew ? { token: await makeSession(user, req.headers['user-agent']) } : {}) });
   },
 
   'POST /api/register/options': async (req, res) => {
@@ -1791,7 +1901,7 @@ const routes = {
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required' });
     const code = text(body.code).trim().toUpperCase();
-    if (INVITE_ONLY && !db.invites.some(i => i.code === code && !i.usedBy && !i.revoked)) {
+    if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
       // The rejected code itself is never recorded — a near-miss guess in the log is a liability.
       audit(req, 'auth.register.denied', { ok: false, name, msg: 'invite-rejected' });
       return json(res, 403, { error: 'a valid invite code is required' });
@@ -1834,33 +1944,51 @@ const routes = {
       return json(res, 400, { error: 'not verified' });
     }
     const { credential } = verification.registrationInfo;
-    if (db.creds.find(x => x.id === credential.id)) {
+    if (await getPasskeyById(pool, credential.id)) {
       audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'credential-exists' });
       return json(res, 409, { error: 'credential already registered' });
     }
-    // Re-check the invite at the last moment (it may have been used/revoked since options), then burn it.
-    let invite = null;
-    if (INVITE_ONLY) {
-      invite = db.invites.find(i => i.code === c.code && !i.usedBy && !i.revoked);
-      if (!invite) {
-        audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'invite-invalid' });
-        return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
-      }
+    // Re-check the invite at the last moment (it may have been used/revoked since options).
+    if (INVITE_ONLY && !(await inviteIsValid(pool, c.code))) {
+      audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'invite-invalid' });
+      return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
     }
     const user = { id: c.uid, name: c.name, created: new Date().toISOString() };
-    if (invite) { user.invitedBy = invite.code; invite.usedBy = user.id; invite.usedAt = user.created; }
-    db.users.push(user);
-    db.creds.push({
-      id: credential.id, userId: user.id,
+    if (INVITE_ONLY) user.invitedBy = c.code;
+    const cred = {
+      id: credential.id,
       publicKey: Buffer.from(credential.publicKey).toString('base64url'),
       counter: credential.counter || 0,
       transports: body.credential?.response?.transports || [],
       // What Settings → Passkeys shows (#95); a passkey from before then has neither.
       created: user.created, lastUsed: user.created
-    });
-    saveDb();
-    audit(req, 'auth.register.ok', { user, msg: invite ? invite.code : null });
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': sessionCookie(user) });
+    };
+    // createUser, consumeInvite and the passkey itself commit or fail together now that all
+    // three are Postgres — see POST /api/register/password for why (same InviteRaceError, same
+    // shape); getPasskeyById above is the cheap pre-check that skips the whole transaction (and
+    // the invite it would burn) for the common case of an already-registered credential, but the
+    // insert's own unique constraint is still the real backstop against two requests racing here.
+    let added;
+    try {
+      await withTransaction(pool, async client => {
+        await createUser(client, user);
+        if (INVITE_ONLY && !(await consumeInvite(client, c.code, user.id))) throw new InviteRaceError();
+        added = await insertPasskey(client, user.id, cred);
+        if (added.error) throw new HttpError(409, added.error);
+      });
+    } catch (e) {
+      if (e instanceof InviteRaceError) {
+        audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'invite-invalid' });
+        return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
+      }
+      if (e instanceof HttpError) {
+        audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: added.code });
+        return json(res, e.status, { error: e.message });
+      }
+      throw e;
+    }
+    audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? c.code : null });
+    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   'POST /api/login/options': async (req, res) => {
@@ -1878,7 +2006,7 @@ const routes = {
       audit(req, 'auth.login.fail', { ok: false, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired — try again' });
     }
-    const cred = db.creds.find(x => x.id === body.credential?.id);
+    const cred = await getPasskeyById(pool, body.credential?.id);
     if (!cred) {
       // No credential id goes in the log: it is a stable handle for one passkey, and recording it
       // would let an admin correlate an unknown device across attempts. Nothing here identifies
@@ -1902,17 +2030,15 @@ const routes = {
         }
       });
     } catch (e) {
-      audit(req, 'auth.login.fail', { ok: false, user: db.users.find(u => u.id === cred.userId), uid: cred.userId, msg: 'verify-error' });
+      audit(req, 'auth.login.fail', { ok: false, user: await getUserById(pool, cred.userId), uid: cred.userId, msg: 'verify-error' });
       return json(res, 400, { error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }) });
     }
     if (!verification.verified) {
-      audit(req, 'auth.login.fail', { ok: false, user: db.users.find(u => u.id === cred.userId), uid: cred.userId, msg: 'not-verified' });
+      audit(req, 'auth.login.fail', { ok: false, user: await getUserById(pool, cred.userId), uid: cred.userId, msg: 'not-verified' });
       return json(res, 400, { error: 'not verified' });
     }
-    cred.counter = verification.authenticationInfo.newCounter;
-    cred.lastUsed = new Date().toISOString();
-    saveDb();
-    const user = db.users.find(u => u.id === cred.userId);
+    await touchPasskeyUse(pool, cred.id, verification.authenticationInfo.newCounter);
+    const user = await getUserById(pool, cred.userId);
     if (!user) {
       audit(req, 'auth.login.fail', { ok: false, uid: cred.userId, msg: 'user-missing' });
       return json(res, 500, { error: 'user missing' });
@@ -1922,14 +2048,20 @@ const routes = {
       return json(res, 403, { error: 'this account has been disabled' });
     }
     audit(req, 'auth.login.ok', { user });
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': sessionCookie(user) });
+    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
-  // Reads the session purely so the sign-out can be recorded; the cookie is cleared either way.
-  // A logout with no valid cookie is a no-op and isn't worth an entry.
+  // Revokes the session row this cookie names (ISO-1403) — a real logout, not just clearing the
+  // cookie client-side: the same token replayed after this is refused by sessionOf's revocation
+  // check, same as if it had expired. A cookie with no session row to revoke (minted before this
+  // table existed) still just gets cleared, as logout always did before. A logout with no valid
+  // session at all is a no-op and isn't worth an audit entry.
   'POST /api/logout': async (req, res) => {
-    const user = readSession(req);
-    if (user) audit(req, 'auth.logout', { user });
+    const s = await sessionOf(req);
+    if (s) {
+      audit(req, 'auth.logout', { user: s.user });
+      if (s.sid) await revokeSession(pool, s.sid);
+    }
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
 
@@ -1938,14 +2070,13 @@ const routes = {
   // The caller's own cookie is cleared here too, so the browser doing it doesn't sit on a token
   // it no longer accepts. Passkeys are untouched: signing back in works immediately.
   'POST /api/logout/all': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    user.sv = sessionVersion(user) + 1;
+    user.sv = await bumpSessionVersion(pool, user.id);
     // An unredeemed pairing code is a session-in-waiting for this account; it goes too, and so
     // does an unused device link.
     for (const [k, v] of pairings) if (v.uid === user.id) pairings.delete(k);
-    dropDeviceLinks(db, user.id);
-    saveDb();
+    await dropDeviceLinks(pool, user.id);
     audit(req, 'auth.logout.all', { user });
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
@@ -1953,7 +2084,7 @@ const routes = {
   // Mobile app pairing: called from an already signed-in browser tab (Settings → "Pair the
   // mobile app") to mint a short code the phone can redeem below.
   'POST /api/pair/create': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const code = makePairCode();
     pairings.set(code, { uid: user.id, exp: Date.now() + 5 * 60000 });
@@ -1972,13 +2103,13 @@ const routes = {
       audit(req, 'auth.pair.fail', { ok: false, msg: 'code-invalid' });
       return json(res, 400, { error: 'invalid or expired code' });
     }
-    const user = db.users.find(u => u.id === p.uid);
+    const user = await getUserById(pool, p.uid);
     if (!user || user.disabled) {
       audit(req, 'auth.pair.fail', { ok: false, uid: p.uid, msg: 'user-unavailable' });
       return json(res, 400, { error: 'invalid or expired code' });
     }
     audit(req, 'auth.pair.ok', { user });
-    json(res, 200, { token: makeSession(user), user: { id: user.id, name: user.name, admin: isAdmin(user) } });
+    json(res, 200, { token: await makeSession(user, req.headers['user-agent']), user: { id: user.id, name: user.name, admin: isAdmin(user) } });
   },
 
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.
@@ -1988,29 +2119,28 @@ const routes = {
   ...passkeyRoutes,
 
   // `rev` is the server's own count of writes to this profile (also stored inside the document as
-  // `_rev`, so every other reader of the file — reminder tick, admin, Coach, MCP — is unaffected).
-  // A client pushes it back as `baseRev`, and a write over a document it never saw is refused.
+  // `_rev`, so every other reader — reminder tick, admin, Coach, MCP — is unaffected). A client
+  // pushes it back as `baseRev`, and a write over a document it never saw is refused.
   'GET /api/data': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    const state = readState(user.id);
-    notePull(user);
-    json(res, 200, { state, rev: state?._rev || 0 });
+    const { state, rev } = await getUserState(pool, user.id);
+    await notePull(user);
+    json(res, 200, { state, rev });
   },
   // Just the revision: the client asks this every half minute while it is open and on every
   // return to the foreground, and fetches the document only when the number moved — a signed-in
-  // device is meant to show what the server has, and this is what keeps that cheap.
-  // Cheap means the stat cache the reminder tick already uses: parsing a megabytes-long document
-  // to read one number off it cost 31 ms per poll on a 2.4 MB state, all of it on the event loop.
-  // Every write goes through atomicWrite's rename, so the cache can never hand out a stale rev.
+  // device is meant to show what the server has, and this is what keeps that cheap. A narrow
+  // `SELECT rev` never touches the (possibly multi-MB) state column, so this needs no cache of
+  // its own the way the file-stat one used to.
   'GET /api/data/rev': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    json(res, 200, { rev: readStateCached(user.id)?._rev || 0 });
+    json(res, 200, { rev: await getUserStateRev(pool, user.id) });
   },
 
   'PUT /api/data': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     if (!body.state || typeof body.state !== 'object') return json(res, 400, { error: 'state required' });
@@ -2026,10 +2156,10 @@ const routes = {
       return json(res, 400, { error: 'state required' });
     }
     // The reminder tick and the admin routes iterate these two on the server's side, so a truthy
-    // non-array would throw there on every pass for as long as it sat on disk. Absent or null is
+    // non-array would throw there on every pass for as long as it was stored. Absent or null is
     // fine — every client fills its own defaults. An array is `typeof 'object'` but no document:
-    // `_rev` set on it is dropped by JSON.stringify, so the file would read back as rev 0 while
-    // the response claimed the next revision.
+    // `_rev` set on it is dropped by JSON.stringify, so it would read back as rev 0 while the
+    // response claimed the next revision.
     const list = v => v == null || Array.isArray(v);
     if (Array.isArray(body.state) || !list(body.state.workouts) || !list(body.state.routines)) return json(res, 400, { error: 'invalid state' });
     // The same readers walk every entry (`w.d`, `w.name`). They skip what is not an entry now
@@ -2037,52 +2167,48 @@ const routes = {
     // such an entry carries nothing worth keeping, whereas a 400 would strand a client whose own
     // copy is already malformed — it keeps re-sending the same document and never syncs again.
     for (const k of ['workouts', 'routines']) if (Array.isArray(body.state[k])) body.state[k] = records(body.state[k]);
-    // Conditional write: a `baseRev` that is not the current revision means this client last
-    // read an older document — another device has written since — and the copy it is about to
-    // push would silently drop that write. The current document travels back with the 409, so
-    // the client can merge and try again without a second request. No `baseRev` (a client from
-    // before revisions, or a deliberate replace such as a backup import) overwrites, as before.
-    // readState and atomicWrite are synchronous with nothing awaited between them, so the
-    // compare-and-write is atomic for this process.
-    const cur = readState(user.id);
-    const curRev = cur?._rev || 0;
-    if (body.baseRev != null && body.baseRev !== curRev) {
-      return json(res, 409, { error: 'conflict', rev: curRev, state: cur });
-    }
-    delete body.state.active;              // in-progress workouts stay device-local
-    // "Reset everything" stamps the profile (`resetAt`, with `resetIds`: what it wiped). The stamp
-    // only moves forward: a write without it, or with an older one — a client from before it, a
-    // backup restored over the profile — keeps the stored stamp. Otherwise every device that saw
-    // the reset would take that copy for one older than the reset, and wipe it again on its next
-    // merge (frontend/src/lib/sync-merge.js).
-    const storedReset = Number(cur?.resetAt) || 0;
-    if (storedReset > (Number(body.state.resetAt) || 0)) {
-      body.state.resetAt = cur.resetAt;
-      if (cur.resetIds && typeof cur.resetIds === 'object') body.state.resetIds = cur.resetIds;
-      else delete body.state.resetIds;
-    }
-    body.state._rev = curRev + 1;          // server-owned; whatever the client sent is ignored
-    atomicWrite(stateFile(user.id), JSON.stringify(body.state));
-    // The stat cache cannot see this write on its own: mtime granularity is 4 ms here (ext4 on
-    // this kernel — 3901 of 3999 back-to-back same-size writes shared one timestamp), and a
-    // `_rev` going from 7 to 8 does not change the file's size, so two writes inside one 4 ms
-    // tick are the same (mtimeMs, size) key. A reader that sampled between them would then serve
-    // the old revision until some later write happened to land on a different tick. This is the
-    // only writer of a state file in the tree, so evicting here is the whole fix.
-    stateCache.delete(user.id);
+    // Conditional write: a `baseRev` that is not the current revision means this client last read
+    // an older document — another device has written since — and the copy it is about to push
+    // would silently drop that write. The current document travels back with the 409, so the
+    // client can merge and try again without a second request. No `baseRev` (a client from before
+    // revisions, or a deliberate replace such as a backup import) overwrites, as before.
+    // putUserState (store.js) is the compare-and-set: it reads the row, hands it to `decide`
+    // below, and only writes if `rev` still matches what `decide` saw — a concurrent write from
+    // another device between the read and the write is retried against the fresh row rather than
+    // silently lost, which a plain read-then-write across an await could otherwise allow here in
+    // a way the old synchronous file version never could.
+    const result = await putUserState(pool, user.id, (cur, curRev) => {
+      if (body.baseRev != null && body.baseRev !== curRev) return { conflict: true };
+      const next = { ...body.state };
+      delete next.active;                  // in-progress workouts stay device-local
+      // "Reset everything" stamps the profile (`resetAt`, with `resetIds`: what it wiped). The
+      // stamp only moves forward: a write without it, or with an older one — a client from before
+      // it, a backup restored over the profile — keeps the stored stamp. Otherwise every device
+      // that saw the reset would take that copy for one older than the reset, and wipe it again
+      // on its next merge (frontend/src/lib/sync-merge.js).
+      const storedReset = Number(cur?.resetAt) || 0;
+      if (storedReset > (Number(next.resetAt) || 0)) {
+        next.resetAt = cur.resetAt;
+        if (cur.resetIds && typeof cur.resetIds === 'object') next.resetIds = cur.resetIds;
+        else delete next.resetIds;
+      }
+      next._rev = curRev + 1;              // server-owned; whatever the client sent is ignored
+      return { state: next };
+    });
+    if (result.conflict) return json(res, 409, { error: 'conflict', rev: result.rev, state: result.state });
     // Starts (or stops) the grace clock of every stored file this write stopped (or started)
     // referencing. Bookkeeping only: the state is already saved, so nothing here may turn a
     // successful write into an error.
     if (MEDIA_ON) {
-      try { MEDIA.noteState(user.id, body.state); } catch (e) { console.error('media noteState', e); }
+      try { MEDIA.noteState(user.id, result.state); } catch (e) { console.error('media noteState', e); }
     }
-    json(res, 200, { ok: true, ts: body.state._ts || null, rev: body.state._rev });
+    json(res, 200, { ok: true, ts: result.state._ts || null, rev: result.rev });
   },
 
   'GET /api/push/public-key': async (req, res) => json(res, 200, { key: vapid.publicKey }),
 
   'POST /api/push/subscribe': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     const sub = body.subscription;
@@ -2090,24 +2216,18 @@ const routes = {
     const bad = pushEndpointError(sub.endpoint);
     if (bad) return json(res, 400, { error: bad });
     // Only the two keys the push protocol needs are kept: `sub` is caller-supplied and would
-    // otherwise put arbitrary fields into db.json, which every admin route reads back out.
+    // otherwise put arbitrary fields into the row, which every admin route reads back out.
     const keys = { p256dh: String(sub.keys.p256dh), auth: String(sub.keys.auth) };
     const deviceId = deviceIdOf(body.deviceId);
     // An upsert: the client re-sends its subscription on every boot (lib/push.js) so a row this
-    // instance lost — pruned after a dead send, a rebuilt db.json — comes back without anyone
-    // touching Settings. The same endpoint sent again keeps its original `created`.
-    const prev = db.subs.find(s => s.endpoint === sub.endpoint);
-    db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint);
+    // instance lost — pruned after a dead send — comes back without anyone touching Settings.
+    // The same endpoint sent again keeps its original `created` (upsertSub's ON CONFLICT never
+    // touches created_at).
+    await upsertSub(pool, { userId: user.id, endpoint: sub.endpoint, keys, deviceId });
     // A browser holds one subscription per device, so this cap is far above real use. Without
     // it a single account could pile up endpoints without limit — every one of them a target
-    // sendPush() would then contact, and a whole rewrite of db.json per addition.
-    const mine = db.subs.filter(s => s.userId === user.id);
-    if (mine.length >= MAX_SUBS_PER_USER) {
-      const drop = new Set(mine.slice(0, mine.length - MAX_SUBS_PER_USER + 1).map(s => s.endpoint));
-      db.subs = db.subs.filter(s => !drop.has(s.endpoint));
-    }
-    db.subs.push({ userId: user.id, endpoint: sub.endpoint, keys, ...(deviceId ? { deviceId } : {}), created: prev?.created || new Date().toISOString() });
-    saveDb();
+    // sendPush() would then contact.
+    await capUserSubs(pool, user.id, MAX_SUBS_PER_USER);
     json(res, 200, { ok: true });
   },
 
@@ -2115,30 +2235,29 @@ const routes = {
   // side (PushManager.getSubscription) says nothing about ours — a row pruned after a dead send
   // leaves the browser subscribed to nowhere — so Settings asks here before it shows "on".
   'GET /api/push/status': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const endpoint = new URL(req.url, 'http://x').searchParams.get('endpoint') || '';
-    json(res, 200, { subscribed: db.subs.some(s => s.userId === user.id && s.endpoint === endpoint) });
+    json(res, 200, { subscribed: await subStatus(pool, user.id, endpoint) });
   },
 
   'POST /api/push/unsubscribe': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
-    db.subs = db.subs.filter(s => !(s.userId === user.id && s.endpoint === body.endpoint));
-    saveDb();
+    await unsubscribe(pool, user.id, body.endpoint);
     json(res, 200, { ok: true });
   },
 
   'POST /api/push/test': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    await sendPush(user.id, testPush(readStateCached(user.id)?.lang));
+    await sendPush(user.id, testPush((await readState(user.id))?.lang));
     json(res, 200, { ok: true });
   },
 
   'POST /api/push/rest-timer': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     // Validated before it is clamped: the clamp used to run first, which turned a missing or
@@ -2148,12 +2267,12 @@ const routes = {
     const n = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN;
     if (!(n >= 1)) return json(res, 400, { error: 'seconds required' });
     const sec = Math.min(3600, Math.round(n));
-    scheduleRestTimer(user.id, deviceIdOf(body.deviceId), sec, readStateCached(user.id)?.lang);
+    scheduleRestTimer(user.id, deviceIdOf(body.deviceId), sec, (await readState(user.id))?.lang);
     json(res, 200, { ok: true });
   },
 
   'POST /api/push/rest-timer/cancel': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     cancelRestTimer(user.id, deviceIdOf(body.deviceId));
@@ -2162,7 +2281,7 @@ const routes = {
 
   // Live-workout heartbeat: client pings while a workout is on screen; { active:false } drops it.
   'POST /api/activity': async (req, res) => {
-    const user = readSession(req);
+    const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     if (body.active) {
@@ -2178,11 +2297,12 @@ const routes = {
   },
 
   /* ---------- admin dashboard ---------- */
-  // One row per user, cheap enough for a personal instance (reads each state file once).
+  // One row per user, cheap enough for a personal instance (one user_state query each, in
+  // parallel — Postgres, not a directory of files, is what's paying for these now).
   'GET /api/admin/users': async (req, res) => {
-    if (!requireAdmin(req, res)) return;
-    const users = db.users.map(u => {
-      const S = readState(u.id) || {};
+    if (!(await requireAdmin(req, res))) return;
+    const users = await Promise.all((await getAllUsers(pool)).map(async u => {
+      const S = (await readState(u.id)) || {};
       const workouts = records(S.workouts);
       const last = workouts[workouts.length - 1];
       return {
@@ -2191,23 +2311,23 @@ const routes = {
         workouts: workouts.length,
         lastWorkout: last ? last.d : null,
         lastSync: lastSyncOf(u, S),
-        hasPush: db.subs.some(s => s.userId === u.id),
+        hasPush: await hasPush(pool, u.id),
         live: livePresence(u.id),
         // The sign-in e-mail is an admin's to see (to hand out a reset code, to tell two
         // profiles apart), and only while the instance takes passwords at all.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null } : {})
       };
-    });
+    }));
     json(res, 200, { users, invite_only: INVITE_ONLY, ...(PASSWORD_LOGIN ? { password_login: true } : {}), now: Date.now() });
   },
 
   // Drill-down: full workout history + body-weight log for one user.
   'GET /api/admin/user': async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
     const id = new URL(req.url, 'http://x').searchParams.get('id');
-    const u = db.users.find(x => x.id === id);
+    const u = await getUserById(pool, id);
     if (!u) return json(res, 404, { error: 'no such user' });
-    const S = readState(u.id) || {};
+    const S = (await readState(u.id)) || {};
     json(res, 200, {
       user: {
         id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null,
@@ -2226,16 +2346,16 @@ const routes = {
   },
 
   'POST /api/admin/user/disable': async (req, res) => {
-    const admin = requireAdmin(req, res); if (!admin) return;
+    const admin = await requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
-    const u = db.users.find(x => x.id === body.id);
+    const u = await getUserById(pool, body.id);
     if (!u) return json(res, 404, { error: 'no such user' });
     if (isAdmin(u)) return json(res, 400, { error: 'cannot disable an admin' });
     u.disabled = !!body.disabled;
+    await setDisabled(pool, u.id, u.disabled);
     if (u.disabled) presence.delete(u.id);   // drop them off "training now" at once
     // A device link made before the lock would otherwise still be waiting when it is lifted.
-    if (u.disabled) dropDeviceLinks(db, u.id);
-    saveDb();
+    if (u.disabled) await dropDeviceLinks(pool, u.id);
     audit(req, u.disabled ? 'admin.user.disable' : 'admin.user.enable', { user: admin, target: u });
     json(res, 200, { ok: true, id: u.id, disabled: u.disabled });
   },
@@ -2247,64 +2367,63 @@ const routes = {
   // widen an invite-only instance. `GET /api/admin/user` is the export: the dashboard offers it
   // before the confirm, so the training history can be kept if anyone wants it.
   'POST /api/admin/user/delete': async (req, res) => {
-    const admin = requireAdmin(req, res); if (!admin) return;
+    const admin = await requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
-    const u = db.users.find(x => x.id === body.id);
+    const u = await getUserById(pool, body.id);
     if (!u) return json(res, 404, { error: 'no such user' });
     if (u.id === admin.id) return json(res, 400, { error: 'you cannot delete your own account' });
-    if (isAdmin(u) && db.users.filter(isAdmin).length <= 1) return json(res, 400, { error: 'cannot delete the last admin' });
+    if (isAdmin(u) && (await getAllUsers(pool)).filter(isAdmin).length <= 1) return json(res, 400, { error: 'cannot delete the last admin' });
     const name = u.name;
-    db.users = db.users.filter(x => x.id !== u.id);
-    db.creds = (db.creds || []).filter(c => c.userId !== u.id);
-    db.subs = (db.subs || []).filter(x => x.userId !== u.id);
-    dropDeviceLinks(db, u.id);
     presence.delete(u.id);
-    // The training history and any Coach credential of theirs, both outside db.json.
-    try { fs.unlinkSync(stateFile(u.id)); } catch { /* already gone */ }
+    // The row itself — cascades to user_state, push_subscriptions, device_links and passkeys
+    // (`ON DELETE CASCADE`), the last piece of db.json to move here too.
+    await deleteUser(pool, u.id);
     try { coachConfig.clearProfileAuth(u.id); } catch { /* nothing stored */ }
     // Their photos and videos — the one place a profile's folder under uploads/ is removed.
     try { MEDIA.removeUser(u.id); } catch (e) { console.error('media: could not remove uploads of', u.id, e.message); }
-    saveDb();
     // Logged with the name, because the id is about to mean nothing to anyone reading this back.
     audit(req, 'admin.user.delete', { user: admin, msg: name });
     json(res, 200, { ok: true, id: u.id });
   },
 
   'GET /api/admin/invites': async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
     // resolve usedBy uid → name for display
-    const invites = db.invites.map(i => ({
-      ...i, usedByName: i.usedBy ? (db.users.find(u => u.id === i.usedBy) || {}).name || null : null
+    const [users, invites] = await Promise.all([getAllUsers(pool), getAllInvites(pool)]);
+    const withNames = invites.map(i => ({
+      ...i, usedByName: i.usedBy ? (users.find(u => u.id === i.usedBy) || {}).name || null : null
     }));
-    json(res, 200, { invites, invite_only: INVITE_ONLY });
+    json(res, 200, { invites: withNames, invite_only: INVITE_ONLY });
   },
 
   'POST /api/admin/invites/new': async (req, res) => {
-    const admin = requireAdmin(req, res); if (!admin) return;
+    const admin = await requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
     let code;
     // 16 hex chars = 64 bits, up from 8 chars / 32 bits. Passkey signup has no rate limiting by
     // design (that's the reverse proxy's job) and /api/register/options tells a caller whether a
     // code is good, so the code itself has to be the thing that isn't worth guessing. Codes already
-    // in db.json keep working — validation is an exact string compare, never a length or format check.
-    do { code = crypto.randomBytes(8).toString('hex').toUpperCase(); } while (db.invites.some(i => i.code === code));
-    const invite = { code, note: text(body.note).slice(0, 60), createdBy: admin.id, created: new Date().toISOString() };
-    db.invites.push(invite);
-    saveDb();
+    // issued keep working — validation is an exact string compare, never a length or format check.
+    do { code = crypto.randomBytes(8).toString('hex').toUpperCase(); } while (await codeExists(pool, code));
+    const note = text(body.note).slice(0, 60);
+    await createInvite(pool, { code, note, createdBy: admin.id });
     audit(req, 'admin.invite.create', { user: admin, msg: code });
-    json(res, 200, { invite });
+    json(res, 200, { invite: { code, ...(note ? { note } : {}), createdBy: admin.id, created: new Date().toISOString() } });
   },
 
   'POST /api/admin/invites/revoke': async (req, res) => {
-    const admin = requireAdmin(req, res); if (!admin) return;
+    const admin = await requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
-    const inv = db.invites.find(i => i.code === text(body.code).toUpperCase());
-    if (!inv) return json(res, 404, { error: 'no such code' });
-    if (inv.usedBy) return json(res, 400, { error: 'already used — cannot revoke' });
-    db.invites = db.invites.filter(i => i.code !== inv.code);
-    saveDb();
-    audit(req, 'admin.invite.revoke', { user: admin, msg: inv.code });
-    json(res, 200, { ok: true });
+    const code = text(body.code).toUpperCase();
+    if (await revokeInvite(pool, code)) {
+      audit(req, 'admin.invite.revoke', { user: admin, msg: code });
+      return json(res, 200, { ok: true });
+    }
+    // revokeInvite doesn't distinguish "no such code" from "already used" — both are 0 rows
+    // deleted — so a cheap follow-up read picks the right answer. A code used between the delete
+    // attempt and this read is exactly "already used": the response is still correct.
+    const stillThere = await codeExists(pool, code);
+    return json(res, stillThere ? 400 : 404, stillThere ? { error: 'already used — cannot revoke' } : { error: 'no such code' });
   },
 
   /* ---------- activity log ---------- */
@@ -2313,7 +2432,7 @@ const routes = {
   // timestamp, because two events can share a millisecond. auditKeep() runs on read as well as
   // on the hourly compaction, so nothing past its retention is ever served.
   'GET /api/admin/audit': async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
     const q = new URL(req.url, 'http://x').searchParams;
     const limit = Math.max(1, Math.min(200, +q.get('limit') || 100));
     const before = +q.get('before') || Infinity;
@@ -2336,7 +2455,7 @@ const routes = {
   // visible gap in the ids and can't be used to quietly erase a trace. There is no export route:
   // ./data/audit.log already is the export, in a format jq reads directly.
   'POST /api/admin/audit/clear': async (req, res) => {
-    const admin = requireAdmin(req, res); if (!admin) return;
+    const admin = await requireAdmin(req, res); if (!admin) return;
     try { fs.unlinkSync(auditFile); } catch { /* nothing logged yet */ }
     auditCount = 0;
     audit(req, 'admin.audit.clear', { user: admin });
@@ -2345,8 +2464,8 @@ const routes = {
 
   /* ---------- AI Coach ---------- */
   // Routes live in coach/routes.js and are handed the helpers above rather than importing
-  // them: they are closures over db and SECRET, and passing them in keeps that module free of
-  // a cycle. Every one of them is inert while the feature is unconfigured.
+  // them: they are closures over `pool` and SECRET, and passing them in keeps that module free
+  // of a cycle. Every one of them is inert while the feature is unconfigured.
   ...coachRoutes({ json, readBody, readSession, requireAdmin }),
 
   /* ---------- photos & videos ---------- */
@@ -2370,7 +2489,7 @@ coachJobs.setProposalHook((uid, pending) => {
     tag: 'coach-proposal', url: '#/coach'
   });
 });
-startCadence({ users: () => db.users, userNow });
+startCadence({ users: () => usersCache, userNow });
 startWarmup();
 
 // node's requestTimeout is one number for every route, and it is half an hour (below) for the
@@ -2465,18 +2584,65 @@ const server = http.createServer(async (req, res) => {
 server.requestTimeout = 30 * 60000;
 server.headersTimeout = 60000;
 
-// Connect and migrate before accepting any request. DATABASE_URL unset skips this entirely (see
-// its declaration above); set, a failure here — unreachable database or a broken migration — is
-// a boot failure, not something callers should ever see as a 500.
+// Connect and migrate before accepting any request. A failure here — unreachable database or a
+// broken migration — is a boot failure, not something callers should ever see as a 500.
 async function listen() {
-  if (DATABASE_URL) {
-    try {
-      const { count } = await connectAndMigrate(DATABASE_URL);
-      console.log(`postgres ready (${count} migration${count === 1 ? '' : 's'} applied)`);
-    } catch (e) {
-      console.error('postgres connection/migration failed:', e.message);
-      process.exit(1);
-    }
+  try {
+    const r = await connectAndMigrate(DATABASE_URL);
+    pool = r.pool;
+    // jobs.js's own readState/listUserIds (used by cohort.js and cadence.js too) need this —
+    // same idea as setProposalHook above: a setter, since jobs.js is imported (and its own
+    // setInterval-driven callers may already be ticking) before any pool exists.
+    coachJobs.setPool(pool);
+    console.log(`postgres ready (${r.count} migration${r.count === 1 ? '' : 's'} applied)`);
+  } catch (e) {
+    console.error('postgres connection/migration failed:', e.message);
+    process.exit(1);
+  }
+  // One-time migration of whatever db.json still holds from before this boot (an instance
+  // upgrading from a pre-1403 build, or a test fixture that seeds db.json directly) — every
+  // collection it ever held, into PostgreSQL. Read once into a local `db`, not the module-level
+  // global the issue asked to remove: nothing after boot needs it again, since every read/write
+  // from here on is a table.
+  const db = readBootDb();
+  // Users: two passes, same shape as scripts/import-json.js and for the same reason:
+  // password_reset_by is self-referential and db.json's users array has no guaranteed order, so
+  // the admin who issued a pending reset may not have a row yet on the first pass. Sequential, not
+  // Promise.all: a personal instance has few enough users that boot time is not the concern, and
+  // a boot failure here should point at one clear id.
+  for (const u of db.users) {
+    try { await upsertUser(pool, u); } catch (e) { console.error('could not migrate user into postgres', u.id, e.message); process.exit(1); }
+  }
+  for (const u of db.users) {
+    try { await backfillPasswordResetBy(pool, u.id, u.pwReset?.by); } catch (e) { console.error('could not backfill password_reset_by for', u.id, e.message); process.exit(1); }
+  }
+  usersCache = await getAllUsers(pool);
+  // Invites — after the users pass above, so created_by/used_by (both foreign keys on users(id))
+  // have something to reference. A `.revoked` invite is skipped rather than imported: the live
+  // routes only ever revoke by deleting the row (there is no `revoked` column — see
+  // migrations/001), so a code already flagged that way in old db.json is gone, the same as if it
+  // had been revoked through the app itself.
+  for (const i of db.invites) {
+    if (i.revoked) continue;
+    try { await upsertInvite(pool, i); } catch (e) { console.error('could not migrate invite into postgres', i.code, e.message); process.exit(1); }
+  }
+  // Push subscriptions — not fatal on failure, unlike users/invites above: a subscription this
+  // fails to carry over (a dangling userId nobody has, a malformed db.json entry) is not data
+  // anyone can lose in a way that matters, since the client re-sends its subscription itself on
+  // its next boot (lib/push.js).
+  for (const s of db.subs) {
+    try { await upsertSub(pool, s); } catch (e) { console.error('could not migrate push subscription into postgres', s.endpoint, e.message); }
+  }
+  // Device links — also not fatal: an unmigrated one just means whoever was mid-pairing has to
+  // make a new code, the same as if it had simply expired.
+  for (const l of db.deviceLinks) {
+    try { await upsertDeviceLink(pool, l); } catch (e) { console.error('could not migrate device link into postgres', e.message); }
+  }
+  // Passkeys — the last db.json collection. Not fatal either: a credential this fails to carry
+  // over means whoever owns it adds a new one, the same recovery as a lost security key always
+  // needed.
+  for (const c of db.creds) {
+    try { await upsertPasskey(pool, c); } catch (e) { console.error('could not migrate passkey into postgres', c.id, e.message); }
   }
   // The port is read back off the listener rather than echoed from PORT, so the line states the
   // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose

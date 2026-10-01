@@ -6,13 +6,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundPort } from './helpers.mjs';
+import { tempData, spawnApi } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 
 // Same construction as server.js makeSession(): payload `uid:exp:sv`, HMAC-SHA256 over SECRET.
@@ -28,21 +24,10 @@ const USERS = [
 ];
 
 async function startServer(t) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-pair-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({ users: USERS, creds: [], subs: [], invites: [] }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost' }
-  });
-  const h = { api: '', log: '' };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  // The boot line carries the port the listener bound, so it is both the address and the
-  // readiness signal — see boundPort in helpers.mjs for why the test does not pick one.
-  h.port = await boundPort(child, () => h.log);
-  h.api = `http://127.0.0.1:${h.port}`;
+  const h = await spawnApi(t, { dataDir });
   return h;
 }
 
@@ -70,9 +55,10 @@ test('logout/all invalidates the account\'s outstanding pairing codes and nobody
   // the other account's code is untouched
   assert.equal((await redeem(other)).status, 200);
 
-  // and a code minted after the sign-out (session version 1 now) redeems for a token of that version
+  // and a code minted after the sign-out (session version 1 now) redeems for a token of that
+  // version — with a fourth field now (ISO-1403): the sessions row this token can be revoked by.
   const fresh = await redeem(await create('u_test_1', 1));
   assert.equal(fresh.status, 200);
   const { token } = await fresh.json();
-  assert.match(token.split('.')[0], /^u_test_1:\d+:1$/);
+  assert.match(token.split('.')[0], /^u_test_1:\d+:1:[0-9a-f-]{36}$/);
 });

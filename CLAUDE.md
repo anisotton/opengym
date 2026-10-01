@@ -91,20 +91,86 @@ signed Android APK, and deploys the demo/docs site. The Gitea and GitHub workflo
 
 Single file, no framework, plain `node:http`. Requests are dispatched through a `routes` object
 keyed by `'METHOD /path'` (e.g. `routes['GET /api/health']`) matched against `req.method + ' ' +
-url.pathname` — add a new endpoint by adding a key here. State is two flat JSON files under
-`DATA_DIR` (`db.json`: users/credentials/subscriptions/invites; `state-<uid>.json`: per-user
-workout data), written with a write-temp-then-rename atomic pattern (`atomicWrite`). Auth is
-WebAuthn passkeys (`@simplewebauthn/server`) plus a signed session cookie (HMAC'd with a
-`DATA_DIR/secret` generated on first boot) — no JWT/session-store dependency. Optional pieces
+url.pathname` — add a new endpoint by adding a key here. `DATABASE_URL` is mandatory: `db.js`
+connects to PostgreSQL and applies `migrations/NNN_*.sql` before the server starts listening.
+A profile's training data (`GET`/`PUT /api/data`, `GET /api/data/rev`) and `users` itself both live
+in PostgreSQL (`store.js`) — `user_state.rev` is an optimistic-concurrency counter, and `PUT` is a
+lock-free compare-and-set that retries against the fresh row on a lost race rather than losing a
+concurrent write; `session_version` invalidates every cookie for an account at once the same way it
+always did, just read from Postgres on every request now instead of an in-memory object. A login
+or registration also creates a row in Postgres' `sessions` table and embeds its id as a fourth
+`:`-separated field in the signed cookie/bearer payload (`uid:exp:sv:sessionId`); `POST /api/logout`
+revokes that one row, so the same cookie replayed afterwards is refused — a real per-device logout,
+not just clearing the cookie client-side. A payload with no fourth field (minted by a build before
+this table existed, or a cookie forged directly against `secret` without a real login, as most of
+the test suite still does for speed) has nothing to revoke individually and is read as valid by
+`session_version` alone, exactly as before (ISO-1403, Phase 1b). A helper worth knowing before
+touching auth code: `sessionStillValid(req, user, sv?)`
+re-checks a session by account id and session version, not object identity — every read is its own
+row now, not a live reference into a shared array, so the old `readSession(req) !== user` idiom
+from before this migration can no longer tell a changed account from an unchanged one. Invite codes
+also live in Postgres now (`store.js`'s `createInvite`/`consumeInvite`/etc.): registration creates
+the user row and consumes the invite in one transaction (`withTransaction`), so a race between two
+signups on the same code can only ever seat one of them — the other rolls back clean rather than
+leaving an orphan account. `users.invited_by` still lives in the `extra` jsonb column rather than
+that foreign-key column, because an invite code minted before this migration and only ever in
+db.json cannot be referenced from a Postgres row at boot. `invites.used_by` deliberately carries no
+foreign key (unlike `created_by`, which does): `admin/user/delete` relies on a burned code staying
+burned even after the account that burned it is gone, or deleting a user would quietly free their
+invite back up on an invite-only instance. Push subscriptions live in Postgres too now
+(`push_subscriptions`, one row per browser/device keyed on its own unique `endpoint`); a dead or
+refused endpoint is pruned with a plain `DELETE`, caught and logged rather than awaited by most
+callers (the rest-timer `setTimeout`, the Coach proposal hook), so a query that fails right now
+can no longer turn into an unhandled rejection that takes the process down — the row is just
+pruned again next time a send to it fails. Device links (`device_links`, `device-link.js` +
+`store.js`) moved too: `device-link.js` now holds only the pure code math (generating one,
+hashing it) — the row itself, one per profile, is `createDeviceLink`/`findDeviceLink`/
+`burnDeviceLink`/`dropDeviceLinks` in `store.js`. `burnDeviceLink` returns whether *that* call
+actually deleted the row — the atomic single-use claim, same DELETE-and-check-rowCount shape as
+`revokeInvite`. `POST /api/device-link/verify` burns before it creates the passkey, not after,
+inside one `withTransaction`: a re-run of `findDeviceLink` right before the insert (checking the
+link was still *findable*) looks equivalent but is not — two requests racing the same code can
+both find it live, right up until whichever runs its own burn second, so only claiming the row
+itself (not re-reading it) tells them apart. A failed `insertPasskey` (a colliding credential id)
+rolls the burn back too, so a genuine failure doesn't strand the owner with no code left to retry.
+Passkey credentials (`passkeys`, `passkeys-store.js` + `store.js`) are the
+last db.json collection, also moved: `passkeys-store.js` holds only the pure shaping rules
+(`passkeyName`, `transportsOf`, `MAX_PASSKEYS`) now, same split as `device-link.js`; the rows,
+the count, and the "never lose the last way in" rule are `store.js`'s `insertPasskey`/
+`listPasskeys`/`renamePasskey`/`removePasskey`/`passkeyRemovalRefused`/`touchPasskeyUse`.
+`insertPasskey`'s cap check is one statement (a subquery in the INSERT's WHERE), not a separate
+count-then-insert, so two additions racing the same account can't both slip past `MAX_PASSKEYS`.
+Registration (both password and passkey signup) now inserts the user row, consumes the invite
+*and* inserts the first passkey inside one transaction — the credential used to land in db.json as
+a separate, non-atomic step after the Postgres user existed; now all three commit or none do.
+
+With passkeys moved, `db.json` itself is retired: `server.js` no longer has a module-level `db`
+object or a `saveDb()` — the "remove the global `db` variable, `saveDb()` and `stateFile()`" the
+issue opened with. `db.json` is still read once, at boot (`readBootDb()`, a local variable scoped
+to `listen()`), to carry over whatever an instance upgrading from before ISO-1403 still has on
+disk; nothing after that boot pass reads or writes it again. The Coach (`api/coach/`) is on
+PostgreSQL too now: `jobs.js`'s own `readState`/`listUserIds` (also used by `cohort.js`'s "compare
+with others" and `cadence.js`'s scheduled-review tick) take `getUserState`/`getAllUsers` from
+`store.js`, reached through `jobs.setPool(pool)` — a setter server.js calls once after
+`connectAndMigrate`, the same idea as `setProposalHook`, since `jobs.js` (and cadence.js's own
+`setInterval`, armed at import time) may already be live before any pool exists. `enqueue()`
+claims its single-flight slot (`inflight`) synchronously, before its first `await`, and releases
+it on any path that doesn't reach the queue: the whole function used to run to completion in one
+JS tick, so two requests for the same profile arriving together were serialized for free; once
+`readState` became a real query, that gap had to be closed by hand or both could pass the busy
+check before either claimed it. `jobs.js`'s own per-profile job/consent/history record
+(`data/coach/<uid>.json`) and the instance's own `data/coach.json` are unaffected — deliberately
+still on disk, per the epic's own rule for this phase. Auth is WebAuthn passkeys
+(`@simplewebauthn/server`) plus a signed session cookie (HMAC'd with a `DATA_DIR/secret` generated
+on first boot) — no JWT/session-store dependency.
+Optional pieces
 gated by env vars: `ADMIN_UIDS` (admin dashboard), `INVITE_ONLY` (signup needs a code),
 `ALLOW_GUEST` (client-only guest mode never hits the server at all), plus a rotating
 `data/audit.log` (JSONL) for sign-in/admin events. Web Push (`web-push`, VAPID keys
 auto-generated into `data/vapid.json`) drives rest-timer-over and day-reminder notifications.
-`db.js` connects to PostgreSQL (`DATABASE_URL`) and applies `migrations/NNN_*.sql` before the
-server starts listening — foundation laid in Phase 1a (ISO-1402) for the actual db.json/
-state-*.json read/write switch in Phase 1b (ISO-1403); `DATABASE_URL` is optional today, so the
-existing file-based test suite is unaffected. `api/scripts/test-with-pg.sh` (`npm run test:pg`)
-runs the suite against an ephemeral Postgres for the tests that do exercise it.
+`api/scripts/test-with-pg.sh` (`npm run test:pg`) starts an ephemeral Postgres and runs the whole
+suite against it — every test that spawns `server.js` needs one now, not just the ones that used
+to exercise PostgreSQL directly.
 
 ### MCP server (`mcp/src`)
 

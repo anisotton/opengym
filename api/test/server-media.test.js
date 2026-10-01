@@ -9,14 +9,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundPort } from './helpers.mjs';
+import pg from 'pg';
+import { tempData, spawnApi, seedUserState } from './helpers.mjs';
 import * as M from './media-samples.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ORIGIN = 'http://localhost:8080';
 const SECRET = crypto.randomBytes(32).toString('hex');
 const mint = uid => {
@@ -32,7 +29,7 @@ const refState = (...hashes) => ({
 });
 
 async function start(t, env = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-media-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     users: [
@@ -42,16 +39,8 @@ async function start(t, env = {}) {
     ],
     creds: [], subs: [], invites: []
   }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN, RP_ID: 'localhost', MEDIA_MIN_FREE_MB: '1', ...env }
-  });
-  const h = { log: '', dataDir, uploads: path.join(dataDir, 'uploads') };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  h.port = await boundPort(child, () => h.log);
-  h.api = `http://127.0.0.1:${h.port}`;
+  const h = await spawnApi(t, { dataDir, env: { MEDIA_MIN_FREE_MB: '1', ...env } });
+  h.uploads = path.join(dataDir, 'uploads');
   h.put = (bytes, { uid = U1, declare = 'image/jpeg', hash = M.sha(bytes), headers } = {}) =>
     fetch(`${h.api}/api/media/${hash}`, { method: 'PUT', headers: { ...(headers || cookie(uid)), 'Content-Type': declare }, body: bytes });
   h.get = (hash, uid = U1, headers) => fetch(`${h.api}/api/media/${hash}`, { headers: headers || cookie(uid) });
@@ -60,6 +49,24 @@ async function start(t, env = {}) {
   h.files = uid => { try { return fs.readdirSync(path.join(h.uploads, uid)).filter(n => !n.startsWith('.')).sort(); } catch { return []; } };
   h.tmp = uid => { try { return fs.readdirSync(path.join(h.uploads, uid, '.tmp')); } catch { return []; } };
   h.stackFrames = () => h.log.split('\n').filter(l => /^\s+at /.test(l)).length;
+  h.stateRow = async uid => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT state, rev::int AS rev FROM user_state WHERE user_id = $1', [uid])).rows[0] || null; }
+    finally { await pool.end(); }
+  };
+  // Stores a value in user_state.state that is not usable as a document (an array, here) — the
+  // nearest thing jsonb allows to the old "a file that does not parse", since the column itself
+  // now refuses anything that is not valid JSON at all. media.js's stateOf() treats "not a plain
+  // object" the same way it treated "did not parse": skip, do not infer anything from it.
+  h.seedUnusableState = async uid => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try {
+      await pool.query(
+        "INSERT INTO user_state (user_id, state, rev) VALUES ($1, '[1]'::jsonb, 1) ON CONFLICT (user_id) DO UPDATE SET state = '[1]'::jsonb, rev = 1",
+        [uid]
+      );
+    } finally { await pool.end(); }
+  };
   return h;
 }
 
@@ -352,17 +359,18 @@ test('a state push starts the grace of a dropped file, and /sweep removes it at 
   assert.match(audit, /"ev":"media\.sweep"/);
 });
 
-test('/sweep with a state that does not parse removes nothing', async t => {
+test('/sweep with a state that is not a usable document removes nothing', async t => {
   const h = await start(t);
   const a = M.jpeg();
   await h.put(a, { uid: U2 });
-  fs.writeFileSync(path.join(h.dataDir, `state-${U2}.json`), '{"customEx": [tor');
+  await h.seedUnusableState(U2);
   const r = await h.post('/api/media/sweep', {}, U2);
   assert.equal(r.status, 200);
   assert.equal((await r.json()).removed, 0);
   assert.deepEqual(h.files(U2), [`${M.sha(a)}.jpg`]);
-  // And with no state file at all.
-  fs.unlinkSync(path.join(h.dataDir, `state-${U2}.json`));
+  // And with no row at all.
+  const pool = new pg.Pool({ connectionString: h.databaseUrl });
+  try { await pool.query('DELETE FROM user_state WHERE user_id = $1', [U2]); } finally { await pool.end(); }
   assert.equal((await (await h.post('/api/media/sweep', {}, U2)).json()).removed, 0);
   assert.deepEqual(h.files(U2), [`${M.sha(a)}.jpg`]);
 });
@@ -386,8 +394,7 @@ test('PUT /api/data still answers 200 when the media bookkeeping fails', async t
   assert.equal(r.status, 200);
   assert.equal((await r.json()).ok, true);
   assert.match(h.log, /media noteState/);
-  const saved = JSON.parse(fs.readFileSync(path.join(h.dataDir, `state-${U1}.json`), 'utf8'));
-  assert.equal(saved._rev, 1, 'the state itself was saved');
+  assert.equal((await h.stateRow(U1)).rev, 1, 'the state itself was saved');
 });
 
 test('folders are 0700 and files 0600, and an admin deleting the profile removes its folder', async t => {
@@ -425,15 +432,11 @@ test('/api/config carries the caps; MEDIA_UPLOADS=0 takes the block and every ro
 });
 
 test('boot removes the temp files of uploads the previous process was receiving', async t => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-media-boot-'));
-  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const dataDir = tempData();
   const tmp = path.join(dataDir, 'uploads', U1, '.tmp');
   fs.mkdirSync(tmp, { recursive: true });
   fs.writeFileSync(path.join(tmp, 'half-an-upload'), 'x');
-  fs.writeFileSync(path.join(dataDir, 'secret'), SECRET);
-  const child = spawn(process.execPath, ['server.js'], { cwd: API, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PORT: '0', DATA_DIR: dataDir } });
-  t.after(() => child.kill('SIGKILL'));
-  await boundPort(child);
+  await spawnApi(t, { dataDir });
   assert.deepEqual(fs.readdirSync(tmp), []);
 });
 
@@ -465,7 +468,7 @@ test('a trickled body is cut after the body deadline on every route but a signed
 });
 
 test('server.js gives a slow upload half an hour, not node\'s default five minutes', () => {
-  const src = fs.readFileSync(path.join(API, 'server.js'), 'utf8');
+  const src = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
   const m = /^server\.requestTimeout\s*=\s*([\d_\s*]+);/m.exec(src);
   assert.ok(m, 'server.requestTimeout is set');
   const ms = m[1].split('*').reduce((a, x) => a * Number(x.replace(/[_\s]/g, '')), 1);

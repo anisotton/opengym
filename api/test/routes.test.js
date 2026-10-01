@@ -161,13 +161,23 @@ test('the disclosure names the provider and the same five categories the payload
 });
 
 /* ---------- debrief + cohort routes ---------- */
-test('a debrief is enqueued as its own kind, and the cohort routes gate on the admin switch and the opt-in', async () => {
+test('a debrief is enqueued as its own kind, and the cohort routes gate on the admin switch and the opt-in', async t => {
   fresh({ community: false });
   const jobs = await import('../coach/jobs.js');
-  const { writeState, sampleState } = await import('./helpers.mjs');
+  const { sampleState, seedUserState, provisionTestDatabase } = await import('./helpers.mjs');
+  const { connectAndMigrate } = await import('../db.js');
+  const { createUser } = await import('../store.js');
   const { forcePrivilegeVerdict } = await import('../coach/adapters/spawn.js');
   forcePrivilegeVerdict({ ok: true, dropped: false, why: 'pinned by the test suite' });
-  writeState(process.env.DATA_DIR, 'admin-1', sampleState());
+  // jobs.js's readState/listUserIds (used here via the debrief and cohort routes) are
+  // PostgreSQL now (ISO-1403).
+  const { databaseUrl, cleanup } = await provisionTestDatabase();
+  const { pool } = await connectAndMigrate(databaseUrl);
+  jobs.setPool(pool);
+  t.after(() => pool.end());
+  t.after(cleanup);
+  await createUser(pool, { id: 'admin-1', name: 'admin-1', created: new Date().toISOString() });
+  await seedUserState(databaseUrl, 'admin-1', sampleState());
   const { call } = harness();
 
   const off = await call('GET /api/coach/cohort');
@@ -204,7 +214,7 @@ test('a debrief is enqueued as its own kind, and the cohort routes gate on the a
 
   // A profile with nothing logged cannot be debriefed.
   jobs.resolvePending('admin-1', { accepted: ['debrief'] });
-  writeState(process.env.DATA_DIR, 'admin-1', sampleState({ workouts: [] }));
+  await seedUserState(databaseUrl, 'admin-1', sampleState({ workouts: [] }));
   await call('POST /api/coach/debrief', {});
   while (jobs.status('admin-1').job && Date.now() < until) await new Promise(res => setTimeout(res, 25));
   assert.equal(jobs.status('admin-1').last.errorClass, 'noworkout');

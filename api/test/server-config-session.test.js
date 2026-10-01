@@ -7,13 +7,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundPort } from './helpers.mjs';
+import { tempData, spawnApi } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 const UID = 'u_cfg_1';
 
@@ -23,7 +19,7 @@ const mint = uid => {
 };
 
 async function startServer(t, env = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-config-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     users: [{ id: UID, name: 'C', created: new Date().toISOString() }], creds: [], subs: [], invites: []
@@ -33,16 +29,11 @@ async function startServer(t, env = {}) {
   fs.writeFileSync(path.join(dataDir, 'coach.json'), JSON.stringify({ enabled: true, provider: 'fixture' }));
   // MEDIA_UPLOADS=0: the answers below are compared whole, and they are about the login flags
   // and the Coach block. The public media block has its own tests in server-media.test.js.
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost', INVITE_ONLY: '1', ALLOW_GUEST: '0', COACH_DISABLED: '', MEDIA_UPLOADS: '0', ...env }
+  const h = await spawnApi(t, {
+    dataDir,
+    env: { INVITE_ONLY: '1', ALLOW_GUEST: '0', COACH_DISABLED: '', MEDIA_UPLOADS: '0', ...env }
   });
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  let log = '';
-  child.stdout.on('data', d => { log += d; });
-  child.stderr.on('data', d => { log += d; });
-  const port = await boundPort(child, () => log);
-  return { api: `http://127.0.0.1:${port}`, dataDir };
+  return { api: h.api, dataDir };
 }
 
 test('GET /api/config: the login flags are public, the Coach block needs a session', async t => {

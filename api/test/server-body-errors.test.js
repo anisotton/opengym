@@ -10,13 +10,10 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundPort } from './helpers.mjs';
+import pg from 'pg';
+import { tempData, spawnApi } from './helpers.mjs';
 
-const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
 
 function mintSession(uid) {
@@ -25,25 +22,20 @@ function mintSession(uid) {
 }
 
 async function startServer(t) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-bodyerr-'));
+  const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     users: [{ id: 'u_body_1', name: 'One', created: new Date().toISOString() }], creds: [], subs: [], invites: []
   }));
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost' }
-  });
-  const h = { api: '', port: 0, dataDir, log: '', exited: null };
-  child.stdout.on('data', d => h.log += d);
-  child.stderr.on('data', d => h.log += d);
-  child.on('exit', (code, signal) => { h.exited = { code, signal }; });
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  // The boot line carries the port the listener bound, so it is both the address and the
-  // readiness signal — see boundPort in helpers.mjs for why the test does not pick one.
-  h.port = await boundPort(child, () => h.log);
-  h.api = `http://127.0.0.1:${h.port}`;
+  const h = await spawnApi(t, { dataDir });
+  h.exited = null;
+  h.child.on('exit', (code, signal) => { h.exited = { code, signal }; });
   h.cookie = `gymsid=${mintSession('u_body_1')}`;
+  h.stateRow = async () => {
+    const pool = new pg.Pool({ connectionString: h.databaseUrl });
+    try { return (await pool.query('SELECT 1 FROM user_state WHERE user_id = $1', ['u_body_1'])).rows[0] || null; }
+    finally { await pool.end(); }
+  };
   return h;
 }
 
@@ -81,6 +73,6 @@ test('a client that hangs up mid-body costs one log line and no stack', async t 
   assert.equal(h.exited, null);
   assert.deepEqual(stackLines(h.log), [], `nothing to trace:\n${h.log}`);
   assert.equal((h.log.match(/client went away mid-body/g) || []).length, aborts, `one line each:\n${h.log}`);
-  assert.equal(fs.existsSync(path.join(h.dataDir, 'state-u_body_1.json')), false, 'and nothing was written');
+  assert.equal(await h.stateRow(), null, 'and nothing was written');
   assert.equal((await fetch(`${h.api}/api/health`)).status, 200);
 });

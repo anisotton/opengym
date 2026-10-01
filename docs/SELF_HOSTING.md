@@ -134,8 +134,9 @@ ALLOW_GUEST=0              # remove "Continue without account"
 ```
 
 Register your own passkey profile first, then copy your id from **Settings → Account → Account
-ID** (tap it to copy; it is also in `./data/db.json` under `users[].id`) and put it in
-`ADMIN_UIDS`. The same row is how anyone on your instance tells you which account is theirs when
+ID** (tap it to copy; it is also the `id` column of PostgreSQL's `users` table — `docker compose
+exec db psql -U opengym -c "SELECT id, name FROM users"`) and put it in `ADMIN_UIDS`. The same row
+is how anyone on your instance tells you which account is theirs when
 they need help. You'll get an **Admin dashboard** link in Settings: who's training
 right now, each user's workout history and body weight, the ability to disable an account (signed
 out and locked out everywhere until you re-enable it), and — with `INVITE_ONLY=1` — generating and
@@ -264,9 +265,9 @@ to anyone; it is only a second name that points at the account, and the password
 - Only the owner (in Settings) and admins (the user list and the user's page in the admin
   dashboard) ever see the address. It is not written to the activity log (entries show it masked,
   `a…@e…`) or the container log, is not part of what the Coach, the MCP server or plan sharing
-  see, and is not in `/api/me`. It is stored in `db.json` as `email` on the user, lower-cased.
+  see, and is not in `/api/me`. It is stored in PostgreSQL as `email` on the user, lower-cased.
 - With `PASSWORD_LOGIN` off, the row and the field are hidden and the address is not used; it
-  stays in `db.json` for when the flag comes back.
+  stays in the database for when the flag comes back.
 
 **What an e-mail gives away.** A profile trying to take an address already in use is told so,
 which says "some profile on this instance uses this address" — never which one. The alternative,
@@ -304,8 +305,8 @@ a LAN-only address, see [SELF_HOSTING_HTTPS.md](./SELF_HOSTING_HTTPS.md).
 
 - A passkey cannot be phished, reused or guessed — it is bound to your hostname and never leaves
   the device. A password can be all three, which is why passkeys stay the default everywhere.
-- `db.json` holds a scrypt hash of each password (N=2^15, r=8, p=1, 16-byte random salt). Someone
-  with a copy of `./data` can try guesses offline, slowly; a passkey's public key gives them
+- PostgreSQL holds a scrypt hash of each password (N=2^15, r=8, p=1, 16-byte random salt). Someone
+  with a copy of the database can try guesses offline, slowly; a passkey's public key gives them
   nothing to try.
 - Guessing online is throttled. Five wrong passwords for an account — named by its name or its
   e-mail — pause password sign-in for that account for a minute, doubling up to an hour, whoever
@@ -337,8 +338,8 @@ the API without the web container, leave `TRUST_PROXY` off unless whatever is in
 (not appends to) `X-Forwarded-For`.
 
 **Switching it off again** hides all of it and makes every password route answer 404. The stored
-hashes stay in `db.json` and work again if you switch it back on — but while it is off, a profile
-that only has a password cannot sign in.
+hashes stay in the database and work again if you switch it back on — but while it is off, a
+profile that only has a password cannot sign in.
 
 The mobile app keeps pairing: someone with a password signs in to the website with it and pairs
 from Settings → "Pair the mobile app", as with a passkey.
@@ -463,8 +464,8 @@ timeout the app can only report as "The server refused the file as too large":
 **What is removed, and when.** A file goes when its owner's stored state has not used it for
 `MEDIA_GC_GRACE_DAYS` (checked every hour), after one hour unused when the owner's quota is full,
 at once when the owner uses "Reset everything", and with the profile when an admin deletes it.
-Nothing is deleted because a state file does not parse or a profile is missing from `db.json`: a
-folder whose profile is not in `db.json` is left alone and logged once. A device that still has a
+Nothing is deleted because a state file does not parse or a profile has no users row: a folder
+whose profile is not in the database is left alone and logged once. A device that still has a
 file the server removed uploads it again.
 
 **Privacy.** The app re-encodes photos on the device, so no EXIF or GPS data survives, and blanks
@@ -522,10 +523,13 @@ in this archive — and unreadable without the secret next to them, like everyth
 
 As of Phase 1c, `api/scripts/import-json.js` copies everything the API stored as JSON —
 `db.json`'s users, passkeys, push subscriptions, invites and device-pairing links, plus every
-profile's `state-<uid>.json` — into the `db` container's tables. The API itself still reads and
-writes the JSON files today (the switch is Phase 1b/ISO-1403); running this script now just gets
-an existing instance's data into PostgreSQL ahead of that switch, so there's no downtime and no
-rush to run it the moment you upgrade.
+profile's `state-<uid>.json` — into the `db` container's tables. The API itself has fully switched
+over for everything `db.json` held (Phase 1b/ISO-1403); `db.json` is now read only once more, at
+boot, to carry over whatever an upgrading instance still has on disk, and nothing after that reads
+or writes it again. Profile state (`state-<uid>.json`) is PostgreSQL too for every route except
+the AI Coach's own background jobs, which still read the file directly — a real gap until a later
+pass closes it. Running this script against an instance still on the old files gets everything
+into PostgreSQL ahead of upgrading, so there's no downtime and no rush to run it the moment you do.
 
 1. **Back up `./data` first** (above) — the script only reads the JSON files, never writes or
    moves them, but there's no reason to skip a backup before a bulk write to a new database.
@@ -548,11 +552,11 @@ rush to run it the moment you upgrade.
    clobber data newer than the JSON snapshot it's reading from.
 4. Spot-check the counts, e.g. `docker compose exec db psql -U ${POSTGRES_USER:-opengym}
    ${POSTGRES_DB:-opengym} -c 'SELECT count(*) FROM users;'` (and the same for `passkeys`,
-   `invites`, `user_state`) against what you expect from `db.json`, then move on to whichever
-   version turns the API's PostgreSQL reads/writes on.
+   `invites`, `user_state`) against what you expect from `db.json`.
 
-`./data`'s JSON files are untouched by any of this — the switch away from them, and from `./data`
-as the source of truth, is a separate step, later.
+`./data`'s JSON files are untouched by any of this — the script only reads them. The API itself
+never writes `db.json` again after this phase, and reads it only once, at the next boot, so
+there's nothing left to "switch on": upgrading is the switch.
 
 ## 7. Notifications
 
@@ -727,7 +731,7 @@ browser (see section 2).
 | A photo or video will not upload ("refused as too large", or it stops partway) | A proxy in front caps the body or cuts the request off: see [Photos and videos](#photos-and-videos-of-custom-exercises) for the body size and timeouts it needs. |
 | No "Notifications" option in Settings | Requires a signed-in profile and HTTPS (or `localhost`) — guest mode and plain HTTP over LAN can't subscribe. |
 | Day reminder fires at the wrong time | Toggle it off and on in Settings so it re-detects your browser's timezone (also happens automatically on every app load — see section 7). |
-| Notifications switch is off although I turned it on | The server no longer holds the subscription (rebuilt `data/db.json`, regenerated `vapid.json`); the app re-registers on the next start, or switch it on again. On iOS, push only works from the Home Screen icon. |
+| Notifications switch is off although I turned it on | The server no longer holds the subscription (a pruned dead endpoint, regenerated `vapid.json`); the app re-registers on the next start, or switch it on again. On iOS, push only works from the Home Screen icon. |
 | Want to reset a stuck login | Delete the cookie in your browser; sessions are just signed cookies. |
 | The app says "Your server no longer accepts this phone" (or "this browser") | The server answered 401. Usual causes: "sign out everywhere" was used, the account was disabled, `data/secret` was lost or replaced when the stack was moved (every session and pairing dies with it), or a proxy with its own login rejects requests that carry `Authorization: Bearer`. Nothing on the device is lost: pair the phone again (browser: Settings → "Pair the mobile app"), or sign in again in the browser, and what the device kept is merged into the account. |
 | The app says the server "answered with something other than openGym (HTTP 200)" | Something other than the API answered `/api/*` with a success page — an auth proxy's sign-in page, or a catch-all route serving `index.html`. Every API answer is JSON; forward `/api/*` to the API unchanged. |

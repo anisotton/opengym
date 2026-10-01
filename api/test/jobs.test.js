@@ -5,10 +5,12 @@
    PR 1 stopped at transport and held its answer as `unvalidated`. This PR closes that seam, so
    the assertions below are about what now comes out the other end: a checked bundle, a checked
    change-set, and the two ways a job can fail the validator rather than the parser. */
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { tempData, writeState, sampleState } from './helpers.mjs';
+import { tempData, seedUserState, sampleState, provisionTestDatabase } from './helpers.mjs';
+import { connectAndMigrate } from '../db.js';
+import { createUser } from '../store.js';
 
 const DIR = tempData();
 const cfg = await import('../coach/config.js');
@@ -18,6 +20,20 @@ const { CHANGE_TYPES } = await import('../coach/core/validate.js');
 const { forcePrivilegeVerdict } = await import('../coach/adapters/spawn.js');
 
 cfg.save({ enabled: true, provider: 'fixture' });
+
+const { databaseUrl, cleanup } = await provisionTestDatabase();
+const { pool } = await connectAndMigrate(databaseUrl);
+jobs.setPool(pool);
+after(() => pool.end());
+after(cleanup);
+const seeded = new Set();
+// user_state.user_id is a foreign key on users(id) (migrations/001) — a profile needs a row
+// there before its state can be seeded at all. Each uid is only ever created once per file;
+// a test that re-seeds an existing uid with new state just overwrites the state row.
+async function seedProfile(uid, state) {
+  if (!seeded.has(uid)) { await createUser(pool, { id: uid, name: uid, created: new Date().toISOString() }); seeded.add(uid); }
+  await seedUserState(databaseUrl, uid, state);
+}
 
 /* The privilege drop fails closed on Linux unless the server is root *and* the image has a
    `coach` user — true in the container, false on a CI runner and false on most development
@@ -40,27 +56,27 @@ const lastOutcome = uid => jobs.readUser(uid).history.at(-1);
 
 
 
-test('no consent, no job — the gate is on the server, not the screen', () => {
+test('no consent, no job — the gate is on the server, not the screen', async () => {
   const uid = 'u-noconsent';
-  writeState(DIR, uid, sampleState({ coach: {} }));
-  assert.throws(() => jobs.enqueue(uid, { kind: 'review' }), e => e.code === 'consent');
+  await seedProfile(uid, sampleState({ coach: {} }));
+  await assert.rejects(jobs.enqueue(uid, { kind: 'review' }), e => e.code === 'consent');
 });
 
 test('one job per profile at a time', async () => {
   const uid = 'u-single';
-  writeState(DIR, uid, sampleState());
-  jobs.enqueue(uid, { kind: 'review' });
-  assert.throws(() => jobs.enqueue(uid, { kind: 'review' }), e => e.code === 'busy');
+  await seedProfile(uid, sampleState());
+  await jobs.enqueue(uid, { kind: 'review' });
+  await assert.rejects(jobs.enqueue(uid, { kind: 'review' }), e => e.code === 'busy');
   await settle(uid);
 });
 
 test('the daily cap is enforced and reported as its own failure', async () => {
   const uid = 'u-cap';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   cfg.save({ caps: { perProfileDaily: 1, instanceDaily: 0 } });
-  jobs.enqueue(uid, { kind: 'review' });
+  await jobs.enqueue(uid, { kind: 'review' });
   await settle(uid);
-  assert.throws(() => jobs.enqueue(uid, { kind: 'review' }), e => e.code === 'cap');
+  await assert.rejects(jobs.enqueue(uid, { kind: 'review' }), e => e.code === 'cap');
   assert.equal(jobs.capState(uid).used, 1);
   cfg.save({ caps: { perProfileDaily: 10, instanceDaily: 0 } });
 });
@@ -68,9 +84,9 @@ test('the daily cap is enforced and reported as its own failure', async () => {
 
 test('an answer that stays unusable fails cleanly and applies nothing', async () => {
   const uid = 'u-unusable';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   process.env.FIXTURE_MODE = 'invalid';
-  jobs.enqueue(uid, { kind: 'review' });
+  await jobs.enqueue(uid, { kind: 'review' });
   const s = await settle(uid);
   delete process.env.FIXTURE_MODE;
   const last = lastOutcome(uid);
@@ -81,9 +97,9 @@ test('an answer that stays unusable fails cleanly and applies nothing', async ()
 
 test('a provider that crashes is reported, not retried behind the user\'s back', async () => {
   const uid = 'u-crash';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   process.env.FIXTURE_MODE = 'crash';
-  jobs.enqueue(uid, { kind: 'review' });
+  await jobs.enqueue(uid, { kind: 'review' });
   await settle(uid);
   delete process.env.FIXTURE_MODE;
   assert.equal(lastOutcome(uid).outcome, 'failed');
@@ -94,8 +110,8 @@ test('a provider that crashes is reported, not retried behind the user\'s back',
 
 test('an expired proposal disappears on read rather than lingering forever', async () => {
   const uid = 'u-expire';
-  writeState(DIR, uid, sampleState());
-  jobs.enqueue(uid, { kind: 'review' });
+  await seedProfile(uid, sampleState());
+  await jobs.enqueue(uid, { kind: 'review' });
   await settle(uid);
   const rec = jobs.readUser(uid);
   rec.pending.expiresAt = Date.now() - 1;
@@ -106,8 +122,8 @@ test('an expired proposal disappears on read rather than lingering forever', asy
 
 test('forgetting a profile leaves no server-side residue', async () => {
   const uid = 'u-forget';
-  writeState(DIR, uid, sampleState());
-  jobs.enqueue(uid, { kind: 'review' });
+  await seedProfile(uid, sampleState());
+  await jobs.enqueue(uid, { kind: 'review' });
   await settle(uid);
   jobs.clearUser(uid);
   const s = jobs.status(uid);
@@ -161,8 +177,8 @@ test('forgetting a profile mid-job cancels the call and frees its slot at once',
   try {
     p.use();
     const uid = 'u-forget-live';
-    writeState(DIR, uid, sampleState());
-    jobs.enqueue(uid, { kind: 'review' });
+    await seedProfile(uid, sampleState());
+    await jobs.enqueue(uid, { kind: 'review' });
     await p.until(1);
     assert.equal(jobs.status(uid).job.state, 'running');
 
@@ -184,7 +200,7 @@ test('forgetting a profile mid-job cancels the call and frees its slot at once',
 
     // Single-flight went with the job: the profile can ask again straight away, not once the
     // provider hold is over.
-    assert.doesNotThrow(() => jobs.enqueue(uid, { kind: 'review' }), 'the slot is free again');
+    await assert.doesNotReject(jobs.enqueue(uid, { kind: 'review' }), 'the slot is free again');
     await p.until(1);
     p.answer(NOCHANGE);
     await settle(uid);
@@ -199,11 +215,11 @@ test('a runtime that cannot be cancelled still has its late answer discarded aft
   // The fixture CLI is a child process, and the abort signal means nothing to one: it runs to
   // its answer, which then has nobody to belong to.
   const uid = 'u-forget-spawned';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   const notified = [];
   jobs.setProposalHook(u => notified.push(u));
   try {
-    jobs.enqueue(uid, { kind: 'review' });
+    await jobs.enqueue(uid, { kind: 'review' });
     assert.equal(jobs.status(uid).job.state, 'running');
     jobs.clearUser(uid);
     // The line this job writes to the instance log, not the next line anyone writes there.
@@ -223,11 +239,11 @@ test('forgetting a profile whose job is still queued drops it before anything le
   try {
     p.use();
     // Two other profiles hold both execution slots, so the third waits.
-    for (const u of ['u-slot-1', 'u-slot-2']) { writeState(DIR, u, sampleState()); jobs.enqueue(u, { kind: 'review' }); }
+    for (const u of ['u-slot-1', 'u-slot-2']) { await seedProfile(u, sampleState()); await jobs.enqueue(u, { kind: 'review' }); }
     await p.until(2);
     const uid = 'u-forget-queued';
-    writeState(DIR, uid, sampleState());
-    jobs.enqueue(uid, { kind: 'review' });
+    await seedProfile(uid, sampleState());
+    await jobs.enqueue(uid, { kind: 'review' });
     assert.equal(jobs.status(uid).job.state, 'queued');
 
     jobs.clearUser(uid);
@@ -240,7 +256,7 @@ test('forgetting a profile whose job is still queued drops it before anything le
     assert.deepEqual(jobs.readUser(uid).history, []);
 
     // Single-flight was released with the job, so the profile can ask again.
-    jobs.enqueue(uid, { kind: 'review' });
+    await jobs.enqueue(uid, { kind: 'review' });
     await p.until(1);
     p.answer(NOCHANGE);
     await settle(uid);
@@ -252,17 +268,17 @@ test('consent withdrawn, or the Coach switched off, while a job waits: no payloa
   const p = await holdingProvider();
   try {
     p.use();
-    for (const u of ['u-slot-3', 'u-slot-4']) { writeState(DIR, u, sampleState()); jobs.enqueue(u, { kind: 'review' }); }
+    for (const u of ['u-slot-3', 'u-slot-4']) { await seedProfile(u, sampleState()); await jobs.enqueue(u, { kind: 'review' }); }
     await p.until(2);
-    writeState(DIR, 'u-revoked', sampleState());
-    writeState(DIR, 'u-switched-off', sampleState());
-    jobs.enqueue('u-revoked', { kind: 'review' });
-    jobs.enqueue('u-switched-off', { kind: 'review' });
+    await seedProfile('u-revoked', sampleState());
+    await seedProfile('u-switched-off', sampleState());
+    await jobs.enqueue('u-revoked', { kind: 'review' });
+    await jobs.enqueue('u-switched-off', { kind: 'review' });
     assert.equal(jobs.status('u-switched-off').job.state, 'queued');
 
     // Consent gone from the synced state — no forget call, so the record itself stays and says
     // what happened. Then the admin switches the Coach off before a slot frees.
-    writeState(DIR, 'u-revoked', sampleState({ coach: {} }));
+    await seedProfile('u-revoked', sampleState({ coach: {} }));
     cfg.save({ enabled: false });
     p.answer(NOCHANGE);
     await settle('u-revoked'); await settle('u-switched-off');
@@ -288,9 +304,9 @@ test('a payload bigger than any real history is refused before the provider is c
       ex: [{ id: '0001', sets: 3, reps: 10, weight: 20 }, { id: '0007', sets: 3, sec: 45, mode: 'time' }]
     }));
     assert.ok(JSON.stringify(payload.build(S, { handle: 'h'.repeat(16), kind: 'review' })).length > payload.MAX_PAYLOAD_CHARS);
-    writeState(DIR, uid, S);
+    await seedProfile(uid, S);
     const before = cfg.load().log.length;
-    jobs.enqueue(uid, { kind: 'review' });
+    await jobs.enqueue(uid, { kind: 'review' });
     await settle(uid);
     assert.equal(p.seen.length, 0, 'nothing reached the provider');
     assert.equal(lastOutcome(uid).outcome, 'failed');
@@ -300,8 +316,8 @@ test('a payload bigger than any real history is refused before the provider is c
     assert.match(line.detail, /^payload of \d+k characters$/);
 
     // The ordinary state next to it still goes out.
-    writeState(DIR, 'u-toolarge-ok', sampleState());
-    jobs.enqueue('u-toolarge-ok', { kind: 'review' });
+    await seedProfile('u-toolarge-ok', sampleState());
+    await jobs.enqueue('u-toolarge-ok', { kind: 'review' });
     await p.until(1);
     p.answer(NOCHANGE);
     await settle('u-toolarge-ok');
@@ -346,8 +362,8 @@ test('the fingerprint covers every field canonicalPlan reports, including the v1
 
 test('a review job produces a checked change-set, and nothing is left unvalidated', async () => {
   const uid = 'u-review';
-  writeState(DIR, uid, sampleState());
-  jobs.enqueue(uid, { kind: 'review' });
+  await seedProfile(uid, sampleState());
+  await jobs.enqueue(uid, { kind: 'review' });
   const s = await settle(uid);
 
   assert.equal(lastOutcome(uid).outcome, 'ready');
@@ -356,13 +372,13 @@ test('a review job produces a checked change-set, and nothing is left unvalidate
   assert.ok(Array.isArray(s.pending.changes) && s.pending.changes.length, 'real changes');
   assert.ok(s.pending.changes.every(c => CHANGE_TYPES.includes(c.type)), 'every change is on the closed list');
   assert.ok(s.pending.changes.every(c => c.why), 'every change cites its evidence');
-  assert.equal(s.pending.planHash, jobs.hashPlan(payload.canonicalPlan(jobs.readState(uid))));
+  assert.equal(s.pending.planHash, jobs.hashPlan(payload.canonicalPlan(await jobs.readState(uid))));
 });
 
 test('a create job produces a bundle the client can merge unchanged', async () => {
   const uid = 'u-create';
-  writeState(DIR, uid, sampleState());
-  jobs.enqueue(uid, { kind: 'create' });
+  await seedProfile(uid, sampleState());
+  await jobs.enqueue(uid, { kind: 'create' });
   const s = await settle(uid);
 
   assert.equal(lastOutcome(uid).outcome, 'ready');
@@ -377,11 +393,11 @@ test('a create job produces a bundle the client can merge unchanged', async () =
 
 test('a well-formed answer naming an exercise nobody has is refused, twice, and applies nothing', async () => {
   const uid = 'u-ghostex';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   // Not garbage: it parses, and it claims the right contract. Only the validator objects —
   // which is the whole point of the validator being the boundary rather than the parser.
   process.env.FIXTURE_MODE = 'unknown-exercise';
-  jobs.enqueue(uid, { kind: 'review' });
+  await jobs.enqueue(uid, { kind: 'review' });
   const s = await settle(uid);
   delete process.env.FIXTURE_MODE;
 
@@ -392,9 +408,9 @@ test('a well-formed answer naming an exercise nobody has is refused, twice, and 
 
 test('the one repair round rescues an answer the validator rejected', async () => {
   const uid = 'u-repair';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   process.env.FIXTURE_MODE = 'invalid-then-valid';
-  jobs.enqueue(uid, { kind: 'review' });
+  await jobs.enqueue(uid, { kind: 'review' });
   const s = await settle(uid);
   delete process.env.FIXTURE_MODE;
 
@@ -405,9 +421,9 @@ test('the one repair round rescues an answer the validator rejected', async () =
 
 test('"nothing to change" keeps the reason it gave, and proposes nothing', async () => {
   const uid = 'u-nochange';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   process.env.FIXTURE_MODE = 'nochange';
-  jobs.enqueue(uid, { kind: 'review' });
+  await jobs.enqueue(uid, { kind: 'review' });
   const s = await settle(uid);
   delete process.env.FIXTURE_MODE;
 
@@ -418,13 +434,13 @@ test('"nothing to change" keeps the reason it gave, and proposes nothing', async
 
 test('a refine carries the plan it is refining, and counts as the next iteration', async () => {
   const uid = 'u-refine';
-  writeState(DIR, uid, sampleState());
-  jobs.enqueue(uid, { kind: 'create' });
+  await seedProfile(uid, sampleState());
+  await jobs.enqueue(uid, { kind: 'create' });
   const first = await settle(uid);
   assert.equal(first.pending.iteration, 1);
   assert.match(first.pending.bundle.basedOn, /No training history/);
 
-  jobs.enqueue(uid, { kind: 'create', refine: 'More upper body, fewer days.' });
+  await jobs.enqueue(uid, { kind: 'create', refine: 'More upper body, fewer days.' });
   const second = await settle(uid);
   // `previous` reads pending.bundle. Until the validator landed, pending only ever carried
   // `unvalidated`, so it silently resolved to null on every refine — the model was asked to
@@ -442,15 +458,15 @@ test('the admin test-run completes a round trip without a user to spend', async 
   assert.equal(r.version, 'fixture');
 });
 
-test('a job is refused outright when the privilege drop cannot be performed', () => {
+test('a job is refused outright when the privilege drop cannot be performed', async () => {
   const uid = 'u-priv';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   // The refusal is the assertion, so it is pinned rather than hoped for: this used to skip
   // itself on any host where the drop happened to work, which is every host where the control
   // matters least.
   forcePrivilegeVerdict({ ok: false, dropped: false, why: 'no `coach` user exists in this image' });
   try {
-    assert.throws(() => jobs.enqueue(uid, { kind: 'review' }), e => e.code === 'unprivileged');
+    await assert.rejects(jobs.enqueue(uid, { kind: 'review' }), e => e.code === 'unprivileged');
   } finally {
     forcePrivilegeVerdict({ ok: true, dropped: false, why: 'pinned by the test suite' });
   }
@@ -476,11 +492,11 @@ test('an HTTPS provider is not refused for lacking a privilege drop, and runs en
   const base = `http://127.0.0.1:${server.address().port}`;
 
   const uid = 'u-https';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   cfg.save({ enabled: true, provider: 'compatible', providerOptions: { compatible: { baseUrl: base } }, models: { compatible: 'local-model' } });
   forcePrivilegeVerdict({ ok: false, dropped: false, why: 'no `coach` user exists in this image' });
   try {
-    jobs.enqueue(uid, { kind: 'review' });
+    await jobs.enqueue(uid, { kind: 'review' });
     const s = await settle(uid);
     assert.equal(s.job, null);
     assert.equal(lastOutcome(uid).outcome, 'nochange');
@@ -494,8 +510,8 @@ test('an HTTPS provider is not refused for lacking a privilege drop, and runs en
 
     // And the same host refuses a runtime-backed provider, so the gate itself is intact.
     cfg.save({ provider: 'fixture' });
-    writeState(DIR, 'u-https-2', sampleState());
-    assert.throws(() => jobs.enqueue('u-https-2', { kind: 'review' }), e => e.code === 'unprivileged');
+    await seedProfile('u-https-2', sampleState());
+    await assert.rejects(jobs.enqueue('u-https-2', { kind: 'review' }), e => e.code === 'unprivileged');
   } finally {
     forcePrivilegeVerdict({ ok: true, dropped: false, why: 'pinned by the test suite' });
     cfg.save({ provider: 'fixture' });
@@ -521,14 +537,14 @@ test('a note is truncated to the admin\'s configured max, not clipped to the old
   const base = `http://127.0.0.1:${server.address().port}`;
 
   const uid = 'u-note-len';
-  writeState(DIR, uid, sampleState());
+  await seedProfile(uid, sampleState());
   cfg.save({
     enabled: true, provider: 'compatible', providerOptions: { compatible: { baseUrl: base } },
     models: { compatible: 'local-model' }, maxMessageLen: 2500
   });
   forcePrivilegeVerdict({ ok: false, dropped: false, why: 'no `coach` user exists in this image' });
   try {
-    jobs.enqueue(uid, { kind: 'review', note: 'x'.repeat(3000) });
+    await jobs.enqueue(uid, { kind: 'review', note: 'x'.repeat(3000) });
     await settle(uid);
     const sentText = seen[0].messages[1].content;
     const match = sentText.match(/"userNote":"(x+)"/);
