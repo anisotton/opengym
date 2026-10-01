@@ -1019,6 +1019,17 @@ export const PT_BR_OVERRIDES = {
   'We sent a confirmation link to {0}. It is valid for 24 hours — open it to confirm your account.': 'Enviamos um link de confirmação para {0}. Ele é válido por 24 horas — abra-o para confirmar sua conta.',
   'You can already use the app. Only a subscription needs the confirmed e-mail.': 'Você já pode usar o app. Só uma assinatura precisa do e-mail confirmado.',
   'Your e-mail confirms your account and is the only way to recover access if you lose this device.': 'Seu e-mail confirma sua conta e é a única forma de recuperar o acesso se você perder este dispositivo.',
+  'Check your e-mail': 'Verifique seu e-mail',
+  'Checking your link…': 'Verificando o link…',
+  'Confirming…': 'Confirmando seu e-mail…',
+  'Create a passkey on this device to finish.': 'Crie uma passkey neste aparelho para concluir.',
+  'E-mail confirmed.': 'E-mail confirmado!',
+  'Enter the e-mail you added to your account. If it matches one, we send a link to set up a passkey on this device.': 'Digite o e-mail da sua conta. Se ele existir, enviaremos um link para você criar uma nova passkey neste aparelho.',
+  'If {0} has an account here, we sent a link to set up a new passkey on this device. It is valid for 15 minutes and works once.': 'Se {0} tiver uma conta aqui, enviamos um link para você criar uma nova passkey neste aparelho. Ele vale por 15 minutos e funciona uma única vez.',
+  'Lost access to your device?': 'Perdi meu acesso',
+  'Send link': 'Enviar link',
+  'That link is invalid or expired.': 'Esse link é inválido ou expirou.',
+  'Confirm your e-mail to keep access to your subscription.': 'Confirme seu e-mail para não perder o acesso à assinatura.',
 }
 
 export default { ...pt, ...PT_BR_OVERRIDES }
