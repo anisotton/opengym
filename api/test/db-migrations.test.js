@@ -88,3 +88,39 @@ test('a database migrated from zero has no foreign key on invites.used_by', asyn
     assert.deepEqual(rows, [], 'invites_used_by_fkey must not exist after a fresh migration run');
   });
 });
+
+// Lyra's actual starting point: it ran 001 (with the FK — the content it's restored to) and
+// 002_email_verification before 003 existed, so the runner's schema_migrations already has both
+// recorded by filename and will never re-apply them. Reproduce that exactly, then confirm the
+// real runner picks up only 003 on top and the stale FK goes away — the upgrade path, not just
+// the fresh-install one above.
+test('a database that already ran 001 (with the FK) and 002 converges once 003 is applied on top', async () => {
+  await withDb(async pool => {
+    const already = fs.readdirSync(MIGRATIONS_DIR).filter(f => /^00[12]_.+\.sql$/.test(f)).sort();
+    assert.deepEqual(already, ['001_init.sql', '002_email_verification.sql']);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version     text PRIMARY KEY,
+        applied_at  timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    for (const file of already) {
+      await pool.query(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
+      await pool.query('INSERT INTO schema_migrations (version) VALUES ($1)', [file]);
+    }
+    const { rows: before } = await pool.query(`
+      SELECT conname FROM pg_constraint
+      WHERE conrelid = 'invites'::regclass AND contype = 'f' AND conname = 'invites_used_by_fkey'
+    `);
+    assert.equal(before.length, 1, 'the FK from the originally-applied 001 is present, same as on Lyra');
+
+    const count = await runMigrations(pool, MIGRATIONS_DIR);
+    assert.equal(count, 1, 'only 003 is newly applied — 001 and 002 were already recorded');
+
+    const { rows: after } = await pool.query(`
+      SELECT conname FROM pg_constraint
+      WHERE conrelid = 'invites'::regclass AND contype = 'f' AND conname = 'invites_used_by_fkey'
+    `);
+    assert.deepEqual(after, [], 'running 003 on top drops the FK Lyra actually has');
+  });
+});

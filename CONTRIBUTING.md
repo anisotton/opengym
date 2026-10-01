@@ -57,7 +57,9 @@ cd api && npm run test:pg
   this: ISO-1403 dropped a foreign key by editing `001_init.sql` in place, which left Lyra
   (already migrated) and a fresh install on diverging schemas for the `invites.used_by` column —
   the fix had to restore `001_init.sql` to what was actually applied and ship the real change as
-  `002_invites_used_by_no_fk.sql`.
+  a new migration (`003_invites_used_by_no_fk.sql` — the number itself shifted once more before
+  merge, when ISO-1397 landed `002_email_verification.sql` first; that renumbering, not a second
+  edit to an applied file, is the correct way to resolve two migrations claiming the same slot).
 
 ## What CI does with your pull request
 
