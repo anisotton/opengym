@@ -367,7 +367,7 @@ test('removing a passkey needs proof made for it: none, another profile’s pass
   // passkey in Settings, a sign-up, redeeming a device link.
   const add = (await h.req('POST', '/api/account/passkeys/options', { body: await h.stepUp(b, ip), cookie, ip })).body;
   await refused({ cid: add.cid, credential: b.assertion(add.options.challenge) }, 'passkey');
-  const reg = (await h.req('POST', '/api/register/options', { body: { name: 'Mallory' }, ip })).body;
+  const reg = (await h.req('POST', '/api/register/options', { body: { name: 'Mallory', email: 'mallory@example.com' }, ip })).body;
   await refused({ cid: reg.cid, credential: b.assertion(reg.options.challenge) }, 'passkey');
   const { code } = (await h.req('POST', '/api/account/device-link', { body: await h.stepUp(b, ip), cookie, ip })).body;
   const link = (await h.req('POST', '/api/device-link/options', { body: { code }, ip })).body;
@@ -741,7 +741,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   assert.equal(proof.status, 403);
   assert.equal(proof.body.code, 'passkey');
   // …and a sign-up's challenge proves nothing.
-  const reg = (await h.req('POST', '/api/register/options', { body: { name: 'Mallory' }, ip })).body;
+  const reg = (await h.req('POST', '/api/register/options', { body: { name: 'Mallory', email: 'mallory@example.com' }, ip })).body;
   const regProof = await h.req('POST', '/api/account/device-link', { body: { cid: reg.cid, credential: key.assertion(reg.options.challenge) }, cookie: mintSession('u1'), ip });
   assert.equal(regProof.status, 403);
   await unchanged();
@@ -766,7 +766,7 @@ test('a Settings or device-link challenge never finishes a sign-up, a sign-in or
   assert.deepEqual((await h.creds()).map(c => [c.id, c.userId]), [[key.id, 'u1'], [phone.id, 'u1']]);
 
   // Sign-up with its own challenge still works, and makes one new profile.
-  const signUp = (await h.req('POST', '/api/register/options', { body: { name: 'Cleo' }, ip })).body;
+  const signUp = (await h.req('POST', '/api/register/options', { body: { name: 'Cleo', email: 'cleo@example.com' }, ip })).body;
   const made = await h.req('POST', '/api/register/verify', { body: { cid: signUp.cid, credential: newcomer.attestation(signUp.options.challenge) }, ip });
   assert.equal(made.status, 200, JSON.stringify(made.body));
   assert.equal(made.body.user.name, 'Cleo');

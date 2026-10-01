@@ -72,6 +72,8 @@ function rowToUser(row) {
     disabled: row.disabled,
     sv: row.session_version,
     ...(row.email ? { email: row.email } : {}),
+    ...(row.email_verified_at ? { emailVerifiedAt: row.email_verified_at.toISOString() } : {}),
+    ...(row.birth_date ? { birthDate: row.birth_date.toISOString().slice(0, 10) } : {}),
     ...(row.invited_by || row.extra?.invitedBy ? { invitedBy: row.invited_by || row.extra.invitedBy } : {}),
     ...(row.password_hash
       ? { pw: { h: row.password_hash, set: row.password_set_at.toISOString() } }
@@ -108,11 +110,11 @@ export async function getAllUsers(pool) {
 // then, same as `lastReminder`; rowToUser reads either place.
 export async function createUser(pool, user) {
   await pool.query(
-    `INSERT INTO users (id, name, email, password_hash, password_set_at, created_at, extra)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    `INSERT INTO users (id, name, email, birth_date, password_hash, password_set_at, created_at, extra)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
-      user.id, user.name, user.email || null, user.pw?.h || null, user.pw?.set || null, user.created,
-      extraOf(user)
+      user.id, user.name, user.email || null, user.birthDate || null,
+      user.pw?.h || null, user.pw?.set || null, user.created, extraOf(user)
     ]
   );
 }
@@ -213,8 +215,20 @@ export async function bumpSessionVersion(pool, id) {
   return rows[0]?.session_version;
 }
 
+// Always clears email_verified_at too, whichever way this is called: a changed address has not
+// been proven to belong to anyone (ISO-1397's confirmation link is what sets it back,
+// markEmailVerified below), and removing the address (email === null) leaves nothing to have been
+// verified. The one-statement guarantee is the same reason setPassword clears pwReset alongside
+// password_hash: the two must never read inconsistent with each other.
 export async function setEmail(pool, id, email) {
-  await pool.query('UPDATE users SET email = $1 WHERE id = $2', [email, id]);
+  await pool.query('UPDATE users SET email = $1, email_verified_at = NULL WHERE id = $2', [email, id]);
+}
+
+// The confirmation link's own claim (POST /api/account/email/verify), once the token it carried
+// has already been consumed (consumeEmailToken) — never set on its own, since nothing else here
+// has proven the address belongs to the account.
+export async function markEmailVerified(pool, id) {
+  await pool.query('UPDATE users SET email_verified_at = now() WHERE id = $1', [id]);
 }
 
 export async function setDisabled(pool, id, disabled) {
@@ -597,6 +611,46 @@ export async function removePasskey(pool, userId, credId, otherWays = 0) {
 // back; now its own write, since a read is never the same object twice.
 export async function touchPasskeyUse(pool, id, counter) {
   await pool.query('UPDATE passkeys SET counter = $1, last_used_at = now() WHERE id = $2', [counter, id]);
+}
+
+/* ---------- e-mail tokens (ISO-1397) ----------
+ * Confirmation ('verify') and "I lost my access" ('recover') share one table, told apart by
+ * `purpose` — see migrations/002_email_verification.sql and email-tokens.js (the token itself:
+ * a random value, and the one-way hash this module ever sees). A fresh token of a purpose
+ * invalidates whichever one of that purpose was still live for the account first, so "resend"
+ * really does make the one mailed out before it dead, and a signup followed by two resends never
+ * leaves two links that both still work.
+ */
+
+// The one call that creates a token: register/verify (purpose 'verify', right after the account
+// itself exists), "resend", POST /api/account/email for an account that had none, and
+// POST /api/recover/request (purpose 'recover'). Pass a transaction client in place of `pool` to
+// create one alongside the user row a fresh signup creates — same idea as insertPasskey.
+export async function createEmailToken(pool, userId, purpose, tokenHash, ttlMs) {
+  await pool.query(
+    'UPDATE email_tokens SET used_at = now() WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL',
+    [userId, purpose]
+  );
+  const expiresAt = new Date(Date.now() + ttlMs);
+  await pool.query(
+    'INSERT INTO email_tokens (user_id, purpose, token_hash, expires_at) VALUES ($1,$2,$3,$4)',
+    [userId, purpose, tokenHash, expiresAt]
+  );
+  return { expiresAt: expiresAt.getTime() };
+}
+
+// The atomic single-use claim, same UPDATE-and-check-rowCount shape as consumeInvite: a token
+// already used or expired matches no row, and two requests racing the same token can never both
+// win — whichever runs this UPDATE second finds nothing left to claim. Returns the owning user's
+// id, or null for a token that was never valid, already used, or has expired.
+export async function consumeEmailToken(pool, tokenHash, purpose) {
+  const { rows } = await pool.query(
+    `UPDATE email_tokens SET used_at = now()
+     WHERE token_hash = $1 AND purpose = $2 AND used_at IS NULL AND expires_at > now()
+     RETURNING user_id`,
+    [tokenHash, purpose]
+  );
+  return rows.length ? rows[0].user_id : null;
 }
 
 // Boot's one-time migration of whatever db.json still holds.

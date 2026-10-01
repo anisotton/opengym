@@ -258,7 +258,7 @@ test('a flood from a shared address leaves passkey sign-in, registration and pai
     invites: [{ code: 'GOODCODE', created: new Date().toISOString() }]
   });
   for (let i = 0; i < 100; i++) await h.req('POST', '/api/login/options', { body: {} });
-  for (let i = 0; i < 30; i++) assert.equal((await h.req('POST', '/api/register/options', { body: { name: 'X', code: 'JUNK' + i } })).status, 403);
+  for (let i = 0; i < 30; i++) assert.equal((await h.req('POST', '/api/register/options', { body: { name: 'X', email: `x${i}@example.com`, code: 'JUNK' + i } })).status, 403);
   for (let i = 0; i < 30; i++) assert.equal((await h.req('POST', '/api/pair/redeem', { body: { code: 'JUNK' + i } })).status, 400);
   await Promise.all(Array.from({ length: 25 }, (_, i) => login(h, 'name' + i, 'wrong password')));
   // Password sign-in is what the shared address pauses — for everybody behind it, as documented.
@@ -268,7 +268,7 @@ test('a flood from a shared address leaves passkey sign-in, registration and pai
   const signedIn = await h.req('POST', '/api/login/verify', { body: { cid, credential: key.assertion(options.challenge) } });
   assert.equal(signedIn.status, 200, 'passkey sign-in');
   assert.ok(signedIn.cookie);
-  assert.equal((await h.req('POST', '/api/register/options', { body: { name: 'Cleo', code: 'goodcode' } })).status, 200, 'passkey signup');
+  assert.equal((await h.req('POST', '/api/register/options', { body: { name: 'Cleo', email: 'cleo@example.com', code: 'goodcode' } })).status, 200, 'passkey signup');
   const { code } = (await h.req('POST', '/api/pair/create', { cookie: signedIn.cookie })).body;
   assert.equal((await h.req('POST', '/api/pair/redeem', { body: { code } })).status, 200, 'pairing');
   assert.equal(h.audit().some(e => e.ev === 'auth.throttled' && e.msg !== 'password'), false);
@@ -472,7 +472,7 @@ test('removing the password needs proof made for it: the password itself or a pa
   assert.ok(h.audit().some(e => e.ev === 'auth.proof.fail' && e.act === 'password-remove' && e.uid === 'u1' && e.msg === 'step-up-failed'));
   await refused(await stepUp(key, b64u(crypto.randomBytes(32))), 'passkey');
   // A sign-up's challenge, signed as if it were a sign-in's.
-  const reg = (await h.req('POST', '/api/register/options', { body: { name: 'Mallory' }, ip })).body;
+  const reg = (await h.req('POST', '/api/register/options', { body: { name: 'Mallory', email: 'mallory@example.com' }, ip })).body;
   await refused({ cid: reg.cid, credential: key.assertion(reg.options.challenge) }, 'passkey');
   // A proof that already signed someone in.
   const spent = await stepUp(key);

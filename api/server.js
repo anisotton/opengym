@@ -32,15 +32,20 @@ import { connectAndMigrate, withTransaction } from './db.js';
 import {
   getUserState, getUserStateRev, putUserState,
   getUserById, getAllUsers, createUser, setPassword, removePassword, rehashPassword,
-  setPasswordReset, bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder,
-  deleteUser, upsertUser, backfillPasswordResetBy,
+  setPasswordReset, bumpSessionVersion, setEmail, markEmailVerified, setDisabled, touchLastPull,
+  setLastReminder, deleteUser, upsertUser, backfillPasswordResetBy,
   createSession, getSession, revokeSession,
   createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
   upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
-  removePasskey, touchPasskeyUse, upsertPasskey
+  removePasskey, touchPasskeyUse, upsertPasskey,
+  createEmailToken, consumeEmailToken
 } from './store.js';
+import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
+import { sendMail } from './mail.js';
+import { renderVerifyEmail } from './mail-templates/verify-email.js';
+import { renderRecoverEmail } from './mail-templates/recover-access.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -67,6 +72,11 @@ let usersCache = [];
 const RP_ID = process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
 const RP_NAME = process.env.RP_NAME || 'Brilhart Fitness';
+// What a confirmation or recovery link points at (ISO-1397) — the app is a HashRouter, so a path
+// is always "/#/…". Falls back to ORIGIN, same as docker-compose.yml already does for the og:url/
+// og:image tags that have used this fallback since Phase 0; most instances never need to set it
+// separately from ORIGIN at all.
+const APP_URL = process.env.APP_URL || ORIGIN;
 // Admin dashboard (issue): admins are matched by uid; INVITE_ONLY gates new signups behind a
 // code the admin generates. Both default off so a fresh self-hosted instance stays open.
 const ADMIN_UIDS = (process.env.ADMIN_UIDS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -583,7 +593,12 @@ const clearCookie = COOKIE === LEGACY_COOKIE
 const CSRF_EXEMPT = new Set([
   'POST /api/register/options', 'POST /api/register/verify',
   'POST /api/login/options', 'POST /api/login/verify',
-  'POST /api/pair/redeem'
+  'POST /api/pair/redeem',
+  // Same reasoning as register/login: each carries its own one-time credential in the body (a
+  // mailed token, or nothing at all for the neutral recover/request) rather than acting on the
+  // caller's session, and the link that reaches account/email/verify or recover/redeem may open
+  // in the mobile shell, whose origin is never ORIGIN.
+  'POST /api/account/email/verify', 'POST /api/recover/request', 'POST /api/recover/redeem'
 ]);
 const originsMatch = (a, b) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
 function csrfOk(req, key) {
@@ -877,7 +892,18 @@ const THROTTLED = {
   // budget: the password that may prove them counts its own failures (passwordAttempt).
   'POST /api/device-link/options': 'link', 'POST /api/device-link/verify': 'link',
   'POST /api/account/passkeys/options': null, 'POST /api/account/device-link': null,
-  'DELETE /api/account/passkeys': null
+  'DELETE /api/account/passkeys': null,
+  // E-mail confirmation and recovery (ISO-1397). A wrong or replayed token is a guess at the
+  // same kind of secret a device-link code is, so it shares that pause; "resend" spends the same
+  // budget, since both are "how many times can you poke the confirmation link for one account".
+  // recover/request is deliberately absent from this table, not merely `null`: being listed at
+  // all — even with no `kind` — would still spend AUTH_BURST at the dispatcher and could answer
+  // 429 past 60/min, breaking the one guarantee this route makes (always 200, so an address never
+  // learns "you're being throttled" as a side-channel on top of "this account doesn't exist").
+  // Its own per-address pause on a guess that resolves to nobody is handled entirely inside the
+  // handler instead, silently, with no answer that differs because of it.
+  'POST /api/account/email/verify': 'email-verify', 'POST /api/account/email/resend': 'email-verify',
+  'POST /api/recover/redeem': 'recover'
 };
 
 // Which address the throttle counts against. Unlike clientIp() above, which only labels a log
@@ -995,6 +1021,19 @@ const EMAIL_ERRORS = {
   invalid: { error: 'that is not an e-mail address', code: 'email-invalid' },
   taken: { error: 'another profile already uses this e-mail address', code: 'email-taken' }
 };
+// A birth date as the signup form sends it: plain YYYY-MM-DD, not in the future, not absurdly old
+// (130 years catches a fat-fingered year without hard-coding an age policy this route has no
+// business enforcing — see ISO-1398 for the under-18 notice this value feeds, which never blocks
+// a signup either way). Rejects anything the round trip through Date doesn't echo back exactly
+// (an out-of-range day like 2024-02-30), rather than letting JS's date math quietly roll it over.
+function parseBirthDate(raw) {
+  const s = text(raw).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return null;
+  if (d.getTime() > Date.now() || Date.now() - d.getTime() > 130 * 365.25 * 86400000) return null;
+  return s;
+}
 // Who a sign-in body names: `identifier` (what the app sends), `name` (what it sent before, and
 // what older clients still send — an address typed there works too) or `email` (only an address).
 // `key` is what wrong passwords are counted against: the account when there is one, otherwise the
@@ -1724,6 +1763,166 @@ const passkeyRoutes = {
   }
 };
 
+/* ---------- verified e-mail + password-less recovery (ISO-1397) ----------
+   The HashRouter paths a confirmation or recovery link opens in the app; the API never renders
+   either screen, only mints and checks the token. */
+const verifyLink = token => `${APP_URL}/#/verificar-email?token=${encodeURIComponent(token)}`;
+const recoverLink = token => `${APP_URL}/#/recuperar?token=${encodeURIComponent(token)}`;
+
+// Sends only — the token itself is already a row by the time either of these runs (register/
+// verify creates it inside its own transaction; issueVerification/issueRecovery below create it
+// first for every other caller). Never thrown out of a route: a provider outage must cost a
+// missing e-mail, not a 500 on an action (a signup, a profile finally getting one) that already
+// succeeded on its own.
+async function mailVerification(user, token) {
+  const { subject, text: body, html } = renderVerifyEmail({ name: user.name, link: verifyLink(token) });
+  try { await sendMail({ to: user.email, subject, text: body, html }); }
+  catch (e) { console.error('mail: could not send verification e-mail', e.message); }
+}
+async function mailRecovery(user, token) {
+  const { subject, text: body, html } = renderRecoverEmail({ name: user.name, link: recoverLink(token) });
+  try { await sendMail({ to: user.email, subject, text: body, html }); }
+  catch (e) { console.error('mail: could not send recovery e-mail', e.message); }
+}
+// Mints a fresh 'verify' token (invalidating whichever one was still live) and mails it — "resend"
+// and an old account's first POST /api/account/email both just need this, with no transaction of
+// their own to fold it into.
+async function issueVerification(user) {
+  const token = makeEmailToken();
+  await createEmailToken(pool, user.id, 'verify', hashEmailToken(token), VERIFY_TTL_MS);
+  await mailVerification(user, token);
+}
+
+const emailRoutes = {
+  // No session: a confirmation link is opened from the mail client, on whatever device that
+  // happens to be. The token is the only credential, single-use and 24h — see consumeEmailToken.
+  'POST /api/account/email/verify': async (req, res) => {
+    const body = await readBody(req);
+    const token = text(body.token).trim();
+    const invalid = { error: 'that link is invalid or expired', code: 'token-invalid' };
+    if (!token) return json(res, 400, invalid);
+    if (addressPaused(req, res, 'email-verify')) return;
+    const userId = await consumeEmailToken(pool, hashEmailToken(token), 'verify');
+    if (!userId) {
+      strikeAddress(req, 'email-verify');
+      audit(req, 'auth.email.verify.fail', { ok: false, msg: 'token-invalid' });
+      return json(res, 400, invalid);
+    }
+    await markEmailVerified(pool, userId);
+    const user = await getUserById(pool, userId);
+    audit(req, 'auth.email.verify.ok', { user });
+    json(res, 200, { ok: true });
+  },
+
+  // The owner, signed in, asking for a new link because the first one expired or never arrived.
+  // Shares the 'email-verify' pause with the verify route above: both are "how many times can you
+  // poke the confirmation system for this account", from whichever address is doing the poking.
+  'POST /api/account/email/resend': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return notSignedIn(res);
+    if (!user.email) return json(res, 400, { error: 'this profile has no e-mail yet', code: 'no-email' });
+    if (user.emailVerifiedAt) return json(res, 200, { ok: true, alreadyVerified: true });
+    if (addressPaused(req, res, 'email-verify')) return;
+    await issueVerification(user);
+    audit(req, 'auth.email.resend', { user });
+    json(res, 200, { ok: true });
+  },
+
+  // The neutral half of recovery: always 200, with the same body, whether or not `email` names a
+  // real account — the one guarantee the issue asks for ("não revela se a conta existe"). Unlike
+  // every other guarded route here, a paused address is not told so with a 429 (that would itself
+  // be a tell, just a slower one) — it is answered exactly like a miss, below.
+  'POST /api/recover/request': async (req, res) => {
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    const addr = 'recover|' + limitAddress(req);
+    if (email && !ADDR_FAILS.retryAfter(addr)) {
+      const users = await getAllUsers(pool);
+      const user = users.find(u => u.email === email);
+      if (user && !user.disabled) {
+        const token = makeEmailToken();
+        await createEmailToken(pool, user.id, 'recover', hashEmailToken(token), RECOVER_TTL_MS);
+        await mailRecovery(user, token);
+        audit(req, 'auth.recover.request', { user });
+      } else {
+        // A guess at an address with no account still counts, the same way an unknown sign-in
+        // identifier does (loginTarget) — the pause it can start only ever slows further guessing
+        // from this address, and is never what this response says.
+        ADDR_FAILS.fail(addr);
+        audit(req, 'auth.recover.request', { ok: false, msg: 'unknown-email' });
+      }
+    }
+    json(res, 200, { ok: true });
+  },
+
+  // Burns the recovery token and hands back a device-link code — the same shape
+  // POST /api/account/device-link returns — so the client finishes with the device-link pair it
+  // already has (device-link.js, /api/device-link/options → /verify) instead of a parallel
+  // passkey ceremony of its own.
+  'POST /api/recover/redeem': async (req, res) => {
+    const body = await readBody(req);
+    if (addressPaused(req, res, 'recover')) return;
+    const token = text(body.token).trim();
+    const invalid = { error: 'that link is invalid or expired', code: 'token-invalid' };
+    if (!token) {
+      strikeAddress(req, 'recover');
+      return json(res, 400, invalid);
+    }
+    const userId = await consumeEmailToken(pool, hashEmailToken(token), 'recover');
+    if (!userId) {
+      strikeAddress(req, 'recover');
+      audit(req, 'auth.recover.fail', { ok: false, msg: 'token-invalid' });
+      return json(res, 400, invalid);
+    }
+    const user = await getUserById(pool, userId);
+    if (!user || user.disabled) {
+      audit(req, 'auth.recover.fail', { ok: false, uid: userId, msg: 'user-unavailable' });
+      return json(res, 400, invalid);
+    }
+    const { code, link } = await createDeviceLink(pool, user.id);
+    audit(req, 'auth.recover.ok', { user });
+    json(res, 200, { code, expires: link.exp });
+  }
+};
+
+// An account from before this phase adding the e-mail it never had (POST /api/account/email —
+// the issue's own route name). Registered only while PASSWORD_LOGIN is off: on, that path is
+// already spoken for by passwordRoutes' own POST /api/account/email (the sign-in e-mail, #118,
+// never sent to — a different, older feature this phase does not touch). Proof first, same as
+// every other change to how this account may be reached (adding a passkey, a device link): a
+// copied session must not be enough to redirect where recovery goes.
+const setOldAccountEmail = async (req, res) => {
+  const s = await sessionOf(req);
+  if (!s) return notSignedIn(res);
+  const { user } = s;
+  const body = await readBody(req);
+  const email = normalizeEmail(body.email);
+  if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
+  if (email === user.email) return json(res, 200, { ok: true, email, emailVerified: !!user.emailVerifiedAt });
+  if (addressPaused(req, res, 'email')) return;
+  const proof = await proveOwner(req, res, user, body, 'email');
+  if (!proof) return;
+  if (!(await sessionStillValid(req, user))) return notSignedIn(res);
+  if (addressPaused(req, res, 'email')) return;
+  const refuseTaken = () => {
+    strikeAddress(req, 'email');
+    audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
+    return json(res, 409, EMAIL_ERRORS.taken);
+  };
+  if (await emailTaken(email, user.id)) return refuseTaken();
+  try {
+    await setEmail(pool, user.id, email);
+  } catch (e) {
+    if (e.code === '23505') return refuseTaken(); // unique_violation — lost a race to another request
+    throw e;
+  }
+  user.email = email;
+  delete user.emailVerifiedAt;
+  audit(req, 'auth.email.set', { user, msg: proof + ' · ' + maskEmail(email) });
+  await issueVerification(user);
+  json(res, 200, { ok: true, email });
+};
+
 /* ---------- photos & videos of custom exercises (api/media.js) ---------- */
 // One photo, GIF or short video per custom exercise, stored per profile and named by its sha256.
 // The state only ever carries a small ref; the bytes arrive and leave through the routes below.
@@ -1893,13 +2092,40 @@ const routes = {
     if (!s) return json(res, 401, { error: 'not signed in' });
     const { user } = s;
     const renew = s.bearer && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) }, ...(renew ? { token: await makeSession(user, req.headers['user-agent']) } : {}) });
+    json(res, 200, {
+      user: { id: user.id, name: user.name, admin: isAdmin(user) },
+      // ISO-1397: what the app needs to show "confirm your e-mail" or ask for one at all — an
+      // account from before this phase has neither field until its owner sets one. Left out
+      // entirely while PASSWORD_LOGIN is on: `email` there is the older, unrelated sign-in
+      // address (#118), which SELF_HOSTING.md promises is never part of this response — exposing
+      // it here, even unverified, would break that promise for an instance that opted into it.
+      ...(PASSWORD_LOGIN ? {} : { email: user.email || null, emailVerified: !!user.emailVerifiedAt, needsEmail: !user.email }),
+      ...(renew ? { token: await makeSession(user, req.headers['user-agent']) } : {})
+    });
   },
 
   'POST /api/register/options': async (req, res) => {
     const body = await readBody(req);
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required' });
+    // ISO-1397: every signup from here on needs a valid, unique e-mail — checked here, before the
+    // WebAuthn ceremony, so a taken or malformed address fails fast rather than after a Face ID/
+    // fingerprint prompt. "Taken" is a guess worth throttling the same way it already is at
+    // /api/account/email and /api/register/password: addressPaused/strikeAddress share that
+    // budget with both of those routes, a kind no passkey ceremony was ever counted against before.
+    const email = normalizeEmail(body.email);
+    if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
+    if (addressPaused(req, res, 'email')) return;
+    if (await emailTaken(email)) {
+      strikeAddress(req, 'email');
+      audit(req, 'auth.register.denied', { ok: false, name, msg: 'email-taken' });
+      return json(res, 409, EMAIL_ERRORS.taken);
+    }
+    // Decision 2 of ISO-1386: asked, not required — the under-18 notice is ISO-1398's concern and
+    // never blocks a signup either way, so an absent birth date is simply left out.
+    const hasBirthDate = body.birthDate != null && text(body.birthDate).trim() !== '';
+    const birthDate = hasBirthDate ? parseBirthDate(body.birthDate) : null;
+    if (hasBirthDate && !birthDate) return json(res, 400, { error: 'that is not a date', code: 'birth-date-invalid' });
     const code = text(body.code).trim().toUpperCase();
     if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
       // The rejected code itself is never recorded — a near-miss guess in the log is a liability.
@@ -1914,7 +2140,7 @@ const routes = {
       authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
       excludeCredentials: []
     });
-    const cid = putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code });
+    const cid = putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code, email, birthDate });
     json(res, 200, { cid, options });
   },
 
@@ -1953,7 +2179,13 @@ const routes = {
       audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'invite-invalid' });
       return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
     }
-    const user = { id: c.uid, name: c.name, created: new Date().toISOString() };
+    // Re-checked too: the address options validated may have been taken by another signup that
+    // finished its own ceremony first.
+    if (await emailTaken(c.email)) {
+      audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'email-taken' });
+      return json(res, 409, EMAIL_ERRORS.taken);
+    }
+    const user = { id: c.uid, name: c.name, created: new Date().toISOString(), email: c.email, birthDate: c.birthDate };
     if (INVITE_ONLY) user.invitedBy = c.code;
     const cred = {
       id: credential.id,
@@ -1963,11 +2195,18 @@ const routes = {
       // What Settings → Passkeys shows (#95); a passkey from before then has neither.
       created: user.created, lastUsed: user.created
     };
-    // createUser, consumeInvite and the passkey itself commit or fail together now that all
-    // three are Postgres — see POST /api/register/password for why (same InviteRaceError, same
-    // shape); getPasskeyById above is the cheap pre-check that skips the whole transaction (and
-    // the invite it would burn) for the common case of an already-registered credential, but the
-    // insert's own unique constraint is still the real backstop against two requests racing here.
+    // ISO-1397: a confirmation token is minted in the same transaction as the account — so a
+    // signup never exists without one to confirm, and a failed transaction never leaves an
+    // orphaned token referencing a user row that was rolled back. The mail itself is sent after
+    // commit (below): an outgoing HTTP call has no business inside a database transaction, and a
+    // provider outage must not turn a successful signup into a 500.
+    const verifyToken = makeEmailToken();
+    // createUser, consumeInvite, the passkey and the token all commit or fail together now that
+    // every one of them is Postgres — see POST /api/register/password for why (same
+    // InviteRaceError, same shape); getPasskeyById above is the cheap pre-check that skips the
+    // whole transaction (and the invite it would burn) for the common case of an already-
+    // registered credential, but the insert's own unique constraint is still the real backstop
+    // against two requests racing here.
     let added;
     try {
       await withTransaction(pool, async client => {
@@ -1975,6 +2214,7 @@ const routes = {
         if (INVITE_ONLY && !(await consumeInvite(client, c.code, user.id))) throw new InviteRaceError();
         added = await insertPasskey(client, user.id, cred);
         if (added.error) throw new HttpError(409, added.error);
+        await createEmailToken(client, user.id, 'verify', hashEmailToken(verifyToken), VERIFY_TTL_MS);
       });
     } catch (e) {
       if (e instanceof InviteRaceError) {
@@ -1985,9 +2225,16 @@ const routes = {
         audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: added.code });
         return json(res, e.status, { error: e.message });
       }
+      // The e-mail's own unique index is the final backstop against two signups racing the same
+      // address past the emailTaken checks above.
+      if (e.code === '23505') {
+        audit(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'email-taken' });
+        return json(res, 409, EMAIL_ERRORS.taken);
+      }
       throw e;
     }
     audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? c.code : null });
+    await mailVerification(user, verifyToken);
     json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
@@ -2114,6 +2361,14 @@ const routes = {
 
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.
   ...(PASSWORD_LOGIN ? passwordRoutes : {}),
+
+  // Verified e-mail + password-less recovery (ISO-1397). Always there — not gated by
+  // PASSWORD_LOGIN, since none of it is about signing in with a password: it is the address every
+  // new profile now has, confirmed by a link mailed to it, and the one way back in once every
+  // passkey is lost. POST /api/account/email only goes here while PASSWORD_LOGIN is off; on, that
+  // path is passwordRoutes' own (spread above), and wins — see setOldAccountEmail's own comment.
+  ...emailRoutes,
+  ...(PASSWORD_LOGIN ? {} : { 'POST /api/account/email': setOldAccountEmail }),
 
   // Always there: more passkeys and device links need nothing an instance has to switch on.
   ...passkeyRoutes,

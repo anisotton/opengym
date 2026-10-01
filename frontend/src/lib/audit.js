@@ -40,6 +40,15 @@ const LABELS = {
   'auth.email.change': 'Changed their sign-in e-mail',
   'auth.email.remove': 'Removed their sign-in e-mail',
   'auth.email.fail': 'Changing the sign-in e-mail failed',
+  // Verified e-mail + password-less recovery (ISO-1397) — a different, always-on address from
+  // the sign-in e-mail above (#118, PASSWORD_LOGIN only): the one every new profile has, proven
+  // by a mailed link rather than only compared.
+  'auth.email.verify.ok': 'Confirmed their e-mail',
+  'auth.email.verify.fail': 'Confirming an e-mail failed',
+  'auth.email.resend': 'Resent the confirmation e-mail',
+  'auth.recover.request': 'Asked to recover access',
+  'auth.recover.ok': 'Recovered access',
+  'auth.recover.fail': 'Recovering access failed',
   // More than one passkey, and one-time codes for another device (#95). `msg` on an addition or a
   // code is the proof it was made with (passkey, password); on a removal or a redemption, the
   // passkey's name.
@@ -91,6 +100,7 @@ const REASONS = {
   'reset-invalid': 'wrong or expired reset code',
   'link-invalid': 'wrong, used or expired device code',
   'passkey-limit': 'the profile already has as many passkeys as it can hold',
+  'token-invalid': 'wrong, used or expired link',
   // What an `auth.throttled` pause was for.
   'password': 'wrong passwords or reset codes',
   'signup': 'wrong invite codes on password signup',

@@ -80,6 +80,10 @@ info:
       log served by `GET /api/admin/audit`.
     - `PASSWORD_LOGIN=1` — adds the `password` routes and `password_login: true` in
       `GET /api/config`. Off by default.
+    - `MAIL_PROVIDER` / `MAIL_API_KEY` / `MAIL_FROM` — the transactional e-mail driver (tag
+      `email`). Without `MAIL_API_KEY` (every instance until configured, and every test) the
+      confirmation and recovery mail is written to the API's own log instead of sent.
+      `APP_URL` (default: `ORIGIN`) is what a mailed link points at.
     - `DEFAULT_LANG` (e.g. `pt-BR`; unset by default) — `default_lang` in `GET /api/config`,
       the language of the sign-in screen and of every profile that never picked one.
     - `TRUST_PROXY=1` — the throttle reads the client address from proxy headers (set by
@@ -135,6 +139,14 @@ tags:
     description: >-
       More than one passkey on a profile: list, add, rename, remove — and one-time device
       links, which let another device of the same person add a passkey of its own.
+  - name: email
+    description: >-
+      Verified e-mail and password-less recovery. Every signup from here on requires an
+      e-mail address, confirmed by a one-time link (24h); "I lost my access" sends a second
+      kind of one-time link (15min) that hands back a device-link code, redeemed the same way
+      as any other (tag `passkeys`). Independent of `PASSWORD_LOGIN` — this is the address
+      every profile has, not the optional, never-mailed-to sign-in identifier that flag adds
+      (tag `password`).
   - name: data
     description: Per-user state sync (the whole app state as one JSON blob)
   - name: push
@@ -278,6 +290,10 @@ paths:
         past half of `SESSION_DAYS` also receives a fresh `token` to use from now on; it carries
         the account's current session version, so "sign out everywhere" revokes it like the old
         one. Cookie sessions never get one.
+
+        `email`/`emailVerified`/`needsEmail` (tag `email`) are left out entirely while
+        `PASSWORD_LOGIN` is on: `email` there is the older, unrelated sign-in address
+        (tag `password`), which is never part of this response.
       responses:
         '200':
           description: A valid session.
@@ -287,6 +303,9 @@ paths:
                 type: object
                 properties:
                   user: { $ref: '#/components/schemas/SessionUser' }
+                  email: { oneOf: [{ type: string }, { type: 'null' }], description: 'PASSWORD_LOGIN off only.' }
+                  emailVerified: { type: boolean, description: 'PASSWORD_LOGIN off only.' }
+                  needsEmail: { type: boolean, description: 'PASSWORD_LOGIN off only — an account from before ISO-1397 with no e-mail yet.' }
                   token: { type: string, description: 'Bearer sessions past half their lifetime only — the renewed token.' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -303,6 +322,11 @@ paths:
         `startRegistration`) and sends the result to `/api/register/verify` together
         with the `cid`. Challenges are one-shot and expire after 5 minutes.
 
+        `email` is required and checked for uniqueness here (case-insensitively; an
+        address already in use pauses the caller's address the same way `POST
+        /api/account/email` does, tag `email`). `birthDate` is optional and never
+        blocks a signup; it is only asked for an under-18 notice the client shows.
+
         CSRF-exempt (the challenge is the credential). No session required.
       security: []
       requestBody:
@@ -311,18 +335,25 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name]
+              required: [name, email]
               properties:
                 name:
                   type: string
                   maxLength: 40
                   description: Display name for the new profile (trimmed, max 40 chars).
+                email:
+                  type: string
+                  maxLength: 254
+                  description: Required, unique (case-insensitively). Confirmed by mail after step 2.
+                birthDate:
+                  type: string
+                  description: 'Optional, `YYYY-MM-DD`. Not in the future, not implausibly old.'
                 code:
                   type: string
                   description: >-
                     Invite code — required (and validated) only when the instance
                     runs with INVITE_ONLY. Compared case-insensitively.
-            example: { name: "Ada", code: "3F9C21A07B54D688" }
+            example: { name: "Ada", email: "ada@example.com", code: "3F9C21A07B54D688" }
       responses:
         '200':
           description: Ceremony options.
@@ -337,17 +368,27 @@ paths:
                   options:
                     $ref: '#/components/schemas/WebAuthnRegistrationOptions'
         '400':
-          description: '`name` missing/empty.'
+          description: '`name` missing/empty, `email` missing/invalid, or `birthDate` not a date.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: "name required" }
+              examples:
+                name: { value: { error: "name required" } }
+                email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
+                birthDate: { value: { error: "that is not a date", code: "birth-date-invalid" } }
         '403':
           description: Instance is invite-only and the code is missing, used, or revoked.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "a valid invite code is required" }
+        '409':
+          description: Another profile already uses this e-mail address.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "another profile already uses this e-mail address", code: "email-taken" }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/register/verify:
     post:
@@ -358,7 +399,9 @@ paths:
         Verifies the authenticator's attestation response against the stored
         challenge (`verifyRegistrationResponse`), creates the user + credential, and
         signs the caller in (sets the session cookie). On an invite-only instance the
-        invite is re-checked and burned here. CSRF-exempt.
+        invite is re-checked and burned here; the e-mail from step 1 is re-checked for
+        uniqueness too. A confirmation token (24h, tag `email`) is minted in the same
+        transaction as the account and mailed right after it commits. CSRF-exempt.
       security: []
       requestBody:
         required: true
@@ -403,11 +446,13 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "invite code is no longer valid — ask for a new one" }
         '409':
-          description: This credential id is already registered.
+          description: This credential id is already registered, or the e-mail was taken since step 1.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: "credential already registered" }
+              examples:
+                credential: { value: { error: "credential already registered" } }
+                email: { value: { error: "another profile already uses this e-mail address", code: "email-taken" } }
 
   /api/login/options:
     post:
@@ -940,6 +985,14 @@ paths:
         passkey prompt or a password check, and runs out after a few tries. It says an
         address is in use somewhere on this instance, never by whom. Audited as
         `auth.email.set` / `auth.email.change` with the address masked (`a…@e…`).
+
+        **With `PASSWORD_LOGIN` off** (the default, and ISO-1397's own scope) this exact path
+        is a different handler instead: an account from before ISO-1397 confirming the
+        address every new signup now has (tag `email`). Same proof, same `email-invalid`/
+        `email-taken` codes, but it mails a confirmation link (24h) rather than only being a
+        sign-in identifier, and does not accept a `null`/empty `email` to remove one — there
+        is no `DELETE` for it in that mode (`DELETE /api/account/email` stays a 404, like
+        every other `password`-tagged route, while the flag is off).
       requestBody:
         required: true
         content:
@@ -1006,6 +1059,142 @@ paths:
         '403': { $ref: '#/components/responses/ProofRefused' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Busy' }
+
+  /api/account/email/verify:
+    post:
+      tags: [email]
+      operationId: verifyAccountEmail
+      summary: Confirm an e-mail address with the link's token
+      description: |
+        No session required — the link opens in whatever browser/device the mail client is
+        on. The token is single-use and expires 24h after it was minted (at signup, at
+        `POST /api/account/email`, or by `POST /api/account/email/resend`). A wrong or
+        replayed token pauses the caller's address (tag `email` throttle, shared with
+        `resend`: 20 free, then 30 s doubling to 15 min). Sets `email_verified_at`.
+        CSRF-exempt.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: Confirmed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '400':
+          description: Token missing, wrong, already used, or expired — one answer for all of them.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "that link is invalid or expired", code: "token-invalid" }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/account/email/resend:
+    post:
+      tags: [email]
+      operationId: resendAccountEmailVerification
+      summary: Mint and mail a fresh confirmation link
+      description: |
+        For the signed-in owner, when the first link expired or never arrived. Invalidates
+        whichever confirmation token was still live. A no-op (200) if there is no e-mail yet
+        or it is already confirmed. Shares the `email` throttle's address pause with
+        `POST /api/account/email/verify`.
+      responses:
+        '200':
+          description: 'A new link was sent, or there was nothing to send.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  alreadyVerified: { type: boolean }
+        '400':
+          description: This profile has no e-mail yet.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "this profile has no e-mail yet", code: "no-email" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/recover/request:
+    post:
+      tags: [email]
+      operationId: recoverRequest
+      summary: '"I lost my access": request a recovery link'
+      description: |
+        Always `200 {"ok":true}` — the same body whether or not `email` names a real,
+        enabled account, so the response never reveals which addresses have one. When it
+        does, a one-time, 15-minute link is mailed; a guess at an address with no account
+        still quietly counts toward a per-address pause (20 free, then 30 s doubling to
+        15 min) — the pause only ever slows further guessing, and is never itself the
+        answer (unlike every other throttled route here, this one never answers 429).
+        CSRF-exempt.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+            example: { email: "ada@example.com" }
+      responses:
+        '200':
+          description: Always — see above.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+
+  /api/recover/redeem:
+    post:
+      tags: [email]
+      operationId: recoverRedeem
+      summary: Burn a recovery token for a device-link code
+      description: |
+        Single-use. On success, returns the same `{code, expires}` shape as
+        `POST /api/account/device-link` — the client finishes with the existing device-link
+        pair (`POST /api/device-link/options` → `POST /api/device-link/verify`, tag
+        `passkeys`) to create a fresh passkey on this device and sign in. Old passkeys are
+        untouched; their owner removes them in Settings if they want to. A wrong or replayed
+        token pauses the caller's address, shared with `POST /api/device-link/*` (20 free,
+        then 30 s doubling to 15 min). CSRF-exempt.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: A fresh device-link code.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string }
+                  expires: { type: number, description: Expiry (ms). }
+        '400':
+          description: Token missing, wrong, already used, expired, or its account is gone/disabled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "that link is invalid or expired", code: "token-invalid" }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/admin/user/password-reset:
     post:
