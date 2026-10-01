@@ -19,8 +19,11 @@ const errStyle = { color: 'var(--red)', marginTop: 10 }
 const MIN_PLAUSIBLE_AGE = 5
 
 /* name/code stay the caller's state (Login.jsx lifts them so the passkey/password Segmented
-   switch keeps what was typed); email/birthDate/the two steps are this component's own. */
-export default function SignupFlow({ name, setName, code, setCode, inviteOnly, close, onCreated }) {
+   switch keeps what was typed); email/birthDate/the two steps are this component's own. `header`
+   renders above the form in the 'data' step only — Login.jsx's own passkey/password Segmented
+   toggle sits there; Settings.jsx has no such toggle and uses the default. Never shown in the
+   'sent' step, which has its own heading. */
+export default function SignupFlow({ name, setName, code, setCode, inviteOnly, close, onCreated, header }) {
   const [email, setEmail] = useState('')
   const [birthDate, setBirthDate] = useState('')
   const [step, setStep] = useState('data')   // 'data' | 'sent'
@@ -67,6 +70,7 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
   </>
 
   return <>
+    {header ?? <h3>{t('Create your profile')}</h3>}
     <div className="muted small" style={{ marginBottom: 14 }}>
       {t('Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.', bio())}
     </div>
