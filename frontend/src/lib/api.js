@@ -255,8 +255,11 @@ function credToJSON(cred) {
   }
   return out
 }
-export async function passkeyRegister(name, code) {
-  const { cid, options } = await api('/api/register/options', { method: 'POST', body: JSON.stringify({ name, code: code || '' }) })
+// ISO-1397: every signup now needs a unique e-mail (confirmed by mail after this ceremony);
+// `birthDate` (`YYYY-MM-DD`) is optional server-side and only ever feeds the under-18 notice
+// (ISO-1398) — it never blocks a signup either way.
+export async function passkeyRegister(name, code, email, birthDate) {
+  const { cid, options } = await api('/api/register/options', { method: 'POST', body: JSON.stringify({ name, code: code || '', email, ...(birthDate ? { birthDate } : {}) }) })
   const cred = await navigator.credentials.create({ publicKey: toCreationOptions(options) })
   const res = await api('/api/register/verify', { method: 'POST', body: JSON.stringify({ cid, credential: credToJSON(cred) }) })
   return res.user
@@ -301,4 +304,42 @@ export async function passwordRegister(name, password, code, email) {
 }
 export async function passwordResetRedeem(name, code, next) {
   return (await post('/api/login/password-reset', { name, code, next })).user
+}
+
+/* ---------------------------------------- verified e-mail + recovery (ISO-1397/1398) --------
+   The account's own e-mail: confirmed by link after signup, re-sendable, and — on an account
+   from before this phase — set for the first time. Distinct from PasswordAuth.jsx's EmailRow,
+   the older, unrelated sign-in address (#118), which is never sent to and only exists while
+   PASSWORD_LOGIN is on; this is the ISO-1397 route of the same name, registered only while that
+   flag is off. */
+export async function accountEmailVerify(token) {
+  return post('/api/account/email/verify', { token })
+}
+export async function accountEmailResend() {
+  return post('/api/account/email/resend', {})
+}
+// An account from before ISO-1397 adding (or changing) the e-mail it never had. Takes the same
+// owner proof as everything else that changes how this account is reached (ProveOwner).
+export async function accountEmailSet(email, proof) {
+  return post('/api/account/email', { email, ...proof })
+}
+// Always resolves — the server answers 200 the same way whether or not the address has an
+// account (the one guarantee "Perdi meu acesso" asks for: never reveal which addresses exist).
+export async function recoverRequest(email) {
+  return post('/api/recover/request', { email })
+}
+// Burns the recovery token for a fresh device-link code ({code, expires}) — the same shape
+// POST /api/account/device-link returns, so the caller finishes with the existing device-link
+// pair (deviceLinkOptions/deviceLinkVerify below) to create a passkey on this device.
+export async function recoverRedeem(token) {
+  return post('/api/recover/redeem', { token })
+}
+// The device-link pair itself (components/Passkeys.jsx's DeviceLinkRedeemSheet calls the same
+// two routes inline) — named here too since RecoverAccess.jsx has no code of its own to type in,
+// just the one from recoverRedeem above, and still needs the same two calls to finish.
+export async function deviceLinkOptions(code) {
+  return post('/api/device-link/options', { code })
+}
+export async function deviceLinkVerify(code, cid, credential, name) {
+  return post('/api/device-link/verify', { code, cid, credential, name })
 }

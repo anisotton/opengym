@@ -1,14 +1,21 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
+import { useUI } from '../store/useUI.js'
+import { t } from '../lib/i18n.js'
 import { DEMO } from '../lib/demo.js'
 import { connectionView, actionLabel, syncNowWithToast, pairAgain, connectServer, signInAgain, useOnline } from './ServerSync.jsx'
+import { accountEmailResend } from '../lib/api.js'
+import { passwordError } from './PasswordAuth.jsx'
 import Icon from './Icon.jsx'
 
 // How long a change may sit unsent while the server is reachable before it is worth a word: the
 // push after an edit, or the one boot owes, lands well within this, and saying "not synced" for
 // every one of them would only teach people to ignore the line.
 export const PENDING_GRACE_MS = 5000
+// ISO-1397/1398: dismissing the e-mail reminder only quiets it for this tab session (spec
+// section 2) — sessionStorage, not localStorage, so it is back next time the app is opened.
+const EMAIL_DISMISS_KEY = 'brilhart_email_banner_dismissed'
 
 /* The connection, always in view while the app is not connected to a server: offline, the server
    unreachable or answering with an error (its HTTP code, for whoever runs it), a server that no
@@ -29,6 +36,9 @@ export default function SyncBanner() {
   const onboarding = useStore(s => s.needsMobileOnboarding)
   const online = useOnline()
   const [waited, setWaited] = useState(false)
+  const [emailDismissed, setEmailDismissed] = useState(
+    () => typeof sessionStorage !== 'undefined' && sessionStorage.getItem(EMAIL_DISMISS_KEY) === '1'
+  )
   const row = useRef(null)
   const status = sync?.status
   useEffect(() => {
@@ -41,7 +51,13 @@ export default function SyncBanner() {
   const view = connectionView(sync, { online })
   // Signed out on the web, the sign-in screen is the whole app: it hears only that the server
   // ended the session, and that the changes are still here.
-  const show = !DEMO && !onboarding && !!view?.banner && (!!user || guest || status === 'auth') && (status !== 'pending' || waited)
+  const showConn = !DEMO && !onboarding && !!view?.banner && (!!user || guest || status === 'auth') && (status !== 'pending' || waited)
+  // ISO-1397/1398: a quieter reminder for an unconfirmed e-mail — only when the connection has
+  // nothing more urgent to say (one fixed banner at a time, spec section 2: a connection problem
+  // outranks this). Dismissible for the session; Settings' own row stays the permanent, silent
+  // place to resolve it either way.
+  const showEmail = !showConn && !DEMO && !onboarding && !!user && !guest && !!user.email && !user.emailVerified && !emailDismissed
+  const show = showConn || showEmail
 
   useLayoutEffect(() => {
     const root = document.documentElement
@@ -55,6 +71,25 @@ export default function SyncBanner() {
   }, [show])
 
   if (!show) return null
+
+  if (showEmail) {
+    const dismiss = () => { sessionStorage.setItem(EMAIL_DISMISS_KEY, '1'); setEmailDismissed(true) }
+    const resend = async () => {
+      try { await accountEmailResend(); useUI.getState().toast(t('E-mail resent.')) }
+      catch (e) { useUI.getState().toast(passwordError(e)) }
+    }
+    return <div className="conn-bar quiet">
+      <div className="conn-row" ref={row} role="status" aria-live="polite">
+        <button className="conn" onClick={resend}>
+          <Icon name="envelope" />
+          <span className="conn-t">{t('Confirm your e-mail to keep access to your subscription.')}</span>
+          <span className="conn-a">{t('Resend')}</span>
+        </button>
+        <button className="iconbtn sm" aria-label={t('Dismiss')} onClick={dismiss}><Icon name="xmark" /></button>
+      </div>
+    </div>
+  }
+
   const act = {
     retry: () => { syncNowWithToast() },
     pair: pairAgain,

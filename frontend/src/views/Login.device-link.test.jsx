@@ -56,7 +56,7 @@ afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { ro
 describe('Login: a code from another device', () => {
   it('is not offered on the sign-in screen, which keeps to the passkey and a new profile', () => {
     mocks.config = { allow_guest: false }
-    expect(buttons(mount(<Login />))).toEqual(['Sign in with passkey', 'Create new profile'])
+    expect(buttons(mount(<Login />))).toEqual(['Sign in with passkey', 'Create new profile', 'Lost access to your device?'])
   })
 
   it('is not offered in a browser that cannot make a passkey, with or without passwords', () => {
