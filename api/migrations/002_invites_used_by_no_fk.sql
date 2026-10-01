@@ -1,0 +1,14 @@
+-- ISO-1409: 001_init.sql was edited after it had already been applied on Lyra (ISO-1403 dropped
+-- the FK on invites.used_by in-place, instead of shipping a new migration). The runner only
+-- applies a file once (schema_migrations), so that edit never reached any environment that had
+-- already run 001 — Lyra still carries invites_used_by_fkey ... ON DELETE SET NULL, while a fresh
+-- install (which only ever saw the edited 001) never had it. 001_init.sql has been restored to
+-- the content it was actually applied with; this migration is what ISO-1403 should have shipped
+-- instead, so every environment converges on the same schema regardless of when it first ran 001.
+--
+-- Dropping the FK (not just loosening ON DELETE SET NULL to something else) is the point:
+-- admin/user/delete deliberately leaves a used invite code burned even after the account that
+-- burned it is gone — unlike created_by, which stays purely informational and keeps its FK.
+-- ON DELETE SET NULL would quietly free a burned code back up the moment that account is deleted,
+-- which is exactly the bug this closes.
+ALTER TABLE invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;

@@ -49,6 +49,15 @@ cd api && npm run test:pg
   session back, belongs in a pure helper in `src/lib` with tests beside it (`npm test`). These
   rules are easy to get subtly wrong and nearly impossible to verify by clicking — the
   progression engine grew two real bugs that only a test pinned down.
+- **An applied `api/migrations/NNN_*.sql` file is immutable — never edit it, always ship a new
+  one.** The runner (`db.js`) records each filename in `schema_migrations` and only ever applies
+  one once; an environment that already ran `001_init.sql` never re-reads it, so editing it after
+  the fact only changes what a *fresh* install gets, leaving every environment that migrated
+  earlier running a different schema with no way to tell from the code. ISO-1409 fixed exactly
+  this: ISO-1403 dropped a foreign key by editing `001_init.sql` in place, which left Lyra
+  (already migrated) and a fresh install on diverging schemas for the `invites.used_by` column —
+  the fix had to restore `001_init.sql` to what was actually applied and ship the real change as
+  `002_invites_used_by_no_fk.sql`.
 
 ## What CI does with your pull request
 

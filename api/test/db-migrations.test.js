@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createPool, runMigrations } from '../db.js';
+import { createPool, runMigrations, MIGRATIONS_DIR } from '../db.js';
 import { provisionTestDatabase } from './helpers.mjs';
 
 function migrationDir(files) {
@@ -68,5 +68,23 @@ test('a broken migration is rolled back and never recorded as applied', async ()
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
     );
     assert.deepEqual(tables.map(t => t.table_name), ['ok', 'schema_migrations']);
+  });
+});
+
+// ISO-1409: 001_init.sql shipped with a foreign key on invites.used_by, then ISO-1403 edited that
+// already-applied file in place to drop it instead of shipping a new migration — the runner never
+// re-applies a recorded file, so an environment that had already run 001 (Lyra) kept the FK while
+// a fresh install (which only ever saw the edited 001) never had it. 001_init.sql is back to the
+// content it was actually applied with, and 002 is the migration that should have shipped instead
+// — this is the "migrated from zero" half of that fix: both files applied in order must converge
+// on no FK, regardless of what 001 originally said.
+test('a database migrated from zero has no foreign key on invites.used_by', async () => {
+  await withDb(async pool => {
+    await runMigrations(pool, MIGRATIONS_DIR);
+    const { rows } = await pool.query(`
+      SELECT conname FROM pg_constraint
+      WHERE conrelid = 'invites'::regclass AND contype = 'f' AND conname = 'invites_used_by_fkey'
+    `);
+    assert.deepEqual(rows, [], 'invites_used_by_fkey must not exist after a fresh migration run');
   });
 });

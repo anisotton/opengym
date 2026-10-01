@@ -32,10 +32,7 @@ CREATE TABLE invites (
   note        text,                                               -- .note
   created_by  text REFERENCES users(id) ON DELETE SET NULL,       -- .createdBy (admin)
   created_at  timestamptz NOT NULL DEFAULT now(),                 -- .created
-  -- No FK here on purpose: admin/user/delete deliberately leaves a used code burned, never
-  -- freeing it back up for an invite-only instance, so this has to keep meaning "someone used
-  -- this" even after that someone's row is gone (unlike created_by, which is purely informational).
-  used_by     text,                                                -- .usedBy
+  used_by     text REFERENCES users(id) ON DELETE SET NULL,       -- .usedBy
   used_at     timestamptz                                         -- .usedAt
   -- `.revoked` is not carried over: server.js never actually sets it (revoke deletes the row
   -- instead), so there is no data to lose in leaving the column out.
