@@ -1,6 +1,6 @@
 import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
-import { webauthnOK, passkeyLogin } from '../lib/api.js'
+import { api, webauthnOK, passkeyLogin } from '../lib/api.js'
 import { hasData } from '../store/useStore.js'
 import { t } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
@@ -10,6 +10,7 @@ import { Button, Segmented } from '../components/ui.jsx'
 import { askAddDeviceData } from '../sheets.jsx'
 import { passwordOn, PasswordRegisterForm, openPasswordSignIn } from '../components/PasswordAuth.jsx'
 import SignupFlow from '../components/SignupFlow.jsx'
+import { openRecoverRequest } from '../components/AccountEmail.jsx'
 import logoColor from '../assets/brand/brilhart-fitness-vertical-cor.svg'
 import logoNegative from '../assets/brand/brilhart-fitness-vertical-negativo.svg'
 
@@ -53,7 +54,18 @@ export default function Login() {
   const pwOn = passwordOn(config)
   const register = () => useUI.getState().openSheet(close => <RegisterSheet close={close} />)
   const signIn = async () => {
-    try { const u = await passkeyLogin(); setUser(u, { adopt: true }); await adoptProfile(askAddDeviceData); useUI.getState().toast(t('Welcome back, {0}', u.name)) }
+    try {
+      const u = await passkeyLogin()
+      // login/verify answers only {id,name,admin} — unlike boot()'s GET /api/me, which also
+      // carries email/emailVerified/needsEmail (ISO-1397, PASSWORD_LOGIN off only). Asked for
+      // here too, so the reminder banner and Settings' row are right from this sign-in on,
+      // not only after the next full reload. A failure here still leaves a signed-in user;
+      // the fields just catch up on the next boot.
+      const me = await api('/api/me').catch(() => null)
+      setUser(me && 'needsEmail' in me ? { ...u, email: me.email, emailVerified: !!me.emailVerified, needsEmail: !!me.needsEmail } : u, { adopt: true })
+      await adoptProfile(askAddDeviceData)
+      useUI.getState().toast(t('Welcome back, {0}', u.name))
+    }
     catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') useUI.getState().toast(e.message || t('Sign-in failed')) }
   }
   const head = <>
@@ -92,6 +104,8 @@ export default function Login() {
         {/* Brilhart Fitness: no "Use a code from your other device" button here. Passkeys sync
             across a person's devices, and the QR code from Settings → Add a device still opens
             the redeem sheet by itself (App.jsx, linkCode). */}
+        <div style={{ height: 14 }} />
+        <Button variant="ghost" className="dim" size="sm" onClick={() => openRecoverRequest()}>{t('Lost access to your device?')}</Button>
         {canGuest && <div style={{ height: 10 }} />}
       </> : pwOn ? <>
         {/* Plain http on a LAN address, or a browser without passkey support: the password is

@@ -1405,7 +1405,10 @@ export const useStore = create((set, get) => {
             // A token past half its life comes back renewed: kept, it never runs out on a phone
             // that is used at all.
             if (typeof me.token === 'string' && me.token) await renewToken(remote, me.token)
-            get().setUser(me.user)
+            // ISO-1397: `email`/`emailVerified`/`needsEmail` ride alongside `user` in the same
+            // answer, present only while PASSWORD_LOGIN is off (`'needsEmail' in me` tells the
+            // two cases apart without guessing from a falsy value the server never sent).
+            get().setUser('needsEmail' in me ? { ...me.user, email: me.email, emailVerified: !!me.emailVerified, needsEmail: !!me.needsEmail } : me.user)
             // The paired server's /api/config, the same one the web boot reads: without it the
             // phone never learned whether the server offers the Coach and told everyone "your
             // server has no Coach enabled" — with the admin looking at a green test.
@@ -1490,7 +1493,9 @@ export const useStore = create((set, get) => {
       try {
         const me = await api('/api/me')
         if (!me.user?.id) throw Object.assign(new Error('no user'), { status: 200, code: 'bad-response' })
-        get().setUser(me.user)
+        // ISO-1397: see the mobile boot path above for why the `'needsEmail' in me` check, not a
+        // falsy one, tells a PASSWORD_LOGIN instance (fields absent) from an account with none yet.
+        get().setUser('needsEmail' in me ? { ...me.user, email: me.email, emailVerified: !!me.emailVerified, needsEmail: !!me.needsEmail } : me.user)
         // Re-stamp the reminder's timezone on every load — keeps it correct if you're travelling,
         // without needing to revisit Settings.
         const restampTz = () => {

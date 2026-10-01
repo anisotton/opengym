@@ -26,6 +26,8 @@ import TimerFlash from './components/TimerFlash.jsx'
 import { openDeviceLinkRedeem } from './components/Passkeys.jsx'
 import { needsEmailPromptDue, openNeedsEmailPrompt } from './components/AccountEmail.jsx'
 import Login from './views/Login.jsx'
+import EmailVerify from './views/EmailVerify.jsx'
+import RecoverAccess from './views/RecoverAccess.jsx'
 import MobileOnboarding from './views/MobileOnboarding.jsx'
 import Home from './views/Home.jsx'
 import CheckIn from './views/CheckIn.jsx'
@@ -169,6 +171,15 @@ function Shell() {
   }, [loc.pathname, navType])
   // bound to the workout, not to the route — checking Stats mid-session keeps the screen on
   useWakeLock(!!S.active && !S.active.editingWorkoutId && S.keepAwake !== false)
+
+  // Reachable whether signed in or out, and ahead of the Login/Routes split below: the person
+  // opening a mailed link has usually lost any session on this device, but may also click it on
+  // the same browser that is already signed in (EmailVerify.jsx, RecoverAccess.jsx — ISO-1398).
+  // Modals/Toast come along: RecoverAccess finishes through the same device-link redeem sheet
+  // App.jsx's own `linkCode` effect opens below (it needs somewhere to render into), and its
+  // "Passkey added" toast lands the same way a device-link QR redeem's does.
+  if (loc.pathname === '/verificar-email') return <><div id="app" className="vfade"><EmailVerify /></div><Modals /><Toast /></>
+  if (loc.pathname === '/recuperar') return <><div id="app" className="vfade"><RecoverAccess /></div><Modals /><Toast /></>
 
   const authed = user || isGuest
   if (!ready && !authed) return (

@@ -8,7 +8,7 @@ import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { isMinor } from '../lib/age.js'
-import { accountEmailResend, accountEmailSet } from '../lib/api.js'
+import { accountEmailResend, accountEmailSet, recoverRequest } from '../lib/api.js'
 import { looksLikeEmail, foldEmail, passwordError, ProveOwner } from './PasswordAuth.jsx'
 import { Row, Button } from './ui.jsx'
 
@@ -165,3 +165,47 @@ export function needsEmailPromptDue() {
 export function openNeedsEmailPrompt() {
   ui().openSheet(close => <AddEmailSheet close={() => { localStorage.setItem(DEFERRED_KEY, String(Date.now())); close() }} />)
 }
+
+/* ------------------------------------------------------------- "Perdi meu acesso" (Login.jsx) -
+   POST /api/recover/request answers 200 either way (api/server.js's own anti-enumeration
+   contract) — this sheet shows the same neutral "if that's a known e-mail…" line regardless of
+   whether the address exists, never a distinct error for "no such account". Opening the mailed
+   link lands on RecoverAccess.jsx (#/recuperar?token=). */
+function RecoverRequestSheet({ close }) {
+  const [email, setEmail] = useState('')
+  const [sent, setSent] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => { setTimeout(() => ref.current?.focus(), 250) }, [])
+  const go = async ev => {
+    ev.preventDefault()
+    if (busy || !looksLikeEmail(email)) return
+    setBusy(true)
+    try { await recoverRequest(foldEmail(email)) } catch { /* same neutral screen either way — see api/server.js's own anti-enumeration contract above */ }
+    setBusy(false); setSent(true)
+  }
+  if (sent) return <>
+    <h3>{t('Check your e-mail')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>
+      {/* 15 minutes, one use — RECOVER_TTL_MS (api/email-tokens.js), not the 24h/reusable
+          confirmation link above: a different token, a different TTL. */}
+      {t('If {0} has an account here, we sent a link to set up a new passkey on this device. It is valid for 15 minutes and works once.', foldEmail(email))}
+    </div>
+    <Button variant="primary" onClick={close}>{t('Done')}</Button>
+  </>
+  return <>
+    <h3>{t('Lost access to your device?')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>
+      {t('Enter the e-mail you added to your account. If it matches one, we send a link to set up a passkey on this device.')}
+    </div>
+    <form onSubmit={go} noValidate>
+      <input ref={ref} className="input" type="email" name="email" autoComplete="email" inputMode="email" placeholder={t('E-mail address')} maxLength={254}
+        value={email} onChange={e => setEmail(e.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+      <div style={{ height: 12 }} />
+      <Button type="submit" variant="primary" disabled={busy || !looksLikeEmail(email)}>{t('Send link')}</Button>
+    </form>
+    <div style={{ height: 8 }} />
+    <Button type="button" variant="ghost" className="dim" onClick={close}>{t('Cancel')}</Button>
+  </>
+}
+export const openRecoverRequest = () => ui().openSheet(close => <RecoverRequestSheet close={close} />)

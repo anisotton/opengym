@@ -306,7 +306,10 @@ export default function Settings() {
         {user.admin && <Row icon="wrench" iconTint="var(--indigo)" title={t('Admin dashboard')} accessory="chevron" onClick={() => nav('/admin')} />}
         <PasskeysRow state={passkeys.st} changed={credsChanged} />
         <DeviceLinkRow state={passkeys.st} />
-        <AccountEmailRow user={user} />
+        {/* ISO-1397's own POST /api/account/email is a different handler, registered only while
+            PASSWORD_LOGIN is off — on, that path is PasswordRow's legacy sign-in address (#118),
+            which this row has nothing to do with. */}
+        {!pwOn && <AccountEmailRow user={user} />}
         <Row icon="link" iconTint="var(--blue)" title={t('Pair the mobile app')} subtitle={t('Connect the Brilhart Fitness app on your phone to this account.')} accessory="chevron"
           onClick={() => useUI.getState().openSheet(close => <PairSheet close={close} />)} />
         {pwOn && <PasswordRow version={credsV} />}
