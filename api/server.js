@@ -40,7 +40,7 @@ import {
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
   removePasskey, touchPasskeyUse, upsertPasskey,
-  createEmailToken, consumeEmailToken, claimStripeEvent
+  createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent
 } from './store.js';
 import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
 import { sendMail } from './mail.js';
@@ -2800,9 +2800,24 @@ const routes = {
     catch (e) { return json(res, 400, { error: 'invalid signature' }); }
     // claimStripeEvent is the atomic single-use claim (store.js) — a Stripe retry or `stripe
     // listen` redelivering the same event finds its id already a row and applyStripeEvent never
-    // runs twice for it.
+    // runs twice for it. But the claim landing is not the same as the event's effect actually
+    // having happened: applyStripeEvent's 'customer.subscription.created' case can call out to
+    // Stripe itself (converting a first-ever subscription into a Subscription Schedule), and that
+    // is the one thing in this whole route that can fail for a reason that has nothing to do with
+    // our own data. A claim left in place after that throws would mean this exact event.id reads
+    // back as "already handled" forever — Stripe's own retry would find nothing left to do and the
+    // account would be stuck paying the R$1,99 Price every cycle, with no automatic way out. So an
+    // apply that throws undoes its own claim before the error reaches the catch-all below (which
+    // answers 500, and a 500 is what tells Stripe to retry this delivery) — the next attempt gets a
+    // genuine second try, not a no-op.
     const claimed = await claimStripeEvent(pool, { id: event.id, type: event.type, data: event.data.object });
-    if (claimed) await applyStripeEvent(pool, event);
+    if (claimed) {
+      try { await applyStripeEvent(pool, event); }
+      catch (e) {
+        await unclaimStripeEvent(pool, event.id).catch(e2 => console.error('billing: could not unclaim', event.id, e2.message));
+        throw e;
+      }
+    }
     json(res, 200, { ok: true, duplicate: !claimed });
   },
 

@@ -752,6 +752,15 @@ export async function claimStripeEvent(pool, { id, type, data }) {
   return rowCount > 0;
 }
 
+// The inverse of the claim above — called only when applying the event's effect threw after the
+// claim already landed (server.js's webhook route), so Stripe's own retry of this exact event.id
+// gets a real second attempt instead of finding it already claimed and skipping straight to a
+// no-op 200. Never called after a successful apply: a claim that already did its job stays, same
+// as every other one-time claim in this file.
+export async function unclaimStripeEvent(pool, id) {
+  await pool.query('DELETE FROM stripe_events WHERE id = $1', [id]);
+}
+
 // Boot's one-time migration of whatever db.json still holds.
 export async function upsertPasskey(pool, { id, userId, publicKey, counter, transports, name, created, lastUsed }) {
   await pool.query(

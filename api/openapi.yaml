@@ -1845,18 +1845,23 @@ paths:
         with `STRIPE_WEBHOOK_SECRET`, is this route's only authentication. Idempotent by
         `event.id`: a redelivered event (a Stripe retry, or the exact same event forwarded twice by
         `stripe listen`) is acknowledged without being applied a second time (`duplicate: true`).
+        The claim and the apply are two separate steps, though: if applying an event's effect throws
+        — the Subscription Schedule conversion below is the one point that calls out to Stripe
+        itself, and the one thing here that can fail for a reason that has nothing to do with our
+        own data — the claim is undone before the 500 that tells Stripe to retry, so the same
+        `event.id` gets a genuine second attempt rather than reading back as already handled.
 
         Handled event types: `checkout.session.completed` (links the Stripe customer to the
         account), `customer.subscription.created` (on a first-ever subscription, still on the intro
         Price, converts it into a two-phase Subscription Schedule rather than recording it as-is —
         see `createBillingCheckout`) / `.updated` (records status, plan, `firstPeriod`,
         `current_period_end`, `cancel_at_period_end`), `customer.subscription.deleted` (account goes
-        read-only), `customer.subscription.trial_will_end` (fires the Phase-2 first-period-ending
-        e-mail — Stripe's own trial e-mails never go out in the sandbox, and don't apply here
-        regardless, since there is no Stripe trial in this design), `invoice.paid` (confirms a
-        renewal, and records `firstFullCharge` the first time a full-price invoice lands after a
-        first period) and `invoice.payment_failed` (moves the account to `past_due`, which still
-        writes — Stripe retries on its own schedule before eventually cancelling).
+        read-only), `invoice.paid` (confirms a renewal, and records `firstFullCharge` the first time
+        a full-price invoice lands after a first period) and `invoice.payment_failed` (moves the
+        account to `past_due`, which still writes — Stripe retries on its own schedule before
+        eventually cancelling). The first-period-ending e-mail is not a webhook event at all — there
+        is no Stripe trial in this design, so there is nothing for `trial_will_end` to fire on — it
+        runs off a periodic check instead (`tickFirstPeriodNotices`, api/billing.js).
       requestBody:
         required: true
         content:

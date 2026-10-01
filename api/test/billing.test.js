@@ -109,6 +109,30 @@ test('POST /api/billing/webhook: a repeated event id is acknowledged once and ap
   assert.equal(status.plan, 'monthly');
 });
 
+test('POST /api/billing/webhook: a failed apply un-claims the event, so a Stripe retry gets a real second attempt', async t => {
+  // Sentinel's finding on the first version of this fix: claimStripeEvent landing is not the same
+  // as applyStripeEvent's effect actually having happened — the schedule conversion in particular
+  // calls out to Stripe itself and can fail for reasons that have nothing to do with our data. This
+  // reproduces that class of failure without needing a real network call: `id: null` makes
+  // upsertSubscription's INSERT violate subscriptions.id's NOT NULL constraint, which is enough to
+  // prove the general mechanism (server.js unclaims on ANY throw from applyStripeEvent, not only a
+  // Stripe-specific one).
+  const users = [{ id: 'u_bill_4', name: 'Four', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+  const event = stripeEvent('customer.subscription.updated', sub(null, { metadata: { userId: 'u_bill_4', plan: 'monthly' } }));
+
+  const first = await postWebhook(h.api, event);
+  assert.equal(first.status, 500, 'applying the event failed');
+
+  // If the claim had survived that failure, this exact event.id would now read back as a no-op
+  // duplicate instead of being retried — it isn't, which is the whole point of unclaiming.
+  const second = await postWebhook(h.api, event);
+  assert.equal(second.status, 500, 'retried, not silently skipped as already-handled');
+
+  const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_4') }).then(r => r.json());
+  assert.equal(status.status, 'none', 'nothing was ever actually committed');
+});
+
 test('POST /api/billing/webhook: subscription status transitions reach GET /api/billing/status', async t => {
   const users = [{ id: 'u_bill_1', name: 'One', created: new Date().toISOString() }];
   const h = await startServer(t, { users });
