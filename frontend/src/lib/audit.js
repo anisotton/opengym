@@ -73,7 +73,10 @@ const LABELS = {
   // Photos and videos of custom exercises: "Reset everything" clearing a profile's files, and the
   // upload or clean-up throttle pausing a profile (`msg` says which).
   'media.sweep': 'Cleared unused photos and videos',
-  'media.throttled': 'Too many photo or video requests'
+  'media.throttled': 'Too many photo or video requests',
+  // Stripe billing (ISO-1393): `msg` carries the plan name. No chip of its own, same as media —
+  // these rows show under All.
+  'billing.checkout': 'Started a Stripe checkout'
 }
 // An unknown event is shown raw rather than dropped or rendered as "undefined": a dashboard
 // that is one version behind the server should still say *something* truthful.

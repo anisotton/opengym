@@ -74,6 +74,7 @@ function rowToUser(row) {
     ...(row.email ? { email: row.email } : {}),
     ...(row.email_verified_at ? { emailVerifiedAt: row.email_verified_at.toISOString() } : {}),
     ...(row.birth_date ? { birthDate: row.birth_date.toISOString().slice(0, 10) } : {}),
+    ...(row.stripe_customer_id ? { stripeCustomerId: row.stripe_customer_id } : {}),
     ...(row.invited_by || row.extra?.invitedBy ? { invitedBy: row.invited_by || row.extra.invitedBy } : {}),
     ...(row.password_hash
       ? { pw: { h: row.password_hash, set: row.password_set_at.toISOString() } }
@@ -237,6 +238,20 @@ export async function setDisabled(pool, id, disabled) {
 
 export async function touchLastPull(pool, id, whenMs) {
   await pool.query('UPDATE users SET last_pull_at = $1 WHERE id = $2', [new Date(whenMs), id]);
+}
+
+// Set once, the first time an account checks out (billing.js creates the Stripe customer lazily,
+// on that first POST /api/billing/checkout) — never reassigned after. The column's own UNIQUE
+// constraint (migrations/004) is what lets every webhook handler below resolve an event straight
+// back to an account from `event.data.object.customer` alone, with no dependency on `metadata`
+// surviving whichever event type Stripe happens to send.
+export async function setStripeCustomerId(pool, id, customerId) {
+  await pool.query('UPDATE users SET stripe_customer_id = $1 WHERE id = $2', [customerId, id]);
+}
+
+export async function getUserIdByStripeCustomer(pool, customerId) {
+  const { rows } = await pool.query('SELECT id FROM users WHERE stripe_customer_id = $1', [customerId]);
+  return rows.length ? rows[0].id : null;
 }
 
 export async function setLastReminder(pool, id, date) {
@@ -651,6 +666,71 @@ export async function consumeEmailToken(pool, tokenHash, purpose) {
     [tokenHash, purpose]
   );
   return rows.length ? rows[0].user_id : null;
+}
+
+/* ---------- billing (Stripe, Phase 3 — ISO-1393) ----------
+ * `subscriptions`/`stripe_events` were created empty in migrations/001_init.sql, on purpose, for
+ * this module to shape now. One row per Stripe subscription id, never reused: a user who cancels
+ * and later resubscribes gets a second row, not an update of the first, which is what makes
+ * `hasEverSubscribed` below a true "ever", not "currently" — the R$1,99 intro price is once per
+ * account for good (issue rule), not once per subscription. `data` carries everything server.js's
+ * status route and 402 gate read — status, plan, priceId, current_period_end, cancel_at_period_end,
+ * trial_end, and firstFullCharge once invoice.paid reports one — as one jsonb blob rather than a
+ * column each, since Phase 3 is the first and only reader/writer of this shape and a later column
+ * would mean a later migration either way.
+ */
+
+function rowToSubscription(row) {
+  return { id: row.id, userId: row.user_id, ...row.data, updatedAt: row.updated_at.toISOString() };
+}
+
+// The merge is shallow (`||`, not deep): every caller in billing.js passes the fields it knows
+// changed, not the whole record, so a field an event type never touches (e.g. `plan` on an
+// invoice.paid) survives untouched rather than being wiped back to undefined.
+export async function upsertSubscription(pool, id, userId, data) {
+  const { rows } = await pool.query(
+    `INSERT INTO subscriptions (id, user_id, data, updated_at) VALUES ($1,$2,$3, now())
+     ON CONFLICT (id) DO UPDATE SET data = subscriptions.data || EXCLUDED.data, updated_at = now()
+     RETURNING *`,
+    [id, userId, data]
+  );
+  return rowToSubscription(rows[0]);
+}
+
+export async function getSubscriptionById(pool, id) {
+  const { rows } = await pool.query('SELECT * FROM subscriptions WHERE id = $1', [id]);
+  return rows.length ? rowToSubscription(rows[0]) : null;
+}
+
+// The row GET /api/billing/status and the PUT /api/data 402 gate both read: a cancel-and-resubscribe
+// leaves more than one row for the account, and the most recently touched one is always the one
+// that reflects where the account actually stands.
+export async function getLatestSubscription(pool, userId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM subscriptions WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1', [userId]
+  );
+  return rows.length ? rowToSubscription(rows[0]) : null;
+}
+
+// Whether this account has ever had a subscription row at all, regardless of its current status —
+// the once-per-account R$1,99 intro price check (POST /api/billing/checkout): true forever once
+// true once, so cancelling and coming back always prices at the plan's full recurring rate.
+export async function hasEverSubscribed(pool, userId) {
+  const { rows } = await pool.query('SELECT 1 FROM subscriptions WHERE user_id = $1 LIMIT 1', [userId]);
+  return rows.length > 0;
+}
+
+// The atomic single-use claim, same INSERT ... ON CONFLICT DO NOTHING-and-check-rowCount shape as
+// every other claim in this file (consumeInvite, burnDeviceLink, consumeEmailToken): whichever
+// request's INSERT actually lands is the one that gets to apply the event's effect, so a Stripe
+// retry (or the exact same event forwarded twice by `stripe listen`) finds its id already a row and
+// stops at a 200 without touching `subscriptions` a second time.
+export async function claimStripeEvent(pool, { id, type, data }) {
+  const { rowCount } = await pool.query(
+    'INSERT INTO stripe_events (id, type, data) VALUES ($1,$2,$3) ON CONFLICT (id) DO NOTHING',
+    [id, type, data]
+  );
+  return rowCount > 0;
 }
 
 // Boot's one-time migration of whatever db.json still holds.

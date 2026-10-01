@@ -88,6 +88,12 @@ info:
       the language of the sign-in screen and of every profile that never picked one.
     - `TRUST_PROXY=1` — the throttle reads the client address from proxy headers (set by
       the bundled `docker-compose.yml`, where only the web container can reach the API).
+    - `STRIPE_API_KEY` (a restricted key, `rk_…`) and `STRIPE_WEBHOOK_SECRET` together turn on the
+      `billing` routes (tag `billing`); either missing, every one of them (except
+      `GET /api/billing/status`) is a 404 and `PUT /api/data` never answers 402. `STRIPE_PRICE_MONTHLY`
+      / `STRIPE_PRICE_QUARTERLY` / `STRIPE_PRICE_YEARLY` name the three plans' recurring Stripe
+      Prices; `STRIPE_PRICE_INTRO`, if set, is a one-time Price added to a first-ever checkout for
+      that account so the first month is billed at it instead of the plan's own rate.
     - `MEDIA_UPLOADS` (default on; `0` removes the `media` routes and the `media` block of
       `GET /api/config`), `MEDIA_QUOTA_MB` (200 per profile, `0` = no cap),
       `MEDIA_IMAGE_MAX_MB` (2), `MEDIA_GIF_MAX_MB` (8), `MEDIA_VIDEO_MAX_MB` (40),
@@ -165,6 +171,12 @@ tags:
     description: >-
       AI Coach — plans, reviews and debriefs. Every route here answers 503 unless the
       instance has the Coach switched on and a provider connected.
+  - name: billing
+    description: >-
+      Stripe Checkout, Customer Portal and webhook (Phase 3). Every route here is a 404
+      unless the instance sets `STRIPE_API_KEY` and `STRIPE_WEBHOOK_SECRET`, except
+      `GET /api/billing/status`, which answers `{"enabled":false}` instead. The app never
+      touches card data — Checkout and the Portal are Stripe's own hosted pages.
 
 security:
   - cookieAuth: []
@@ -1675,6 +1687,7 @@ paths:
                 missing: { value: { error: "state required" } }
                 invalid: { value: { error: "invalid state" } }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/SubscriptionRequired' }
 
   /api/data/rev:
     get:
@@ -1694,6 +1707,173 @@ paths:
                 properties:
                   rev: { type: integer }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/billing/status:
+    get:
+      tags: [billing]
+      operationId: getBillingStatus
+      summary: The caller's subscription, for the plan screen and the read-only banner
+      description: |
+        `enabled: false` when the instance has no `STRIPE_API_KEY`/`STRIPE_WEBHOOK_SECRET` — the
+        only way this route ever answers without a `status`, so a client can tell "no billing on
+        this instance" apart from "no subscription yet" (`status: "none"`) without a 404.
+
+        `active` is what the app shows the read-only banner on: true for `trialing` (the R$1,99
+        first month, already charged) and `active`; false for everything else, including a
+        `canceled` subscription past its `currentPeriodEnd`. `firstFullCharge` is set once
+        `invoice.paid` reports the first post-trial invoice, and never changes after that.
+      responses:
+        '200':
+          description: Current billing state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  status: { type: string, enum: [none, trialing, active, past_due, canceled, incomplete, incomplete_expired, unpaid] }
+                  active: { type: boolean }
+                  plan: { oneOf: [{ type: string, enum: [monthly, quarterly, yearly] }, { type: 'null' }] }
+                  currentPeriodEnd: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  cancelAtPeriodEnd: { type: boolean }
+                  trialEnd: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  firstFullCharge:
+                    oneOf:
+                      - type: object
+                        properties:
+                          at: { type: string, format: date-time }
+                          amount: { type: integer, description: Centavos. }
+                          currency: { type: string }
+                      - type: 'null'
+              example: { enabled: true, status: "trialing", active: true, plan: "monthly", currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEnd: "2026-10-31T00:00:00.000Z", firstFullCharge: null }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/billing/checkout:
+    post:
+      tags: [billing]
+      operationId: createBillingCheckout
+      summary: Start a Stripe Checkout Session for one of the three plans
+      description: |
+        Requires a verified e-mail (Phase 2) — refused with 403 otherwise, since the renewal and
+        trial-ending notices this phase sends have nowhere to go without one. Creates the account's
+        Stripe customer on first use.
+
+        There is no free trial: the Checkout Session is `mode: subscription` with a 30-day trial
+        and, on an account's first-ever subscription only, an extra one-time Price
+        (`STRIPE_PRICE_INTRO`) in the same session, so the first month is actually charged R$1,99
+        at checkout instead of being free. An account that already had a subscription before
+        (cancelled or otherwise) does not get the intro price again — the trial still applies, but
+        the first invoice after it is the plan's full rate. `trialing` counts as an active
+        subscription everywhere else in the API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan]
+              properties:
+                plan: { type: string, enum: [monthly, quarterly, yearly] }
+            example: { plan: "monthly" }
+      responses:
+        '200':
+          description: The Checkout Session's hosted URL — redirect the browser to it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri }
+        '400':
+          description: '`plan` is missing or not one of the three known plans.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "invalid plan", code: "invalid-plan" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The account's e-mail is not verified yet.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "e-mail not verified", code: "email-unverified" }
+        '404': { $ref: '#/components/responses/BillingOff' }
+
+  /api/billing/portal:
+    post:
+      tags: [billing]
+      operationId: createBillingPortal
+      summary: Open the Stripe Customer Portal (card, plan, cancellation, invoices)
+      description: |
+        Cancelling in the Portal is always `cancel_at_period_end` with no proration: access
+        continues until `currentPeriodEnd` and the account only goes read-only once that date is
+        reached and `customer.subscription.deleted` lands.
+      responses:
+        '200':
+          description: The Portal session's hosted URL — redirect the browser to it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri }
+        '400':
+          description: The account has no Stripe customer yet (it has never started a checkout).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no stripe customer", code: "no-customer" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+
+  /api/billing/webhook:
+    post:
+      tags: [billing]
+      operationId: billingWebhook
+      summary: Stripe webhook — subscription and invoice lifecycle
+      description: |
+        No session and no CSRF check (Stripe's server-to-server POST carries neither a cookie nor
+        an `Origin` header); the `Stripe-Signature` header, verified against the raw request body
+        with `STRIPE_WEBHOOK_SECRET`, is this route's only authentication. Idempotent by
+        `event.id`: a redelivered event (a Stripe retry, or the exact same event forwarded twice by
+        `stripe listen`) is acknowledged without being applied a second time (`duplicate: true`).
+
+        Handled event types: `checkout.session.completed` (links the Stripe customer to the
+        account), `customer.subscription.created` / `.updated` (records status, plan,
+        `current_period_end`, `cancel_at_period_end`, `trial_end`), `customer.subscription.deleted`
+        (account goes read-only), `customer.subscription.trial_will_end` (fires the Phase-2
+        trial-ending e-mail — Stripe's own trial e-mails never go out in the sandbox), `invoice.paid`
+        (confirms a renewal, and records `firstFullCharge` the first time the post-trial invoice
+        lands) and `invoice.payment_failed` (the account stays exactly as active as it already was;
+        Stripe retries on its own schedule before eventually cancelling).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+            description: The raw Stripe event payload — verified against `Stripe-Signature`, not parsed before that.
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Verified and applied (or already applied — see `duplicate`).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  duplicate: { type: boolean }
+        '400':
+          description: '`Stripe-Signature` missing or not valid for this body and `STRIPE_WEBHOOK_SECRET`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "invalid signature" }
+        '404': { $ref: '#/components/responses/BillingOff' }
 
   /api/media/{hash}:
     parameters:
@@ -3179,6 +3359,23 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
           example: { error: "that code is wrong, used or expired", code: "link-invalid" }
+    SubscriptionRequired:
+      description: >-
+        No active subscription (tag `billing`) — only while the instance has `STRIPE_API_KEY`/
+        `STRIPE_WEBHOOK_SECRET` set; off otherwise. `trialing` and `active` both count. Reading and
+        exporting the account's history are never gated this way, only this write.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: "an active subscription is required to save changes", code: "billing" }
+    BillingOff:
+      description: >-
+        This instance has no `STRIPE_API_KEY`/`STRIPE_WEBHOOK_SECRET` set — every `billing` route
+        except `GET /api/billing/status` is a 404, same as every other env-gated feature.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: "billing not configured" }
 
   schemas:
     Error:

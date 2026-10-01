@@ -8,11 +8,13 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "test:pg": "./scripts/test-with-pg.sh"
+    "test:pg": "./scripts/test-with-pg.sh",
+    "stripe:setup": "node scripts/stripe-setup.mjs"
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.1.1",
     "pg": "^8.23.0",
+    "stripe": "^23.0.0",
     "undici": "^7.29.0",
     "web-push": "^3.6.7"
   },
