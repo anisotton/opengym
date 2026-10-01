@@ -223,12 +223,23 @@ MAIL_API_KEY=re_xxx
 MAIL_FROM="Brilhart Fitness <no-reply@yourdomain.com>"
 ```
 
-**No provider fixed in code.** `MAIL_API_KEY` unset (the default on a fresh instance, and on every
+**No provider fixed in code.** `MAIL_PROVIDER` unset (the default on a fresh instance, and on every
 automated test) sends nothing — the confirmation and recovery mail is written to the API's own
 container log instead, link included, which is enough to test the flow yourself before wiring a
-real provider in. Once you have one, set the three variables above; a provider that only speaks
-HTTP needs no new dependency (`api/mail.js` uses `fetch`), one that only speaks SMTP would need
-one, which is why none of those ship yet.
+real provider in. Two drivers ship today, neither needing a new dependency in `api/`
+(`api/mail.js`): an HTTP one (`fetch` against the provider's API) and `smtp` (ISO-1415 — a minimal
+RFC 5321 client over `node:net`/`node:tls`, no STARTTLS upgrade).
+
+```bash
+MAIL_PROVIDER=smtp
+MAIL_FROM="Brilhart Fitness <no-reply@yourdomain.com>"
+SMTP_HOST=mailpit              # Lyra: the shared Mailpit test server, reached by its container
+                                # name on the compose network — not mail.lyra, which only proxies
+                                # Mailpit's web UI (port 8025), not its SMTP port
+SMTP_PORT=1025
+# SMTP_USER / SMTP_PASS — optional, for a production relay that requires AUTH PLAIN. Mailpit
+# needs neither. SMTP_SECURE=1 — implicit TLS (typically port 465); there is no STARTTLS (587).
+```
 
 **The two links.**
 
