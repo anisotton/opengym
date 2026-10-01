@@ -1011,6 +1011,14 @@ export const PT_BR_OVERRIDES = {
   // Brilhart Fitness sign-in screen.
   'Conditioning for ballet.': 'Condicionamento físico para o balé.',
   'Today’s strength is tomorrow’s lightness.': 'A força de hoje é a leveza de amanhã.',
+  // ISO-1398: account e-mail, confirmation, recovery.
+  'Add your e-mail': 'Adicionar seu e-mail',
+  'Check your birth date.': 'Confira sua data de nascimento.',
+  'People under 18 should use this app with a guardian’s guidance.': 'Menores de 18 anos devem usar o app com orientação de um responsável.',
+  'That is already your e-mail.': 'Esse já é seu e-mail.',
+  'We sent a confirmation link to {0}. It is valid for 24 hours — open it to confirm your account.': 'Enviamos um link de confirmação para {0}. Ele é válido por 24 horas — abra-o para confirmar sua conta.',
+  'You can already use the app. Only a subscription needs the confirmed e-mail.': 'Você já pode usar o app. Só uma assinatura precisa do e-mail confirmado.',
+  'Your e-mail confirms your account and is the only way to recover access if you lose this device.': 'Seu e-mail confirma sua conta e é a única forma de recuperar o acesso se você perder este dispositivo.',
 }
 
 export default { ...pt, ...PT_BR_OVERRIDES }
