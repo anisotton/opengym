@@ -137,13 +137,18 @@ function Shell() {
   }, [ready, linkCode])
   // Account from before ISO-1397 that still has no e-mail (ISO-1398): once per sign-in, at most
   // once every 7 days while it stays unset (needsEmailPromptDue, its own local deferral) — never
-  // blocks the app either way.
+  // blocks the app either way. Held off on /recuperar and /verificar-email (their own sheets own
+  // the screen) and while a device-link redeem is pending (ISO-1415, stacked-sheets follow-up to
+  // ISO-1398) — not consumed in those cases, so it still fires once the route or the pending code
+  // clears, rather than being skipped for the rest of the visit.
   const needsEmailOffered = useRef(false)
+  const emailSheetRoute = loc.pathname === '/recuperar' || loc.pathname === '/verificar-email'
   useEffect(() => {
     if (!ready || !user?.needsEmail || needsEmailOffered.current || !needsEmailPromptDue()) return
+    if (emailSheetRoute || linkCode) return
     needsEmailOffered.current = true
     openNeedsEmailPrompt()
-  }, [ready, user?.id, user?.needsEmail])
+  }, [ready, user?.id, user?.needsEmail, emailSheetRoute, linkCode])
   useEffect(() => {
     const onScroll = () => {
       // Modals pins the body while a sheet is open; scrollY is 0 then, not a position.
