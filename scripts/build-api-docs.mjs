@@ -125,6 +125,7 @@ const TAGS = {
   pairing: { title: 'Pairing', side: 'Connect the mobile app' },
   password: { title: 'Password', side: 'Optional name &amp; password (PASSWORD_LOGIN)' },
   passkeys: { title: 'Passkeys', side: 'More passkeys &amp; device links' },
+  email: { title: 'E-mail', side: 'Verified e-mail &amp; recovery' },
   data: { title: 'Data', side: 'State sync' },
   push: { title: 'Push', side: 'Notifications &amp; rest timer' },
   activity: { title: 'Activity', side: 'Live presence' },

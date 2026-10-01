@@ -209,6 +209,46 @@ oauth2-proxy: `skip_auth_routes`. A proxy that cannot exempt a path (Teleport) h
 icons inline as `data:` URLs instead — Safari 26 accepts those, older iOS does not, which is why
 that is not the default here.
 
+### Verified e-mail and recovering access
+
+Every new profile now needs an e-mail address, confirmed by a link the API mails right after
+signup. It is not optional and needs no flag — it is part of **Create new profile** itself, the
+same way the name and the passkey ceremony are. An account from before this (ISO-1397) keeps
+`email IS NULL` until its owner adds one in Settings; the app asks, it does not block anything in
+the meantime.
+
+```bash
+MAIL_PROVIDER=resend          # whichever provider you already have, see below
+MAIL_API_KEY=re_xxx
+MAIL_FROM="Brilhart Fitness <no-reply@yourdomain.com>"
+```
+
+**No provider fixed in code.** `MAIL_API_KEY` unset (the default on a fresh instance, and on every
+automated test) sends nothing — the confirmation and recovery mail is written to the API's own
+container log instead, link included, which is enough to test the flow yourself before wiring a
+real provider in. Once you have one, set the three variables above; a provider that only speaks
+HTTP needs no new dependency (`api/mail.js` uses `fetch`), one that only speaks SMTP would need
+one, which is why none of those ship yet.
+
+**The two links.**
+
+- **Confirmation** — mailed right after signup (and again from Settings if it expired or never
+  arrived). Single-use, valid 24 hours. An unconfirmed address does not block using the app, only
+  the subscription that comes with Phase 3.
+- **Recovery ("Perdi meu acesso" / "I lost my access")** on the sign-in screen — a single-use
+  link, valid 15 minutes, that opens the same device-link ceremony a second device already uses to
+  add itself (`Settings → Account → Pair another device`): it creates a fresh passkey on whichever
+  device opens it and signs that device in. Existing passkeys are left exactly as they were; their
+  owner removes any they no longer trust in Settings afterwards. Requesting one never reveals
+  whether the address has an account — the answer is the same either way — so it cannot be used to
+  check who has signed up.
+
+Both links are stored only as a SHA-256 of the token actually mailed out, the same reasoning as an
+admin's password-reset code. Wrong or replayed tokens pause the caller's address (20 free, then 30
+seconds doubling to 15 minutes), the same shape as every other guess here. Audited as
+`auth.register.ok`, `auth.email.verify.ok` / `fail`, `auth.email.resend`, `auth.email.set` /
+`fail`, and `auth.recover.request` / `ok` / `fail`.
+
 ### Password sign-in (optional)
 
 Passkeys are the default and stay the recommended way in. Some people cannot use them: a browser
@@ -250,8 +290,10 @@ dashboard marks every profile that has a password.
 **Signing in with an e-mail.** Settings → Account also gets a **Sign-in e-mail** row, right under
 the password, and **Create new profile** with a password has an optional e-mail field. Whoever
 adds an address can type it at **Sign in with password** instead of their profile name (case and
-spaces do not matter). openGym has no mail server and **never sends anything** to it: there is no
-verification mail and no reset mail — a forgotten password is still reset with the admin's code
+spaces do not matter). This is a different, older feature than the *verified* e-mail every new
+profile now has (see *Verified e-mail and recovering access* above) — and, while `PASSWORD_LOGIN`
+is on, it is the one `POST /api/account/email` answers: **nothing is ever mailed to this address**
+— no confirmation, no reset mail — a forgotten password is still reset with the admin's code
 below, which can be redeemed with the name or the e-mail. So the address is not proven to belong
 to anyone; it is only a second name that points at the account, and the password still opens it.
 

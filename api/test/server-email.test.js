@@ -126,7 +126,12 @@ test('with PASSWORD_LOGIN off the e-mail routes are 404s, sign-in by e-mail too,
     users: [user('adm', 'Root'), withPassword('u1', 'Ana', { email: 'ana@example.com' })]
   });
   const cookie = `gymsid=${mintSession('u1')}`;
-  assert.equal((await setEmail(h, cookie, { email: 'new@example.com', current: GOOD })).status, 404);
+  // POST /api/account/email is not a 404 any more with PASSWORD_LOGIN off: ISO-1397 registers its
+  // own handler there (an old account confirming an address), a different route than the one this
+  // is 404 for — password sign-in's own, gated by PASSWORD_LOGIN and never sent to. Proving
+  // ownership with no passkey on this profile and no current password this instance believes in
+  // (passwordWayIn is false with the flag off) is refused the same way adding a passkey would be.
+  assert.equal((await setEmail(h, cookie, { email: 'new@example.com', current: GOOD })).status, 403);
   assert.equal((await h.req('DELETE', '/api/account/email', { body: { current: GOOD }, cookie })).status, 404);
   assert.equal((await signIn(h, { email: 'ana@example.com', password: GOOD })).status, 404);
   const list = await h.req('GET', '/api/admin/users', { cookie: `gymsid=${mintSession('adm')}` });

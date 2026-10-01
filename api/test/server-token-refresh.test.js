@@ -58,9 +58,10 @@ test('a bearer token past half its lifetime gets a fresh one from /api/me; a you
   assert.equal(again.status, 200);
   assert.equal((await again.json()).token, undefined);   // brand new — nothing to renew
 
-  // Eight of ten days left: not yet.
+  // Eight of ten days left: not yet — no renewal token, but still the e-mail fields ISO-1397
+  // added (PASSWORD_LOGIN is off here, same as this suite's default).
   const young = await me(bearer(mint('u_phone', { daysLeft: 8 })));
-  assert.deepEqual(Object.keys(await young.json()), ['user']);
+  assert.deepEqual(Object.keys(await young.json()), ['user', 'email', 'emailVerified', 'needsEmail']);
 
   // A browser's cookie is renewed by signing in, not here.
   const cookie = await me({ Cookie: `gymsid=${mint('u_phone', { daysLeft: 1 })}` });
