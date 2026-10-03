@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
-// The admin drill-down (QA C16): a profile whose stored workouts hold a null or otherwise
-// shapeless entry must still open, because the sheet host sits outside the route's
-// ErrorBoundary — a throw here blanked the whole app and left the account un-disableable.
+// The admin drill-down carries no training data at all any more (ISO-1394 Phase 4, LGPD):
+// GET /api/admin/user only ever answers account and subscription fields now.
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -43,28 +42,23 @@ function render(el) {
 }
 const settle = () => act(() => new Promise(r => setTimeout(r, 0)))
 
-const good = { id: 'w1', name: 'Push day', d: '2026-09-10', start: 1000, end: 61000, entries: [{ sets: [{ done: true }, { done: false }] }] }
-
 beforeEach(() => {
   document.body.innerHTML = ''
   mocks.sheets.length = 0
   mocks.answers = {
-    '/api/admin/users': { users: [{ id: 'u1', name: 'Mallory', workouts: 2, lastSync: null, disabled: false }], invite_only: false },
+    '/api/admin/users': { users: [{ id: 'u1', name: 'Mallory', lastSync: null, disabled: false, online: false }], invite_only: false },
     '/api/admin/invites': { invites: [] },
     '/api/admin/audit': { rows: [] },
     '/api/admin/user': {
       user: { id: 'u1', name: 'Mallory', created: '2026-09-01T00:00:00Z', disabled: false, admin: false },
-      unit: 'kg', lastSync: null, routines: [], bodyweight: [],
-      // What GET /api/admin/user hands over for a document written before PUT /api/data dropped
-      // such entries: a null, and a bare object without entries, next to a real session.
-      workouts: [null, good, {}]
+      lastSync: null, subscription: null
     }
   }
 })
 afterEach(() => { act(() => { mounted.splice(0).forEach(root => root.unmount()) }) })
 
 describe('Admin user drill-down', () => {
-  it('opens a profile with malformed workout entries and still offers "Disable account"', async () => {
+  it('opens a profile and offers "Disable account", with no workout data anywhere on the sheet', async () => {
     const page = render(<Admin />)
     await settle()
     const row = [...page.querySelectorAll('.item')].find(el => el.textContent.includes('Mallory'))
@@ -75,11 +69,39 @@ describe('Admin user drill-down', () => {
     await settle()
     const buttons = [...sheet.querySelectorAll('button')].map(b => b.textContent)
     expect(buttons).toContain('Disable account')
-    // The one real session is listed; the two shapeless entries are skipped, not drawn as blanks.
-    const rows = [...sheet.querySelectorAll('.list > div')]
-    expect(rows.length).toBe(1)
-    expect(rows[0].textContent).toContain('Push day')
-    expect(rows[0].textContent).toContain('1 sets')
+    expect(buttons).not.toContain('Download their data')
+    expect(sheet.textContent).not.toMatch(/Workout|Weigh-in|Routine/)
+    // Account + subscription tiles instead, with no subscription configured reading as '—'.
+    const tiles = [...sheet.querySelectorAll('.tile')].map(t => t.textContent)
+    expect(tiles).toEqual(['Plan—', 'Status—', 'Next charge—', 'Last syncnever'])
+  })
+})
+
+describe('Admin: no training data anywhere on the page', () => {
+  it('the list and "Training now" show only account facts — no workout count, routine or sets', async () => {
+    mocks.answers['/api/admin/users'] = {
+      users: [
+        { id: 'u1', name: 'Mallory', lastSync: Date.now() - 3600000, disabled: false, online: true },
+        { id: 'u2', name: 'Bob', lastSync: Date.now() - 86400000, disabled: false, online: false },
+      ],
+      invite_only: false,
+    }
+    const page = render(<Admin />)
+    await settle()
+    expect(page.textContent).toContain('Training now')
+    // Mallory is online, so she shows up in both the "Training now" card and the list, with no
+    // routine name, exercise index or set count — only ISO-1447's own `online: boolean`.
+    const live = [...page.querySelectorAll('.card')].find(c => c.textContent.includes('Training now'))
+    expect(live.textContent).not.toMatch(/workout|weigh-in|routine|exercise|set/i)
+    expect(live.textContent).toContain('Mallory')
+    expect(live.textContent).not.toContain('Bob')
+    const rows = [...page.querySelectorAll('.item')]
+    expect(rows.map(r => r.textContent).join(' ')).not.toMatch(/workout|weigh-in|routine/i)
+    const mallory = rows.find(el => el.textContent.includes('Mallory'))
+    const bob = rows.find(el => el.textContent.includes('Bob'))
+    expect(mallory.textContent).toContain('online')
+    expect(bob.textContent).toMatch(/last sync/)
+    expect(bob.textContent).not.toContain('online')
   })
 })
 
@@ -102,7 +124,7 @@ describe('Admin when the users cannot be loaded', () => {
     await settle()
     expect(page.querySelector('[role="alert"]').textContent).toContain('not found')
 
-    mocks.answers['/api/admin/users'] = { users: [{ id: 'u1', name: 'Mallory', workouts: 2, lastSync: null, disabled: false }], invite_only: false }
+    mocks.answers['/api/admin/users'] = { users: [{ id: 'u1', name: 'Mallory', lastSync: null, disabled: false, online: false }], invite_only: false }
     const retry = [...page.querySelectorAll('button')].find(b => b.textContent === 'Try again')
     act(() => retry.click())
     await settle()

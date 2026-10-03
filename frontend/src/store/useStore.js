@@ -1429,6 +1429,17 @@ export const useStore = create((set, get) => {
       return left.owed ? owedResult(left, { stashed: true }) : { owed: false }
     },
 
+    // Settings → "Delete account" (ISO-1449/ISO-1394): the account itself, server-side — not just
+    // this device's copy. Unlike signOut/signOutAll there is no unsyncedChanges check: the sheet
+    // that leads here already offered an export, and a profile about to stop existing has nothing
+    // left to stash a change for. A throw (network, refused proof, last admin) leaves this device
+    // exactly as it was — only the server's 200 wipes the local copy, with the same clearing a
+    // sign-out does (gym_state_v1, the Capacitor file, this tab's session, the sync queue).
+    async deleteAccount(proof) {
+      await api('/api/account', { method: 'DELETE', body: JSON.stringify(proof) })
+      await clearLocalSession()
+    },
+
     // Demo build only: drop the seeded example profile back in (Settings → "Reset demo data").
     // Dynamic import so the generator never ships in a self-hosted bundle.
     async resetDemo() {

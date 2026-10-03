@@ -35,11 +35,12 @@ describe('auditCat', () => {
   it('survives a missing event name', () => {
     expect(auditCat(undefined)).toBe('')
   })
-  // `media` and `billing` are the third and fourth: media's clean-up and throttle, billing's
-  // checkout start (ISO-1393). Neither has a chip of its own — those rows show under All, and a
-  // throttle under Failed.
-  it('puts every known event in auth, admin, billing or media', () => {
-    expect([...new Set(EVENTS.map(auditCat))].sort()).toEqual(['admin', 'auth', 'billing', 'media'])
+  // `media`, `billing` and `account` are the third, fourth and fifth: media's clean-up and
+  // throttle, billing's checkout start (ISO-1393), and self-service account deletion
+  // (ISO-1394 Phase 4 — its own top-level event, not `admin.*`, since no admin acted). None of
+  // the three has a chip of its own — those rows show under All, and a throttle under Failed.
+  it('puts every known event in account, admin, auth, billing or media', () => {
+    expect([...new Set(EVENTS.map(auditCat))].sort()).toEqual(['account', 'admin', 'auth', 'billing', 'media'])
   })
 })
 

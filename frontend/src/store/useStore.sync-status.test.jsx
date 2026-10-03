@@ -259,6 +259,42 @@ describe('signing out never loses a change silently', () => {
   })
 })
 
+// Settings → "Delete account" (ISO-1449/ISO-1394): unlike signOut/signOutAll there is no
+// unsyncedChanges gate — the sheet leading here already offered an export, and a profile about
+// to stop existing has nothing left to stash a change for. Only a 2xx wipes this device; a
+// refusal (network, refused proof, last admin) must leave everything exactly as it was.
+describe('deleting the account (ISO-1449)', () => {
+  it('spends the given proof on DELETE /api/account, then wipes this device the way signing out does', async () => {
+    signedIn({ ...clone(DEF), _ts: 100, workouts: [workout('w1')] })
+    useStore.getState().update(s => { s.workouts.push(workout('w2', '2026-09-02')) })   // a real persist(), so there is something to wipe
+    api.mockReset()
+    api.mockResolvedValueOnce({ ok: true })
+    const proof = { cid: 'c1', credential: { id: 'k1' } }
+
+    await useStore.getState().deleteAccount(proof)
+
+    expect(paths()).toEqual(['DELETE /api/account'])
+    expect(api.mock.calls[0][1]).toMatchObject({ method: 'DELETE', body: JSON.stringify(proof) })
+    expect(useStore.getState().user).toBeNull()
+    expect(useStore.getState().S.workouts).toEqual([])
+    expect(localStorage.getItem('gym_owner')).toBeNull()
+    expect(localStorage.getItem('gym_user')).toBeNull()
+  })
+
+  it('a refusal (network, refused proof, last admin) leaves everything exactly as it was', async () => {
+    signedIn({ ...clone(DEF), _ts: 100, workouts: [workout('w1')] })
+    useStore.getState().update(s => { s.workouts.push(workout('w2', '2026-09-02')) })
+    api.mockReset()
+    api.mockRejectedValueOnce(httpError(400, { code: 'last-admin' }))
+
+    await expect(useStore.getState().deleteAccount({ cid: 'c1', credential: {} })).rejects.toThrow()
+
+    expect(useStore.getState().user).toEqual(USER)
+    expect(ids(useStore.getState().S.workouts)).toEqual(['w1', 'w2'])
+    expect(localStorage.getItem('gym_owner')).toBe(USER.id)
+  })
+})
+
 describe('a sign-out the server did not answer', () => {
   // A copy in step with the server: nothing owed, so the sign-out goes ahead at once.
   const inStep = async () => {

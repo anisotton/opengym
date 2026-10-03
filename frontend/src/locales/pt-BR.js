@@ -1065,6 +1065,27 @@ export const PT_BR_OVERRIDES = {
   'Send link': 'Enviar link',
   'That link is invalid or expired.': 'Esse link é inválido ou expirou.',
   'Confirm your e-mail to keep access to your subscription.': 'Confirme seu e-mail para não perder o acesso à assinatura.',
+  // --- delete account (ISO-1394/ISO-1449), spec by Atena in ISO-1448 ---
+  'Delete account': 'Excluir conta',
+  'Erases everything — your data, your subscription, and the account itself.': 'Apaga tudo — seus dados, sua assinatura e a própria conta.',
+  'Delete your account?': 'Excluir sua conta?',
+  'This erases, for good:': 'Isso apaga para sempre:',
+  'Your plan, workouts and body-weight history': 'Seu plano, treinos e histórico de peso',
+  'Photos and videos on custom exercises': 'Fotos e vídeos de exercícios personalizados',
+  'Your passkeys and password': 'Suas passkeys e senha',
+  'Your subscription — canceled right now, with no refund for the time left on it': 'Sua assinatura — cancelada agora, sem reembolso do tempo que resta',
+  'Once deleted, nobody — not even you, not even an admin — can bring the account back.': 'Depois de excluída, ninguém — nem você, nem um admin — consegue recuperar a conta.',
+  'Download a copy first if you want to keep your history.': 'Baixe uma cópia antes, se quiser guardar seu histórico.',
+  "You're offline — connect to delete your account.": 'Você está offline — conecte-se para excluir sua conta.',
+  'Continue to delete': 'Continuar para excluir',
+  'Confirm it’s you': 'Confirme que é você',
+  'Before deleting, confirm with a passkey or your current password.': 'Antes de excluir, confirme com uma passkey ou sua senha atual.',
+  'Delete for good?': 'Excluir para sempre?',
+  'You’re the only admin — promote someone else before deleting your account.': 'Você é a única pessoa admin — promova outra antes de excluir sua conta.',
+  'Last chance. {0} and everything we listed is gone now, with no backup on the server.': 'Última chance. {0} e tudo o que listamos somem agora, sem backup no servidor.',
+  'Delete my account': 'Excluir minha conta',
+  'Could not delete — are you online?': 'Não foi possível excluir — você está online?',
+  'Account deleted': 'Conta excluída',
 }
 
 export default { ...pt, ...PT_BR_OVERRIDES }
