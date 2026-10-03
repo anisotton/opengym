@@ -65,6 +65,10 @@ const LABELS = {
   'admin.user.disable': 'Disabled an account',
   'admin.user.enable': 'Re-enabled an account',
   'admin.user.delete': 'Deleted an account',
+  // Self-service account deletion (ISO-1394 Phase 4, LGPD): its own event rather than
+  // `admin.*`, since no admin acted — `msg` carries nothing beyond the uid proveOwner already
+  // names in `act`, by design (no personal data in this one's audit row).
+  'account.delete': 'Deleted their own account',
   'admin.password.reset': 'Issued a password reset code',
   'admin.invite.create': 'Created an invite code',
   'admin.invite.revoke': 'Revoked an invite code',
@@ -123,7 +127,8 @@ const ACTS = {
   'password-remove': 'removing the password',
   'passkey-add': 'adding a passkey',
   'passkey-remove': 'removing a passkey',
-  'device-link': 'making a one-time code for another device'
+  'device-link': 'making a one-time code for another device',
+  'account-delete': 'deleting the account'
 }
 export const auditAct = act => ACTS[act] || (act ? String(act) : '')
 

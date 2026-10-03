@@ -3,9 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { api } from '../lib/api.js'
-import { fmtDate, fmtNum, fmtVol, fmtDur } from '../lib/format.js'
+import { fmtDate, fmtNum } from '../lib/format.js'
 import { auditCat, auditLine, fmtWhen } from '../lib/audit.js'
-import { workoutVolume, setsDone } from '../lib/history.js'
+import { fmtCentsBRL } from '../lib/billing.js'
 import { confirmSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
@@ -28,7 +28,6 @@ const rel = ts => {
   if (s < 86400) return Math.floor(s / 3600) + ' h ago'
   return Math.floor(s / 86400) + ' d ago'
 }
-const dur = ms => { const m = Math.max(0, Math.floor(ms / 60000)); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min' }
 
 // The one time the reset code is visible. Locked, so a tap beside the sheet cannot lose it
 // before it has been copied or written down.
@@ -44,6 +43,11 @@ function ResetCodeSheet({ name, email, code, expires, close }) {
   </>
 }
 
+// Plan names the admin's own account+subscription tiles word the same way SettingsPlan does —
+// fmtCentsBRL/dayOf-style formatting, not a fetched label, since GET /api/admin/user hands back
+// the same shape GET /api/billing/status does (ISO-1447).
+const PLAN_NAME = { monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly' }
+
 function UserDetail({ id, onChanged, close }) {
   const [d, setD] = useState(null)
   const toast = useUI(s => s.toast)
@@ -51,21 +55,9 @@ function UserDetail({ id, onChanged, close }) {
   useEffect(() => { api('/api/admin/user?id=' + encodeURIComponent(id)).then(setD).catch(e => toast(e.message)) }, [id])
   if (!d) return <div className="muted small">Loading…</div>
   const u = d.user
-  // The document comes straight off the user's state file. PUT /api/data drops null and
-  // shapeless entries now, but a file written before it did still answers with them, and this
-  // sheet renders outside the route's ErrorBoundary: one throw here blanked the whole app and
-  // left exactly this account un-disableable. setsDone/workoutVolume walk entries and sets, so
-  // an entry that lacks either has nothing to show and is skipped rather than drawn.
-  const workouts = (d.workouts || []).filter(w => w && Array.isArray(w.entries) && w.entries.every(e => e && Array.isArray(e.sets)))
-  // Their whole record as the admin API already returns it — the export the delete sheet offers.
-  const exportUser = () => {
-    const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `opengym-${u.name.replace(/[^a-zA-Z0-9_-]+/g, '-').toLowerCase()}-${u.id}.json`
-    document.body.appendChild(a); a.click(); a.remove()
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
-  }
+  // No workout, body-weight or routine data reaches this screen at all any more (ISO-1394 Phase
+  // 4, LGPD) — GET /api/admin/user only ever answers account and subscription fields now.
+  const sub = d.subscription
   const doDelete = () => {
     api('/api/admin/user/delete', { method: 'POST', body: JSON.stringify({ id: u.id }) })
       .then(() => { toast('Account deleted'); onChanged(); close() })
@@ -100,10 +92,11 @@ function UserDetail({ id, onChanged, close }) {
       {u.resetUntil && <span className="adm-pill acc">reset code until {new Date(u.resetUntil).toLocaleString()}</span>}
       <span className="adm-pill">joined {u.created ? fmtDate(u.created.slice(0, 10)) : '—'}</span>
     </div>
+    <h4 className="sec">Account</h4>
     <div className="tiles" style={{ textAlign: 'start' }}>
-      <div className="tile"><div className="l">Workouts</div><div className="v" style={{ fontSize: '1.1rem' }}>{workouts.length}</div></div>
-      <div className="tile"><div className="l">Weigh-ins</div><div className="v" style={{ fontSize: '1.1rem' }}>{d.bodyweight.length}</div></div>
-      <div className="tile"><div className="l">Routines</div><div className="v" style={{ fontSize: '1.1rem' }}>{d.routines.length}</div></div>
+      <div className="tile"><div className="l">Plan</div><div className="v" style={{ fontSize: '1.1rem' }}>{sub ? (PLAN_NAME[sub.plan] || sub.plan || '—') : '—'}</div></div>
+      <div className="tile"><div className="l">Status</div><div className="v" style={{ fontSize: '1.1rem' }}>{sub?.status || '—'}</div></div>
+      <div className="tile"><div className="l">Next charge</div><div className="v" style={{ fontSize: '.95rem' }}>{sub?.nextChargeDate ? fmtDate(sub.nextChargeDate.slice(0, 10)) + (sub.nextChargeAmount != null ? ' · ' + fmtCentsBRL(sub.nextChargeAmount) : '') : '—'}</div></div>
       <div className="tile"><div className="l">Last sync</div><div className="v" style={{ fontSize: '.95rem' }}>{rel(d.lastSync)}</div></div>
     </div>
     {!u.admin && <>
@@ -112,13 +105,15 @@ function UserDetail({ id, onChanged, close }) {
           : confirmSheet({ title: 'Disable ' + u.name + '?', message: 'They are signed out everywhere and can no longer sync or log in until re-enabled. Their data stays.', confirmText: 'Disable', danger: true, onConfirm: () => setDisabled(true) })}>
         {u.disabled ? 'Enable account' : 'Disable account'}</button>
       <div className="adm-hint">{u.disabled ? 'Enabling lets them sign in and sync again.' : 'Disabling signs them out everywhere and blocks sign-in. Nothing is deleted.'}</div>
-      {/* The one destructive action in the app (issue #107), so it asks twice and offers the
-          export first — that history is theirs. The second step names the account again, because
-          the first sheet can be dismissed by anyone who was not reading. */}
+      {/* The one destructive action in the app (issue #107), so it asks twice. The second step
+          names the account again, because the first sheet can be dismissed by anyone who was not
+          reading. No "download their data first" here any more (ISO-1394 Phase 4): the admin
+          cannot see their training data to export it in the first place — that's theirs to do
+          from their own Settings, before they ever reach an admin for help. */}
       <button className="btn danger" style={{ margin: '14px 0 4px' }}
         onClick={() => confirmSheet({
           title: 'Delete ' + u.name + '?',
-          message: 'Everything goes: their workouts, weigh-ins, routines, passkeys and notifications. This cannot be undone, and the invite code they joined with stays used. Download their data first if they might want it.',
+          message: 'Everything about their account goes: workouts, body weight, routines, passkeys, and their subscription — canceled now, with no refund for time already paid. This cannot be undone, and the invite code they joined with stays used.',
           confirmText: 'Continue',
           danger: true,
           onConfirm: () => confirmSheet({
@@ -129,7 +124,6 @@ function UserDetail({ id, onChanged, close }) {
             onConfirm: doDelete,
           }),
         })}>Delete account</button>
-      <button className="btn" style={{ marginBottom: 4 }} onClick={exportUser}>Download their data</button>
       <div className="adm-hint">Deleting removes the account and every trace of its training history from this server.</div>
       {pwInstance && <>
         <button className="btn" style={{ margin: '14px 0 4px' }} onClick={resetPassword}>Reset password</button>
@@ -138,14 +132,6 @@ function UserDetail({ id, onChanged, close }) {
           : 'No password yet. A one-time code lets them set one — the way back in after losing their only passkey.'}</div>
       </>}
     </>}
-    <h4 className="sec">Workout history</h4>
-    {workouts.length ? <div className="list" style={{ gap: 0 }}>
-      {workouts.slice(0, 60).map(w => <div key={w.id} className="row between" style={{ padding: '9px 2px', borderBottom: '1px solid var(--sep)' }}>
-        <div><div className="small" style={{ fontWeight: 600 }}>{w.name}</div>
-          <div className="dim" style={{ fontSize: '.72rem' }}>{fmtDate(w.d, true)} · {fmtDur((w.end || w.start) - w.start)} · {setsDone(w)} sets{w.prs?.length ? ' · ' + w.prs.length + ' PR' : ''}</div></div>
-        <span className="small muted">{fmtVol(w.vol ?? workoutVolume(w), d.unit)}</span>
-      </div>)}
-    </div> : <div className="adm-empty">No workouts logged.</div>}
   </>
 }
 
@@ -276,7 +262,7 @@ export default function Admin() {
   if (!user?.admin) return null
 
   const openUser = id => openSheet(close => <UserDetail id={id} onChanged={loadUsers} close={close} />)
-  const liveUsers = (users || []).filter(u => u.live)
+  const liveUsers = (users || []).filter(u => u.online)
   const activeCount = (users || []).filter(u => u.lastSync && Date.now() - u.lastSync < 7 * 86400000).length
   const disabledCount = (users || []).filter(u => u.disabled).length
 
@@ -288,7 +274,7 @@ export default function Admin() {
       <button className="iconbtn" onClick={() => { loadUsers(); loadInvites(); setTick(n => n + 1) }} aria-label="refresh">↻</button>
     </div>
     <div className="adm-intro">
-      Everything about running this instance: who uses it, how they get in, the AI Coach, and what has happened on it. Nothing here shows anyone's training data beyond counts.
+      Everything about running this instance: who uses it, how they get in, the AI Coach, and what has happened on it. Nothing here shows anyone's training data — not a workout, a weigh-in or a routine.
     </div>
 
     {usersErr && <div className="card" role="alert" style={{ borderColor: 'var(--red)' }}>
@@ -306,13 +292,14 @@ export default function Admin() {
       <div className="tile"><div className="l">Disabled</div><div className="v">{users ? disabledCount : '—'}</div></div>
     </div>
 
+    {/* No routine name, no set progress, no duration — GET /api/admin/users only ever says
+        `online: boolean` now (ISO-1394 Phase 4), not what someone is actually doing. */}
     {liveUsers.length > 0 && <div className="card" style={{ borderColor: 'var(--acc)' }}>
       <h2 className="row" style={{ margin: '0 0 2px', gap: 6 }}><Icon name="dot" style={{ fontSize: 10, color: 'var(--green)' }} />Training now</h2>
-      <div className="adm-lead">Sessions running at this moment. Tap a name for details.</div>
+      <div className="adm-lead">Signed in and active right now. Tap a name for details.</div>
       {liveUsers.map(u => <div key={u.id} className="row between" style={{ padding: '8px 2px', borderBottom: 'var(--hair) solid var(--sep)' }} onClick={() => openUser(u.id)}>
-        <div><div className="small" style={{ fontWeight: 600 }}>{u.name}</div>
-          <div className="dim" style={{ fontSize: '.72rem' }}>{u.live.name} · exercise {u.live.exIdx} of {u.live.exTotal} · {u.live.setsDone}/{u.live.setsTotal} sets</div></div>
-        <span className="adm-pill acc">{dur(Date.now() - u.live.startedAt)}</span>
+        <div className="small" style={{ fontWeight: 600 }}>{u.name}</div>
+        <span className="adm-pill acc">online</span>
       </div>)}
     </div>}
 
@@ -324,11 +311,11 @@ export default function Admin() {
 
     <div className="card">
       <h2 style={{ margin: 0 }}>Users</h2>
-      <div className="adm-lead">Everyone with a profile on this instance. Tap one to see their activity, to disable the account (nothing is deleted) or to delete it with all their data for good.</div>
+      <div className="adm-lead">Everyone with a profile on this instance. Tap one to see their account and subscription, to disable it (nothing is deleted) or to delete it with all their data for good.</div>
       <div className="list">
         {(users || []).map(u => <div key={u.id} className="item" onClick={() => openUser(u.id)} style={u.disabled ? { opacity: .55 } : null}>
-          <div className="grow"><div className="tt">{u.live && <Icon name="dot" style={{ fontSize: 9, color: 'var(--green)', display: 'inline-block', marginInlineEnd: 5 }} />}{u.name} {u.admin && <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>admin</span>}{u.disabled && <span className="adm-pill bad" style={{ marginInlineStart: 4 }}>disabled</span>}</div>
-            <div className="ss">{u.live ? 'training now · ' + u.live.name : u.workouts + ' workouts' + (u.lastWorkout ? ' · last ' + fmtDate(u.lastWorkout) : '') + ' · last sync ' + rel(u.lastSync)}</div>
+          <div className="grow"><div className="tt">{u.online && <Icon name="dot" style={{ fontSize: 9, color: 'var(--green)', display: 'inline-block', marginInlineEnd: 5 }} />}{u.name} {u.admin && <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>admin</span>}{u.disabled && <span className="adm-pill bad" style={{ marginInlineStart: 4 }}>disabled</span>}</div>
+            <div className="ss">{u.online ? 'online' : 'last sync ' + rel(u.lastSync)}</div>
             {u.email && <div className="ss" title="sign-in e-mail">{u.email}</div>}</div>
           {u.hasPush && <Icon name="bell" title="push notifications on" style={{ fontSize: 15, color: 'var(--label-3)' }} />}<Icon name="chevronRight" className="chev" />
         </div>)}
