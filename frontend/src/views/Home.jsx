@@ -91,10 +91,11 @@ export default function Home() {
         (ISO-1392 §5). Shown instead of, never together with, the past_due banner below: 'past_due'
         is one of the two statuses canWriteFromBilling still calls writable. */}
     {user && !writable && <div className="card" style={{ borderColor: 'var(--red)', borderWidth: 1, borderStyle: 'solid' }}>
-      <div className="row" style={{ gap: 9 }}>
+      <div className="row" style={{ gap: 9, marginBottom: 8 }}>
         <span className="lrow-i" style={{ background: 'var(--red)' }}><Icon name="lock" /></span>
         <div className="small">{t("Your subscription isn't active — you can view and export your history, but new workouts won't be logged.")}</div>
       </div>
+      <Button size="sm" variant="tinted" onClick={() => nav('/configuracoes')}>{t('View plans')}</Button>
     </div>}
     {/* Dismissible for the rest of this app session only (ISO-1392 §4) — reappears next time the
         app opens while the charge is still failing. The plan screen's own banner is the one that

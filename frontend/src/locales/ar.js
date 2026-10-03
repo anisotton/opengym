@@ -30,7 +30,7 @@ export default {
   "Next charge": "الدفعة التالية",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "تم جدولة الإلغاء — يستمر وصولك حتى {0}، دون تجديد تلقائي.",
   "Manage subscription": "إدارة الاشتراك",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "أنت في شهرك الأول، مقابل R$ 1.99. اعتبارًا من {0}، تبدأ فوترة خطة {1} (R$ {2}).",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "أنت في شهرك الأول، مقابل R$ 1.99. اعتبارًا من {0}، تبدأ فوترة خطة {1} ({2}).",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "تعذّر تحصيل قيمة اشتراكك. حدّث بطاقتك لتجنّب انقطاع الخدمة.",
   "Update card": "تحديث البطاقة",
   "Subscription canceled due to a payment failure": "تم إلغاء الاشتراك بسبب فشل في الدفع",

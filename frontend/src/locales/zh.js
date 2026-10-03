@@ -30,7 +30,7 @@ export default {
   "Next charge": "下次扣款",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "已安排取消 — 你的访问权限将保留至 {0}，不会自动续订。",
   "Manage subscription": "管理订阅",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "你正处于首月，仅需 R$ 1.99。自 {0} 起，将开始按 {1} 套餐（R$ {2}）计费。",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "你正处于首月，仅需 R$ 1.99。自 {0} 起，将开始按 {1} 套餐（{2}）计费。",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "无法扣取订阅费用。请更新你的卡以避免中断。",
   "Update card": "更新卡片",
   "Subscription canceled due to a payment failure": "因支付失败订阅已取消",

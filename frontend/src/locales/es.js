@@ -30,7 +30,7 @@ export default {
   "Next charge": "Próximo cobro",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "Cancelación programada — tu acceso continúa hasta {0}, sin renovación automática.",
   "Manage subscription": "Gestionar suscripción",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "Estás en tu primer mes, por R$ 1,99. Desde {0}, comienza el cobro del plan {1} (R$ {2}).",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "Estás en tu primer mes, por R$ 1,99. Desde {0}, comienza el cobro del plan {1} ({2}).",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "No pudimos cobrar tu suscripción. Actualiza tu tarjeta para evitar interrupciones.",
   "Update card": "Actualizar tarjeta",
   "Subscription canceled due to a payment failure": "Suscripción cancelada por un fallo de pago",

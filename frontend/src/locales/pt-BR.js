@@ -34,7 +34,7 @@ export const PT_BR_OVERRIDES = {
   "Next charge": "Próxima cobrança",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "Cancelamento agendado — seu acesso continua até {0}, sem renovação automática.",
   "Manage subscription": "Gerenciar assinatura",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "Você está no primeiro mês, por R$ 1,99. A partir de {0}, a cobrança do plano {1} (R$ {2}) começa.",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "Você está no primeiro mês, por R$ 1,99. A partir de {0}, a cobrança do plano {1} ({2}) começa.",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "Não conseguimos cobrar sua assinatura. Atualize seu cartão para continuar sem interrupção.",
   "Update card": "Atualizar cartão",
   "Subscription canceled due to a payment failure": "Assinatura cancelada por falha de pagamento",

@@ -30,7 +30,7 @@ export default {
   "Next charge": "Következő terhelés",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "Lemondás ütemezve — a hozzáférésed {0}-ig megmarad, automatikus megújítás nélkül.",
   "Manage subscription": "Előfizetés kezelése",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "Az első hónapodban jársz, R$ 1,99-ért. {0}-tól kezdődik a(z) {1} csomag (R$ {2}) terhelése.",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "Az első hónapodban jársz, R$ 1,99-ért. {0}-tól kezdődik a(z) {1} csomag ({2}) terhelése.",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "Nem sikerült terhelni az előfizetésedet. Frissítsd a kártyádat a megszakítás elkerüléséhez.",
   "Update card": "Kártya frissítése",
   "Subscription canceled due to a payment failure": "Előfizetés lemondva sikertelen fizetés miatt",

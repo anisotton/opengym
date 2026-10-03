@@ -30,7 +30,7 @@ export default {
   "Next charge": "Sonraki tahsilat",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "İptal planlandı — erişiminiz otomatik yenileme olmadan {0} tarihine kadar devam eder.",
   "Manage subscription": "Aboneliği yönet",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "İlk ayınızdasınız, R$ 1,99 karşılığında. {0} tarihinden itibaren {1} planının (R$ {2}) faturalandırması başlar.",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "İlk ayınızdasınız, R$ 1,99 karşılığında. {0} tarihinden itibaren {1} planının ({2}) faturalandırması başlar.",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "Aboneliğinizi tahsil edemedik. Kesintiyi önlemek için kartınızı güncelleyin.",
   "Update card": "Kartı güncelle",
   "Subscription canceled due to a payment failure": "Ödeme hatası nedeniyle abonelik iptal edildi",

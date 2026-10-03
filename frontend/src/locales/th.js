@@ -30,7 +30,7 @@ export default {
   "Next charge": "การเรียกเก็บเงินครั้งถัดไป",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "กำหนดยกเลิกแล้ว — สิทธิ์การใช้งานของคุณจะดำเนินต่อจนถึง {0} โดยไม่ต่ออายุอัตโนมัติ",
   "Manage subscription": "จัดการการสมัครสมาชิก",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "คุณอยู่ในเดือนแรก ราคา R$ 1.99 ตั้งแต่ {0} การเรียกเก็บเงินสำหรับแพ็กเกจ {1} (R$ {2}) จะเริ่มต้น",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "คุณอยู่ในเดือนแรก ราคา R$ 1.99 ตั้งแต่ {0} การเรียกเก็บเงินสำหรับแพ็กเกจ {1} ({2}) จะเริ่มต้น",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "เราไม่สามารถเรียกเก็บเงินค่าสมัครสมาชิกของคุณได้ อัปเดตบัตรของคุณเพื่อหลีกเลี่ยงการหยุดชะงัก",
   "Update card": "อัปเดตบัตร",
   "Subscription canceled due to a payment failure": "ยกเลิกการสมัครสมาชิกเนื่องจากการชำระเงินล้มเหลว",

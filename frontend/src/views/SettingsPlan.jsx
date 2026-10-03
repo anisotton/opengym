@@ -136,7 +136,7 @@ export default function SettingsPlan() {
         </div>
         {billing.firstPeriod ? (
           <div className="small muted" style={{ marginBottom: 14 }}>
-            {t('You\'re in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.',
+            {t('You\'re in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.',
               dayOf(billing.nextChargeDate), planMeta(billing.plan)?.name() || billing.plan, fmtCentsBRL(billing.nextChargeAmount))}
           </div>
         ) : billing.cancelAtPeriodEnd ? (
