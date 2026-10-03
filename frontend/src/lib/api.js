@@ -343,3 +343,16 @@ export async function deviceLinkOptions(code) {
 export async function deviceLinkVerify(code, cid, credential, name) {
   return post('/api/device-link/verify', { code, cid, credential, name })
 }
+
+/* -------------------------------------------- billing (Stripe, ISO-1393/ISO-1395) ------------
+   The app never sees a card field: these three calls are the whole surface — read the status,
+   get a hosted Checkout URL for a plan, get a hosted Portal URL to manage or cancel. */
+export async function fetchBillingStatus() {
+  return api('/api/billing/status')
+}
+export async function billingCheckout(plan) {
+  return post('/api/billing/checkout', { plan })
+}
+export async function billingPortal() {
+  return post('/api/billing/portal', {})
+}

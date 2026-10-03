@@ -36,6 +36,7 @@ export default function Settings() {
   const nav = useNavigate()
   const S = useStore(s => s.S)
   const user = useStore(s => s.user)
+  const billing = useStore(s => s.billing)
   const coachLocal = useStore(s => s.coachLocal)
   // Name-and-password sign-in, where the instance offers it (#118).
   const config = useStore(s => s.config)
@@ -304,6 +305,14 @@ export default function Settings() {
           onClick={() => window.open(REPO, '_blank', 'noopener')} />
       </> : user ? <>
         {user.admin && <Row icon="wrench" iconTint="var(--indigo)" title={t('Admin dashboard')} accessory="chevron" onClick={() => nav('/admin')} />}
+        {/* Hidden until the first GET /api/billing/status answers — a self-hosted instance with no
+            STRIPE_* configured gets {enabled:false} right away and never shows this row at all
+            (ISO-1395), same as every other Stripe-gated piece of this phase. */}
+        {billing?.enabled && <Row icon="crown" iconTint="var(--yellow)" title={t('Plan')}
+          subtitle={billing.status === 'active' || billing.status === 'past_due'
+            ? ({ monthly: t('Monthly'), quarterly: t('Quarterly'), yearly: t('Yearly') })[billing.plan] || null
+            : t("Your subscription isn't active — you can view and export your history, but new workouts won't be logged.")}
+          accessory="chevron" onClick={() => nav('/configuracoes')} />}
         <PasskeysRow state={passkeys.st} changed={credsChanged} />
         <DeviceLinkRow state={passkeys.st} />
         {/* ISO-1397's own POST /api/account/email is a different handler, registered only while

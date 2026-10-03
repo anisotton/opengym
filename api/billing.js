@@ -326,7 +326,11 @@ export function nextChargeAmountCents(sub) {
 // The exact app-facing contract from ISO-1392's spec (item 1 / "Ponto em aberto"): `status` is
 // Stripe's own (never `trialing`), `firstPeriod` carries what `status` alone cannot say, and
 // `nextChargeAmount` during a first period is the UPCOMING full-plan charge, not the R$1,99
-// already on the subscription's current item.
+// already on the subscription's current item. `lastInvoiceStatus` (ISO-1395, Sentinel review of
+// SettingsPlan.jsx) is what tells a `canceled` subscription apart from one Stripe's own retries
+// gave up on — `invoice.payment_failed` sets it to 'failed' and nothing else clears it before a
+// `customer.subscription.deleted` lands, so a `canceled`+`'failed'` pair means the cancellation
+// came from a payment failure, not someone cancelling on purpose.
 export async function billingStatus(pool, userId) {
   const sub = await getLatestSubscription(pool, userId);
   if (!sub) return { enabled: true, status: 'none', active: false, firstPeriod: false };
@@ -339,6 +343,7 @@ export async function billingStatus(pool, userId) {
     nextChargeDate: sub.currentPeriodEnd || null,
     nextChargeAmount: nextChargeAmountCents(sub),
     cancelAtPeriodEnd: !!sub.cancelAtPeriodEnd,
-    firstFullCharge: sub.firstFullCharge || null
+    firstFullCharge: sub.firstFullCharge || null,
+    lastInvoiceStatus: sub.lastInvoiceStatus || null
   };
 }

@@ -70,6 +70,18 @@ export function connectionView(sync, { mobile = MOBILE, online = isOnline() } = 
     // nothing syncs until it is answered, and "retry" — Sync now — asks it again.
     case 'held':
       return { tone: 'wait', icon: 'reset', line: t('Waiting for your answer about this device’s workouts'), banner: t('Nothing syncs until you say whether this device’s workouts go into your profile — tap to answer.'), action: 'retry', label: null }
+    // A 402 from the server, not a connection problem — stays 'blocked' whether or not the device
+    // is online (ISO-1392 item 5: known read-only state holds with no network). Unlike every other
+    // branch here, "tap to retry" does not clear this: syncing again before subscribing would just
+    // answer the same 402 — so this is the one status with no retry action, only the way out.
+    case 'blocked':
+      return {
+        tone: 'bad', icon: 'lock', action: 'plan',
+        line: t('Read-only — subscription required'),
+        banner: sync.pending
+          ? t("This session was saved on this device, but couldn't sync because your subscription isn't active. Subscribe to sync it.")
+          : t("Your subscription isn't active — you can view and export your history, but new workouts won't be logged."),
+      }
     case 'offline':
       if (online) return {
         tone: 'off', icon: 'cloudSlash', action: 'retry',
@@ -101,7 +113,7 @@ export function connectionView(sync, { mobile = MOBILE, online = isOnline() } = 
 
 // The word on the indicator's button: the view's own `label` when it has one (null for none),
 // else the action's.
-export const actionLabel = view => (view.label !== undefined ? view.label : ({ retry: t('Try again'), pair: t('Pair again'), signin: t('Sign in'), connect: t('Connect') })[view.action] || null)
+export const actionLabel = view => (view.label !== undefined ? view.label : ({ retry: t('Try again'), pair: t('Pair again'), signin: t('Sign in'), connect: t('Connect'), plan: t('View plans') })[view.action] || null)
 
 // "Sync now": whatever is waiting goes, the server's copy is checked, and the answer is said.
 export async function syncNowWithToast() {
