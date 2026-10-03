@@ -89,6 +89,15 @@ export function clearUser(uid) {
   invalidateCohort();
 }
 
+/** Full account deletion (server.js's deleteAccount, ISO-1447) — not consent revoked, the account
+ *  itself is gone for good, and its uid will never come back. clearUser's one exception (today's
+ *  job count survives, to stop someone gaming the daily cap by "forgetting" mid-day) has nothing
+ *  left to protect here, so the file it may have just rewritten is removed again right after. */
+export function purgeUser(uid) {
+  clearUser(uid);
+  try { fs.unlinkSync(userFile(uid)); } catch { /* already gone */ }
+}
+
 /** Every profile with a users row — the population a cohort is drawn from. */
 export async function listUserIds() {
   // setPool runs after connectAndMigrate, but cadence.js's own tick is registered at module

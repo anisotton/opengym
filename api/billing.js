@@ -19,8 +19,9 @@
  */
 import Stripe from 'stripe';
 import {
-  setStripeCustomerId, getUserIdByStripeCustomer, hasEverSubscribed,
-  upsertSubscription, getSubscriptionById, getLatestSubscription, getSubscriptionsDueForFirstPeriodNotice
+  setStripeCustomerId, getUserIdByStripeCustomer, hasEverSubscribed, getUserById,
+  upsertSubscription, getSubscriptionById, getLatestSubscription, getSubscriptionsDueForFirstPeriodNotice,
+  getStripeCleanupDue, deleteStripeCleanup, bumpStripeCleanupFailure
 } from './store.js';
 
 const STRIPE_API_VERSION = '2026-08-26.dahlia';
@@ -92,10 +93,18 @@ export async function hasActiveAccess(pool, userId) {
 // users.stripe_customer_id (store.js, set once at that account's first checkout) is unique both
 // ways — so this one lookup works for every event type below without depending on `metadata`
 // surviving the particular kind of object a given event happens to wrap.
+// ISO-1447: a deleted account's row is gone, but a webhook event naming it (its own metadata, or
+// a customer id that no longer resolves to anyone) can still arrive afterwards — Stripe retries,
+// or an event queued before the delete lands after it. Every candidate is checked against `users`
+// before being handed back, not just trusted off the payload: metadata.userId in particular is
+// never re-validated by Stripe itself, and handing it to upsertSubscription for an id nothing
+// references any more would throw on that table's own FK instead of the plain no-op this should
+// be (and, had the FK not caught it, would have resurrected a subscription row for an account that
+// no longer exists).
 async function resolveUserId(pool, obj) {
-  if (obj.metadata?.userId) return obj.metadata.userId;
-  if (!obj.customer) return null;
-  return getUserIdByStripeCustomer(pool, obj.customer);
+  const candidate = obj.metadata?.userId || (obj.customer ? await getUserIdByStripeCustomer(pool, obj.customer) : null);
+  if (!candidate) return null;
+  return (await getUserById(pool, candidate)) ? candidate : null;
 }
 
 const toIso = unixSeconds => (unixSeconds ? new Date(unixSeconds * 1000).toISOString() : null);
@@ -340,10 +349,68 @@ export async function billingStatus(pool, userId) {
     active: canWrite(sub),
     plan: sub.plan || null,
     firstPeriod: !!sub.firstPeriod,
+    since: sub.createdAt || null,
     nextChargeDate: sub.currentPeriodEnd || null,
     nextChargeAmount: nextChargeAmountCents(sub),
     cancelAtPeriodEnd: !!sub.cancelAtPeriodEnd,
     firstFullCharge: sub.firstFullCharge || null,
     lastInvoiceStatus: sub.lastInvoiceStatus || null
   };
+}
+
+/* ---------- account deletion: the Stripe side (ISO-1447, Phase 4 — LGPD) ----------
+ * deleteAccount (server.js) queues a `stripe_cleanup` row (store.js) in the same transaction as
+ * the user row's own delete, then calls attemptStripeCleanup once, right away, outside that
+ * transaction — success removes the row on the spot; a failure (Stripe down, a transient error)
+ * leaves it for tickStripeCleanup's retry. Either way the local deletion has already committed:
+ * Stripe is cleaned up best-effort, never a reason the account delete itself fails or half-applies.
+ */
+
+// Cancels every subscription this account had that was still live (immediately — never
+// cancel_at_period_end, which would leave it billing someone no longer there) and the Stripe
+// customer itself. A Subscription Schedule outlives the subscription it is driving (ISO-1393's
+// own two-phase schedules), so it is released first — cancelling the subscription alone would
+// leave the schedule behind, driving a subscription that no longer exists. "Already gone" (a
+// previous attempt that got far enough, or an operator who cleaned it up by hand in the Stripe
+// dashboard) is treated as success, not an error to retry forever on.
+async function cleanupStripeCustomer(stripe, { customerId, subscriptionIds }) {
+  const missing = e => e?.code === 'resource_missing' || e?.statusCode === 404;
+  for (const subId of subscriptionIds) {
+    try {
+      const subscription = await stripe.subscriptions.retrieve(subId);
+      if (subscription.schedule) {
+        // subscriptionSchedules.cancel cancels the schedule AND its subscription in one call —
+        // calling subscriptions.cancel next would hit a subscription Stripe already considers
+        // canceled (a 400, not the 404/resource_missing `missing` treats as "already gone").
+        const scheduleId = typeof subscription.schedule === 'string' ? subscription.schedule : subscription.schedule.id;
+        await stripe.subscriptionSchedules.cancel(scheduleId);
+      } else {
+        await stripe.subscriptions.cancel(subId);
+      }
+    } catch (e) { if (!missing(e)) throw e; }
+  }
+  try { await stripe.customers.del(customerId); }
+  catch (e) { if (!missing(e)) throw e; }
+}
+
+// One pending cleanup. Exported so deleteAccount (server.js) can try the row it just queued right
+// after its own transaction commits, without waiting for the next tick — and so tickStripeCleanup
+// below and this are the same code path either way.
+export async function attemptStripeCleanup(pool, row) {
+  await cleanupStripeCustomer(getStripe(), row);
+  await deleteStripeCleanup(pool, row.id);
+}
+
+// The periodic retry (server.js registers this on an interval, same shape as
+// tickFirstPeriodNotices above) — every pending cleanup whose backoff has elapsed
+// (getStripeCleanupDue), oldest first. A failure here is exactly what bumpStripeCleanupFailure's
+// backoff is for: logged, not thrown, so one stuck row never stops the rest of the tick.
+export async function tickStripeCleanup(pool) {
+  for (const row of await getStripeCleanupDue(pool)) {
+    try { await attemptStripeCleanup(pool, row); }
+    catch (e) {
+      console.error('billing: stripe cleanup failed for customer', row.customerId, e.message);
+      await bumpStripeCleanupFailure(pool, row.id, e.message);
+    }
+  }
 }

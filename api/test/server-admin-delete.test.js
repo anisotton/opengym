@@ -75,6 +75,16 @@ async function startServer(t, { twoAdmins = false } = {}) {
 test('removes the account and everything attached to it', async t => {
   const h = await startServer(t);
   assert.ok(await h.stateRow(VICTIM));
+  // ISO-1447 moved this route onto the same deleteAccount helper DELETE /api/account uses — disk
+  // cleanup (uploads, the Coach credential and per-profile record) included, not just the rows
+  // this test already checked before that.
+  const uploadDir = path.join(h.dataDir, 'uploads', VICTIM);
+  fs.mkdirSync(uploadDir, { recursive: true });
+  fs.writeFileSync(path.join(uploadDir, 'f'.repeat(64) + '.webp'), 'x');
+  fs.writeFileSync(path.join(h.dataDir, `coach-auth-${VICTIM}.json`), JSON.stringify({ k: 1 }));
+  fs.mkdirSync(path.join(h.dataDir, 'coach'), { recursive: true });
+  fs.writeFileSync(path.join(h.dataDir, 'coach', `${VICTIM}.json`), JSON.stringify({ daily: null, current: null, pending: null, history: [] }));
+
   const res = await h.del(VICTIM);
   assert.equal(res.status, 200);
 
@@ -86,6 +96,9 @@ test('removes the account and everything attached to it', async t => {
   // an invite-only instance.
   const [invite] = await h.invites();
   assert.equal(invite.used_by, VICTIM);
+  assert.equal(fs.existsSync(uploadDir), false, 'uploaded files are gone');
+  assert.equal(fs.existsSync(path.join(h.dataDir, `coach-auth-${VICTIM}.json`)), false, 'the Coach credential is gone');
+  assert.equal(fs.existsSync(path.join(h.dataDir, 'coach', `${VICTIM}.json`)), false, 'the Coach per-profile record is gone');
   assert.equal(h.stackFrames(), 0, `no stack traces:\n${h.log}`);
 });
 
