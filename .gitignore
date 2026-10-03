@@ -7,6 +7,7 @@ data/
 
 # Local config
 .env
+*.bak-*
 
 # Build output / deps
 frontend/dist/

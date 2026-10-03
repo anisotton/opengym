@@ -40,12 +40,17 @@ import {
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
   removePasskey, touchPasskeyUse, upsertPasskey,
-  createEmailToken, consumeEmailToken
+  createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent
 } from './store.js';
 import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
 import { sendMail } from './mail.js';
 import { renderVerifyEmail } from './mail-templates/verify-email.js';
 import { renderRecoverEmail } from './mail-templates/recover-access.js';
+import { renderPreChargeNotice } from './mail-templates/pre-charge-notice.js';
+import {
+  BILLING_ON, getStripe, hasActiveAccess, createCheckoutSession, createPortalSession,
+  billingStatus, applyStripeEvent, setFirstPeriodNoticeHook, tickFirstPeriodNotices, nextChargeAmountCents
+} from './billing.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -717,6 +722,22 @@ function readBody(req) {
     // A browser hanging up mid-body — which is what pagehide does to an in-flight sync — is not
     // the caller getting a request wrong, it is nobody being left to answer. Marked so the
     // catch-all at the bottom says one line instead of a stack trace and a 500 into a dead socket.
+    req.on('error', e => reject(Object.assign(e, { clientGone: true })));
+  });
+}
+// Same shape as readBody, minus the JSON.parse: POST /api/billing/webhook is the one route that
+// needs the exact bytes Stripe signed, not the object they parse to — stripe.webhooks.constructEvent
+// verifies the signature against this Buffer itself, and parsing first (even just to re-stringify)
+// risks disagreeing with Stripe's own serialization on whitespace or key order.
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', d => {
+      size += d.length;
+      if (size > MAX_BODY) { req.destroy(); reject(new HttpError(413, 'body too large')); return; }
+      chunks.push(d);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', e => reject(Object.assign(e, { clientGone: true })));
   });
 }
@@ -2397,6 +2418,13 @@ const routes = {
   'PUT /api/data': async (req, res) => {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
+    // Billing gate (ISO-1393): read and export stay open either way (GET /api/data, and the
+    // client's own export, never call this route) — only a new write is refused, and nothing
+    // already stored is touched. Off entirely when BILLING_ON is off, same as every other
+    // env-gated piece: an instance that never set the Stripe variables writes exactly as before.
+    if (BILLING_ON && !(await hasActiveAccess(pool, user.id))) {
+      return json(res, 402, { error: 'an active subscription is required to save changes', code: 'billing' });
+    }
     const body = await readBody(req);
     if (!body.state || typeof body.state !== 'object') return json(res, 400, { error: 'state required' });
     // An object with nothing of the profile in it empties the document with the counter left
@@ -2723,6 +2751,76 @@ const routes = {
   // of a cycle. Every one of them is inert while the feature is unconfigured.
   ...coachRoutes({ json, readBody, readSession, requireAdmin }),
 
+  /* ---------- billing (Stripe, Phase 3 — ISO-1393) ---------- */
+  // Every route here is a 404 while BILLING_ON is off (no STRIPE_API_KEY/STRIPE_WEBHOOK_SECRET
+  // set) — same shape as the Coach and media routes: an instance that never configures Stripe is
+  // byte-for-byte the self-hosted app it was before this phase. GET /api/billing/status is the one
+  // exception, answering `{enabled:false}` instead, so a signed-in client can tell "no billing on
+  // this instance" apart from "no subscription yet" without a 404 on every poll.
+  'GET /api/billing/status': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    if (!BILLING_ON) return json(res, 200, { enabled: false });
+    json(res, 200, await billingStatus(pool, user.id));
+  },
+  'POST /api/billing/checkout': async (req, res) => {
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    // Issue rule: checkout requires a verified e-mail (Phase 2) — the trial_will_end and renewal
+    // notices this phase sends have nowhere to go otherwise.
+    if (!user.emailVerifiedAt) return json(res, 403, { error: 'e-mail not verified', code: 'email-unverified' });
+    const body = await readBody(req);
+    const result = await createCheckoutSession(pool, user, text(body.plan), {
+      successUrl: `${APP_URL}/#/configuracoes?billing=sucesso`,
+      cancelUrl: `${APP_URL}/#/configuracoes?billing=cancelado`
+    });
+    if (result.error) return json(res, 400, { error: result.error, code: 'invalid-plan' });
+    audit(req, 'billing.checkout', { user, msg: text(body.plan) });
+    json(res, 200, { url: result.url });
+  },
+  'POST /api/billing/portal': async (req, res) => {
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const result = await createPortalSession(pool, user, { returnUrl: `${APP_URL}/#/configuracoes` });
+    if (result.error) return json(res, 400, { error: result.error, code: 'no-customer' });
+    json(res, 200, { url: result.url });
+  },
+  // No session and no CSRF check: Stripe's own server-to-server POST carries no cookie and no
+  // Origin header, which csrfOk already treats the same way curl or a monitoring check would (not
+  // a browser, so nothing to protect against). The signature check below is this route's real
+  // authentication. Raw body, not readBody — see readRawBody's own comment for why.
+  'POST /api/billing/webhook': async (req, res) => {
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const sig = req.headers['stripe-signature'];
+    const raw = await readRawBody(req);
+    let event;
+    try { event = getStripe().webhooks.constructEvent(raw, sig, process.env.STRIPE_WEBHOOK_SECRET); }
+    catch (e) { return json(res, 400, { error: 'invalid signature' }); }
+    // claimStripeEvent is the atomic single-use claim (store.js) — a Stripe retry or `stripe
+    // listen` redelivering the same event finds its id already a row and applyStripeEvent never
+    // runs twice for it. But the claim landing is not the same as the event's effect actually
+    // having happened: applyStripeEvent's 'customer.subscription.created' case can call out to
+    // Stripe itself (converting a first-ever subscription into a Subscription Schedule), and that
+    // is the one thing in this whole route that can fail for a reason that has nothing to do with
+    // our own data. A claim left in place after that throws would mean this exact event.id reads
+    // back as "already handled" forever — Stripe's own retry would find nothing left to do and the
+    // account would be stuck paying the R$1,99 Price every cycle, with no automatic way out. So an
+    // apply that throws undoes its own claim before the error reaches the catch-all below (which
+    // answers 500, and a 500 is what tells Stripe to retry this delivery) — the next attempt gets a
+    // genuine second try, not a no-op.
+    const claimed = await claimStripeEvent(pool, { id: event.id, type: event.type, data: event.data.object });
+    if (claimed) {
+      try { await applyStripeEvent(pool, event); }
+      catch (e) {
+        await unclaimStripeEvent(pool, event.id).catch(e2 => console.error('billing: could not unclaim', event.id, e2.message));
+        throw e;
+      }
+    }
+    json(res, 200, { ok: true, duplicate: !claimed });
+  },
+
   /* ---------- photos & videos ---------- */
   // Absent, not refusing, when MEDIA_UPLOADS=0: a 404 is what a server from before the feature
   // answers, and the client already treats that as "this server does not store them".
@@ -2746,6 +2844,33 @@ coachJobs.setProposalHook((uid, pending) => {
 });
 startCadence({ users: () => usersCache, userNow });
 startWarmup();
+
+/* ---------- billing: first-period-ending notice (ISO-1393) ---------- */
+// There is no Stripe trial in this design (ISO-1392: the R$1,99 month is a sub-state of `active`,
+// never `trialing`), so there is no `trial_will_end` webhook to hook the warning e-mail off —
+// tickFirstPeriodNotices (billing.js) checks on our own clock instead, hourly, which is plenty
+// granular against a 3-day window. Off entirely when BILLING_ON is off: an instance that never
+// configured Stripe can never have a subscription row for this to find anyway.
+// renderPreChargeNotice is ISO-1397's own catalog entry, written for exactly this moment ("nothing
+// calls this yet ... Phase 3 is what sends it") — reused rather than duplicated.
+setFirstPeriodNoticeHook(async (uid, sub) => {
+  const user = await getUserById(pool, uid);
+  if (!user?.email) return; // nothing mailed an account with no address to mail
+  const cents = nextChargeAmountCents(sub);
+  const amount = cents != null
+    ? (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+    : 'o valor do seu plano';
+  const d = sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
+  const billingDate = d
+    ? `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`
+    : 'em breve';
+  const { subject, text: body, html } = renderPreChargeNotice({ name: user.name, amount, billingDate });
+  try { await sendMail({ to: user.email, subject, text: body, html }); }
+  catch (e) { console.error('mail: could not send pre-charge notice e-mail', e.message); }
+});
+if (BILLING_ON) setInterval(() => {
+  tickFirstPeriodNotices(pool).catch(e => console.error('billing: first-period notice tick failed', e));
+}, 60 * 60000).unref();
 
 // node's requestTimeout is one number for every route, and it is half an hour (below) for the
 // sake of one: a video uploaded over a slow uplink. Every other request keeps node's old five

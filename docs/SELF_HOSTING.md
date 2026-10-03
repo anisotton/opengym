@@ -611,7 +611,71 @@ into PostgreSQL ahead of upgrading, so there's no downtime and no rush to run it
 never writes `db.json` again after this phase, and reads it only once, at the next boot, so
 there's nothing left to "switch on": upgrading is the switch.
 
-## 7. Notifications
+## 7. Billing (Stripe, optional)
+
+Off until you set both `STRIPE_API_KEY` and `STRIPE_WEBHOOK_SECRET` (`.env.example`) — without
+them the `billing` routes are a 404, `GET /api/billing/status` answers `{"enabled":false}`, and
+`PUT /api/data` never refuses a write. On, it adds three plans billed monthly, quarterly or
+yearly, no free trial: the first month is R$ 1,99 on any plan, once per account (cancelling and
+coming back pays the full rate). There is no Stripe trial anywhere in this: a first-ever Checkout
+sells only the recurring intro Price for one cycle — the subscription is `active` from its first
+invoice — and the webhook converts it into a Subscription Schedule that moves to the chosen plan's
+own Price after that cycle, so the only statuses an account ever reports are `active`, `past_due`
+(Stripe still retrying a failed renewal) or `canceled`/`unpaid`, never `trialing`.
+
+1. **Create the Product and Prices.** `cd api && STRIPE_API_KEY=rk_... npm run stripe:setup`
+   creates one Product and four Prices (the three plans plus the R$ 1,99 intro) in whichever
+   Stripe account the key points at, and prints the `STRIPE_PRICE_*` lines to add to `.env`.
+   Idempotent — safe to run again later, including against a live key once you're ready to
+   launch; it reuses the Product and skips a Price that already matches.
+2. **Pick a restricted key**, never the secret `sk_` key: Dashboard → Developers → API keys →
+   Create restricted key, with write access to Checkout Sessions, Billing Portal Sessions,
+   Customers, Subscriptions and Webhook Endpoints, read access to Invoices. Set it as
+   `STRIPE_API_KEY`.
+3. **Local development:** install the [Stripe CLI](https://docs.stripe.com/stripe-cli), then
+   ```bash
+   stripe listen --forward-to localhost:${PORT:-3000}/api/billing/webhook
+   ```
+   which prints a `whsec_...` value — set that as `STRIPE_WEBHOOK_SECRET`. Leave this running
+   while you exercise checkout/cancel/renewal locally; `stripe trigger` can simulate most events,
+   and a test clock (Dashboard → Developers → Test clocks) is the only way to actually reach a
+   renewal without waiting a real billing period.
+4. **Production:** a webhook endpoint in the Dashboard pointed at
+   `https://your-domain/api/billing/webhook`, with its own signing secret as
+   `STRIPE_WEBHOOK_SECRET`, and live-mode equivalents of the key and the four Price ids.
+
+What each route does:
+
+- `POST /api/billing/checkout` — requires a signed-in, e-mail-verified profile (Phase 2) and a
+  `plan` (`monthly`/`quarterly`/`yearly`) in the body; returns the Checkout Session's hosted URL.
+- `POST /api/billing/portal` — the Stripe Customer Portal, for changing the plan, the card on file,
+  or cancelling. Cancelling there is always "at period end", no proration: access continues until
+  `current_period_end`, and the account only goes read-only once that date passes and the
+  subscription's `deleted` webhook actually lands.
+- `GET /api/billing/status` — `status`, `plan`, `firstPeriod` (still on the R$ 1,99 cycle),
+  `nextChargeDate`/`nextChargeAmount` (the upcoming invoice — the full plan price even while
+  `firstPeriod` is true), `cancelAtPeriodEnd`, and `firstFullCharge` (date and amount) once the
+  first full-price invoice has landed.
+- `POST /api/billing/webhook` — verifies `Stripe-Signature` against the raw body with
+  `STRIPE_WEBHOOK_SECRET` and is idempotent by `event.id`, so a Stripe retry (or the same event
+  forwarded twice by `stripe listen`) is acknowledged without being applied again.
+
+A failed renewal (`invoice.payment_failed`) moves the account to `past_due` but never takes access
+away by itself — `past_due` still writes; Stripe retries automatically on its own schedule before
+it eventually cancels the subscription. Three days before the schedule's phase change turns the
+R$ 1,99 month into a full-price one, `customer.subscription.trial_will_end` sends the account a
+warning e-mail through the same mail driver as account confirmation (section 4) — deliberately not
+Stripe's own trial e-mails, which don't fire in the sandbox at all (and don't apply here regardless,
+since there is no Stripe trial in this design — see above).
+
+Whether an account may write at all is one function, `canWrite(subscription)` in `api/billing.js`:
+`active` or `past_due`, nothing else. Everything that gates on a subscription — the 402 on
+`PUT /api/data`, `GET /api/billing/status`'s own `active` field — reads through that one place.
+
+Forms of payment are configured once in the Dashboard (Settings → Payment methods), never in
+code — Checkout never names them, so nothing here needs changing to add or remove one.
+
+## 8. Notifications
 
 openGym can push two kinds of alert to your phone/desktop, even when the app isn't open:
 rest-timer-over, and a reminder on days you have a workout planned but haven't logged one yet.
@@ -641,7 +705,7 @@ Push services like a contact address for whoever runs the server, in case they e
 you about your pushes. openGym sends your `ORIGIN` by default; set `VAPID_SUBJECT=mailto:you@example.com`
 in `.env` if you would rather they had an inbox.
 
-## 8. Updating
+## 9. Updating
 
 Running prebuilt images:
 
@@ -783,7 +847,7 @@ browser (see section 2).
 | Port 8080 already used | Set `WEB_PORT=9090` in `.env` (and update `ORIGIN` for local testing). |
 | A photo or video will not upload ("refused as too large", or it stops partway) | A proxy in front caps the body or cuts the request off: see [Photos and videos](#photos-and-videos-of-custom-exercises) for the body size and timeouts it needs. |
 | No "Notifications" option in Settings | Requires a signed-in profile and HTTPS (or `localhost`) — guest mode and plain HTTP over LAN can't subscribe. |
-| Day reminder fires at the wrong time | Toggle it off and on in Settings so it re-detects your browser's timezone (also happens automatically on every app load — see section 7). |
+| Day reminder fires at the wrong time | Toggle it off and on in Settings so it re-detects your browser's timezone (also happens automatically on every app load — see section 8). |
 | Notifications switch is off although I turned it on | The server no longer holds the subscription (a pruned dead endpoint, regenerated `vapid.json`); the app re-registers on the next start, or switch it on again. On iOS, push only works from the Home Screen icon. |
 | Want to reset a stuck login | Delete the cookie in your browser; sessions are just signed cookies. |
 | The app says "Your server no longer accepts this phone" (or "this browser") | The server answered 401. Usual causes: "sign out everywhere" was used, the account was disabled, `data/secret` was lost or replaced when the stack was moved (every session and pairing dies with it), or a proxy with its own login rejects requests that carry `Authorization: Bearer`. Nothing on the device is lost: pair the phone again (browser: Settings → "Pair the mobile app"), or sign in again in the browser, and what the device kept is merged into the account. |

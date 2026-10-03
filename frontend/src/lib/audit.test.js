@@ -35,10 +35,11 @@ describe('auditCat', () => {
   it('survives a missing event name', () => {
     expect(auditCat(undefined)).toBe('')
   })
-  // `media` is the third: the photo and video clean-up and throttle. It has no chip of its own —
-  // those rows show under All, and a throttle under Failed.
-  it('puts every known event in auth, admin or media', () => {
-    expect([...new Set(EVENTS.map(auditCat))].sort()).toEqual(['admin', 'auth', 'media'])
+  // `media` and `billing` are the third and fourth: media's clean-up and throttle, billing's
+  // checkout start (ISO-1393). Neither has a chip of its own — those rows show under All, and a
+  // throttle under Failed.
+  it('puts every known event in auth, admin, billing or media', () => {
+    expect([...new Set(EVENTS.map(auditCat))].sort()).toEqual(['admin', 'auth', 'billing', 'media'])
   })
 })
 
