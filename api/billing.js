@@ -33,7 +33,18 @@ export const BILLING_ON = !!(process.env.STRIPE_API_KEY && process.env.STRIPE_WE
 
 let stripeClient = null;
 export function getStripe() {
-  if (!stripeClient) stripeClient = new Stripe(process.env.STRIPE_API_KEY, { apiVersion: STRIPE_API_VERSION });
+  if (!stripeClient) {
+    const opts = { apiVersion: STRIPE_API_VERSION };
+    // Test-only seam (never set outside the test suite): points the SDK at a local mock instead
+    // of api.stripe.com, so billing.test.js can assert on the exact request convertToSchedule
+    // sends without a real network call or a mocking dependency.
+    if (process.env.STRIPE_API_HOST) {
+      opts.host = process.env.STRIPE_API_HOST;
+      opts.protocol = 'http';
+      if (process.env.STRIPE_API_PORT) opts.port = Number(process.env.STRIPE_API_PORT);
+    }
+    stripeClient = new Stripe(process.env.STRIPE_API_KEY, opts);
+  }
   return stripeClient;
 }
 
@@ -125,10 +136,14 @@ export async function tickFirstPeriodNotices(pool) {
 async function convertToSchedule(stripe, subscriptionId, targetPriceId) {
   const schedule = await stripe.subscriptionSchedules.create({ from_subscription: subscriptionId });
   const firstPhase = schedule.phases[0];
+  // `iterations: 1` is rejected by the account's pinned API version (2026-08-26.dahlia) —
+  // `parameter_unknown` on `phases[iterations]`, confirmed against the real sandbox. `end_date`
+  // (the end of the cycle already in progress, which `create({ from_subscription })` already
+  // computed for us) is the version-correct way to say "one more cycle at this price".
   await stripe.subscriptionSchedules.update(schedule.id, {
     end_behavior: 'release',
     phases: [
-      { items: firstPhase.items.map(i => ({ price: i.price })), iterations: 1, start_date: firstPhase.start_date },
+      { items: firstPhase.items.map(i => ({ price: i.price })), end_date: firstPhase.end_date, start_date: firstPhase.start_date },
       { items: [{ price: targetPriceId }] }
     ]
   });
@@ -176,7 +191,11 @@ export async function applyStripeEvent(pool, event) {
         // first period" apart from "never had one" (a returning subscriber) regardless of which of
         // the two events happens to arrive first.
         ...(firstPeriod ? { hadFirstPeriod: true } : {}),
-        currentPeriodEnd: toIso(obj.current_period_end),
+        // `current_period_end` moved off the subscription object itself under this account's API
+        // version (Stripe's "flexible billing" shape) — it only exists per-item now. Fallback kept
+        // for the pre-dahlia shape (older webhook replays, or an instance pinned to an earlier
+        // version), confirmed against the real sandbox payload.
+        currentPeriodEnd: toIso(obj.current_period_end ?? obj.items?.data?.[0]?.current_period_end),
         cancelAtPeriodEnd: !!obj.cancel_at_period_end
       });
       break;
@@ -196,7 +215,10 @@ export async function applyStripeEvent(pool, event) {
     // own line price, not off `billing_reason`: the schedule's phase-change update and this event
     // can land in either order, but the invoice itself always says which Price it was actually for.
     case 'invoice.paid': {
-      const subId = obj.subscription;
+      // Same API-version move as current_period_end above: the invoice's subscription id moved
+      // under `parent.subscription_details.subscription` — the root-level field is gone. Fallback
+      // kept for the pre-dahlia shape.
+      const subId = obj.subscription ?? obj.parent?.subscription_details?.subscription;
       if (!subId) break;
       const existing = await getSubscriptionById(pool, subId);
       const userId = existing?.userId || await resolveUserId(pool, obj);
@@ -220,7 +242,7 @@ export async function applyStripeEvent(pool, event) {
     // the 402 gate and the UI banner read moves the instant the failure is known, not only once
     // that separate event (if it arrives at all for this account's dunning settings) lands.
     case 'invoice.payment_failed': {
-      const subId = obj.subscription;
+      const subId = obj.subscription ?? obj.parent?.subscription_details?.subscription;
       if (!subId) break;
       const existing = await getSubscriptionById(pool, subId);
       const userId = existing?.userId || await resolveUserId(pool, obj);
