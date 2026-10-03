@@ -30,7 +30,7 @@ export default {
   "Next charge": "다음 결제",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "해지 예약됨 — {0}까지 이용 가능하며 자동 갱신되지 않습니다.",
   "Manage subscription": "구독 관리",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "첫 달 이용 중이며 R$ 1.99입니다. {0}부터 {1} 요금제(R$ {2}) 결제가 시작됩니다.",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "첫 달 이용 중이며 R$ 1.99입니다. {0}부터 {1} 요금제({2}) 결제가 시작됩니다.",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "구독 결제에 실패했습니다. 중단을 피하려면 카드를 업데이트하세요.",
   "Update card": "카드 업데이트",
   "Subscription canceled due to a payment failure": "결제 실패로 구독이 취소되었습니다",

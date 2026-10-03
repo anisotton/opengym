@@ -30,7 +30,7 @@ export default {
   "Next charge": "Наступне списання",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "Заплановано скасування — доступ триватиме до {0}, без автопродовження.",
   "Manage subscription": "Керувати підпискою",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "Ви у першому місяці, за R$ 1,99. Із {0} розпочнеться стягнення за планом {1} (R$ {2}).",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "Ви у першому місяці, за R$ 1,99. Із {0} розпочнеться стягнення за планом {1} ({2}).",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "Не вдалося стягнути оплату за підписку. Оновіть картку, щоб уникнути переривання доступу.",
   "Update card": "Оновити картку",
   "Subscription canceled due to a payment failure": "Підписку скасовано через помилку оплати",

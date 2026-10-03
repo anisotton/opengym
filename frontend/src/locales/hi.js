@@ -30,7 +30,7 @@ export default {
   "Next charge": "अगला शुल्क",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "रद्द करना निर्धारित — आपकी पहुँच {0} तक जारी रहेगी, बिना ऑटो-रिन्यूअल के।",
   "Manage subscription": "सदस्यता प्रबंधित करें",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "आप अपने पहले महीने में हैं, R$ 1.99 पर। {0} से, {1} प्लान (R$ {2}) की बिलिंग शुरू होगी।",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "आप अपने पहले महीने में हैं, R$ 1.99 पर। {0} से, {1} प्लान ({2}) की बिलिंग शुरू होगी।",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "हम आपकी सदस्यता का शुल्क नहीं ले सके। रुकावट से बचने के लिए अपना कार्ड अपडेट करें।",
   "Update card": "कार्ड अपडेट करें",
   "Subscription canceled due to a payment failure": "भुगतान विफल होने के कारण सदस्यता रद्द कर दी गई",

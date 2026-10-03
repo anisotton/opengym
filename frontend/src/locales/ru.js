@@ -30,7 +30,7 @@ export default {
   "Next charge": "Следующее списание",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "Отмена запланирована — доступ сохранится до {0}, без автопродления.",
   "Manage subscription": "Управление подпиской",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan (R$ {2}) begins.": "Вы в первом месяце, за R$ 1,99. С {0} начнётся списание по тарифу {1} (R$ {2}).",
+  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "Вы в первом месяце, за R$ 1,99. С {0} начнётся списание по тарифу {1} ({2}).",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "Не удалось списать оплату за подписку. Обновите карту, чтобы избежать прерывания доступа.",
   "Update card": "Обновить карту",
   "Subscription canceled due to a payment failure": "Подписка отменена из-за ошибки платежа",
