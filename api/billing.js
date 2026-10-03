@@ -223,7 +223,13 @@ export async function applyStripeEvent(pool, event) {
       const existing = await getSubscriptionById(pool, subId);
       const userId = existing?.userId || await resolveUserId(pool, obj);
       if (!userId) break;
-      const invoicePriceId = obj.lines?.data?.[0]?.price?.id || null;
+      // Same API-version move again: an invoice line's price moved from `price.id` (an object) to
+      // `pricing.price_details.price` (already a string id) — confirmed against a real, paid
+      // full-price invoice in the sandbox, where the old path left this always null and
+      // firstFullCharge was never recorded. Fallback kept for the pre-dahlia shape.
+      const invoicePriceId = obj.lines?.data?.[0]?.price?.id
+        ?? obj.lines?.data?.[0]?.pricing?.price_details?.price
+        ?? null;
       const isFullPriceInvoice = invoicePriceId != null && invoicePriceId !== process.env.STRIPE_PRICE_INTRO;
       const data = { status: 'active', lastInvoiceStatus: 'paid' };
       // Recorded once — the first full-price invoice after a first (intro) period — never

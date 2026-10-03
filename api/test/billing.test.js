@@ -105,12 +105,14 @@ const sub = (id, overrides) => ({
   ...overrides
 });
 
-// Dahlia-shape invoice: the subscription id lives under parent.subscription_details, not at the
-// invoice's root — see the fallback test below for the pre-dahlia root-level `subscription` field.
+// Dahlia-shape invoice: the subscription id lives under parent.subscription_details, and a line's
+// price is a bare id under pricing.price_details.price — neither lives where the invoice's root
+// (`subscription`) or an old-shape line (`price.id`, an object) used to carry it. See the fallback
+// tests below for both pre-dahlia root-level shapes.
 const invoice = (id, subId, overrides) => ({
   id, object: 'invoice', customer: 'cus_1',
   parent: { subscription_details: { subscription: subId } },
-  lines: { data: [{ price: { id: MONTHLY_PRICE } }] },
+  lines: { data: [{ pricing: { price_details: { price: MONTHLY_PRICE } } }] },
   amount_paid: 8900, currency: 'brl', created: Math.floor(Date.now() / 1000),
   ...overrides
 });
@@ -264,6 +266,28 @@ test('POST /api/billing/webhook: invoice.paid falls back to the pre-dahlia root-
   const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_7') }).then(r => r.json());
   assert.equal(status.status, 'active');
   assert.equal(status.active, true, 'invoice.paid was not a silent no-op');
+});
+
+test('POST /api/billing/webhook: firstFullCharge is recorded from the dahlia invoice line shape, with a pre-dahlia fallback', async t => {
+  // Sentinel's bug #4 (found only after bug #3 was fixed — a real paid full-price invoice in the
+  // sandbox never got this far before): an invoice line's price moved from `price.id` (an object)
+  // to `pricing.price_details.price` (already a string id). `invoice()`'s default fixture already
+  // uses the dahlia shape, so the lifecycle test above covers the primary path — this pins down the
+  // pre-dahlia fallback the same way as the other two fields.
+  const users = [{ id: 'u_bill_9', name: 'Nine', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+  await postWebhook(h.api, stripeEvent('customer.subscription.created', sub('sub_flat_price', {
+    items: { data: [{ price: { id: INTRO_PRICE, unit_amount: 199 }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400 }] },
+    metadata: { userId: 'u_bill_9', plan: 'monthly' }
+  })));
+
+  const flatPriceInvoice = invoice('in_flat_price', 'sub_flat_price', {
+    lines: { data: [{ price: { id: MONTHLY_PRICE } }] } // root-level price.id, pre-dahlia
+  });
+  const r = await postWebhook(h.api, stripeEvent('invoice.paid', flatPriceInvoice));
+  assert.equal(r.status, 200);
+  const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_9') }).then(r => r.json());
+  assert.equal(status.firstFullCharge?.amount, 8900, 'firstFullCharge was recorded from the flat line price, not silently skipped');
 });
 
 test('customer.subscription.created with scheduleTo: the real schedule update sends end_date, never the rejected iterations param', async t => {
