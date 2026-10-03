@@ -1,22 +1,40 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
+import { useUI } from '../store/useUI.js'
 import { effectiveRoutines, effectiveRoutineIds, nextTrainingDay, streakWeeks, lastBW, setsDoneActive } from '../lib/history.js'
 import { fmtNum, fmtDate, todayISO, isoOf, weekKey, weekStartOf, weekDayOffset, DAYS, DAYN } from '../lib/format.js'
 import { t, dateLocale } from '../lib/i18n.js'
 import { bwSheet, goalSheet, dayOverrideSheet, calendarSheet, startFlow, starterPlanSheet, bwDeltaColor, weighInsSheet } from '../sheets.jsx'
+import { canWriteFromBilling } from '../lib/billing.js'
+import { openManagePortal } from './SettingsPlan.jsx'
 import LineChart from '../components/LineChart.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
 import { tappable } from '../lib/use-sheet-keyboard.js'
 import { glyphOf } from '../lib/glyphs.js'
 
+const PAST_DUE_DISMISS_KEY = 'brilhart_pastdue_banner_dismissed'
+
 // Home = what to do now + a quick glance. Deep charts & history live in Stats.
 export default function Home() {
   const nav = useNavigate()
   const S = useStore(s => s.S)
   const user = useStore(s => s.user)
+  const billing = useStore(s => s.billing)
+  const writable = canWriteFromBilling(billing)
   const [weekOffset, setWeekOffset] = useState(0)
+  const [pastDueDismissed, setPastDueDismissed] = useState(
+    () => typeof sessionStorage !== 'undefined' && sessionStorage.getItem(PAST_DUE_DISMISS_KEY) === '1'
+  )
+  const [portalBusy, setPortalBusy] = useState(false)
+  const updateCard = async () => {
+    if (portalBusy) return
+    setPortalBusy(true)
+    try { await openManagePortal() }
+    catch { setPortalBusy(false); useUI.getState().toast(t('Could not open the management portal. Try again.')) }
+  }
+  const dismissPastDue = () => { try { sessionStorage.setItem(PAST_DUE_DISMISS_KEY, '1') } catch { /* ignore */ } setPastDueDismissed(true) }
 
   const today = new Date()
   // A weekday can hold several routines. `todayRoutines` is the whole day; `routine` is the
@@ -68,6 +86,29 @@ export default function Home() {
       <div><h1>{user ? t('Hi {0}', user.name) : 'Brilhart Fitness'}</h1><div className="sub">{today.toLocaleDateString(dateLocale(), { weekday: 'long', day: 'numeric', month: 'long' })}</div></div>
       <button className="iconbtn" onClick={() => nav('/settings')} aria-label={t('Settings')}><Icon name="gear" /></button>
     </div>
+
+    {/* Persistent, not dismissible — a read-only account stays read-only until it subscribes
+        (ISO-1392 §5). Shown instead of, never together with, the past_due banner below: 'past_due'
+        is one of the two statuses canWriteFromBilling still calls writable. */}
+    {user && !writable && <div className="card" style={{ borderColor: 'var(--red)', borderWidth: 1, borderStyle: 'solid' }}>
+      <div className="row" style={{ gap: 9 }}>
+        <span className="lrow-i" style={{ background: 'var(--red)' }}><Icon name="lock" /></span>
+        <div className="small">{t("Your subscription isn't active — you can view and export your history, but new workouts won't be logged.")}</div>
+      </div>
+    </div>}
+    {/* Dismissible for the rest of this app session only (ISO-1392 §4) — reappears next time the
+        app opens while the charge is still failing. The plan screen's own banner is the one that
+        always shows, this is just the earlier warning while there is still time to act. */}
+    {user && billing?.status === 'past_due' && !pastDueDismissed && <div className="card" style={{ borderColor: 'var(--orange)', borderWidth: 1, borderStyle: 'solid' }}>
+      <div className="row between" style={{ gap: 9, marginBottom: 8 }}>
+        <div className="row" style={{ gap: 9, minWidth: 0 }}>
+          <span className="lrow-i" style={{ background: 'var(--orange)' }}><Icon name="warning" /></span>
+          <div className="small">{t("We couldn't charge your subscription. Update your card to avoid interruption.")}</div>
+        </div>
+        <button className="iconbtn sm" aria-label={t('Dismiss')} onClick={dismissPastDue}><Icon name="xmark" /></button>
+      </div>
+      <Button size="sm" variant="tinted" disabled={portalBusy} onClick={updateCard}>{t('Update card')}</Button>
+    </div>}
 
     <div className="card">
       <div className="row between" style={{ marginBottom: 8 }}>

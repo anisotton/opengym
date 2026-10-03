@@ -40,6 +40,7 @@ import Library from './views/Library.jsx'
 import Muscles from './views/Muscles.jsx'
 import StructuralBalance from './views/StructuralBalance.jsx'
 import Settings from './views/Settings.jsx'
+import SettingsPlan from './views/SettingsPlan.jsx'
 import Admin from './views/Admin.jsx'
 import CoachChat from './views/CoachChat.jsx'
 import CoachIntake from './views/CoachIntake.jsx'
@@ -216,6 +217,10 @@ function Shell() {
               <Route path="/muscles" element={<Muscles />} />
               <Route path="/structural-balance" element={<StructuralBalance />} />
               <Route path="/settings" element={<Settings />} />
+              {/* ISO-1395: api/billing.js's Checkout/Portal success_url and cancel_url are fixed,
+                  Sentinel-approved strings pointing at '/configuracoes' with no sub-path — this
+                  route has to be exactly that, not the issue's own illustrative '/settings/plan'. */}
+              <Route path="/configuracoes" element={<SettingsPlan />} />
               {/* The Coach screens gate themselves on the instance config; the routes exist
                   unconditionally so a deep link from a notification lands somewhere sane
                   rather than on the catch-all. */}

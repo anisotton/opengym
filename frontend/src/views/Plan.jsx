@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
 import { DAYN, weekOrder, weekStartOf, uid, exCount, routineCount } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
-import { dayAssignSheet, dayAddRoutineSheet, starterPlanSheet, planToolsSheet, confirmSheet } from '../sheets.jsx'
+import { dayAssignSheet, dayAddRoutineSheet, starterPlanSheet, planToolsSheet, confirmSheet, blockedByBilling } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
 import SwipeToDelete from '../components/SwipeToDelete.jsx'
@@ -37,6 +37,7 @@ export default function Plan() {
   })
 
   const addRoutine = () => {
+    if (blockedByBilling()) return
     const r = { id: uid(), name: t('New routine'), emoji: DEFAULT_GLYPH, ex: [] }
     update(s => { s.routines.push(r) })
     nav('/plan/r/' + r.id)

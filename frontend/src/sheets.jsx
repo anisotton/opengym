@@ -51,12 +51,31 @@ import { stampWorkout } from './lib/sync-merge.js'
 import { weeklyWeights } from './lib/bodyweight.js'
 import { workoutText } from './lib/workout-text.js'
 import { copyText } from './lib/clipboard.js'
+import { canWriteFromBilling } from './lib/billing.js'
 
 const S = () => useStore.getState().S
 const update = (...a) => useStore.getState().update(...a)
 const ui = () => useUI.getState()
 const toast = m => ui().toast(m)
 const snd = () => S().sound
+
+/* ============================ read-only (ISO-1392/ISO-1395) ============================
+   The named write entry points (ISO-1392 item 5: "começar treino", "+" in Plan/Library, the
+   weigh-in prompt) intercept before running, with a short sheet pointed at the plan screen
+   instead of the action. The 402 on PUT /api/data (api/billing.js canWrite) is the real gate —
+   this only saves the round trip and explains up front why nothing happened. A guest or a
+   self-hosted instance with billing off always passes (canWriteFromBilling's own default). */
+export function blockedByBilling() {
+  const { user, billing } = useStore.getState()
+  if (!user || canWriteFromBilling(billing)) return false
+  confirmSheet({
+    title: t('Read-only account'),
+    message: t('Subscribe to log workouts again. Your history is still here.'),
+    confirmText: t('View plans'), cancelText: t('Cancel'),
+    onConfirm: () => nav('/configuracoes'),
+  })
+  return true
+}
 
 /* ============================ custom confirm dialog ============================ */
 function ConfirmDialog({ title, message, confirmText, cancelText, danger, onConfirm, onCancel, close }) {
@@ -277,6 +296,7 @@ function BwSheet({ required, onDone, close }) {
   </>
 }
 export function bwSheet(opts = {}) {
+  if (blockedByBilling()) return null
   const h = ui().openSheet(close => <BwSheet {...opts} close={close} />, { locked: !!opts.required })
   return h
 }
@@ -923,7 +943,7 @@ function AddToRoutine({ ex, close }) {
     </div>
   </>
 }
-export const addToRoutineSheet = ex => ui().openSheet(close => <AddToRoutine ex={ex} close={close} />)
+export const addToRoutineSheet = ex => { if (!blockedByBilling()) ui().openSheet(close => <AddToRoutine ex={ex} close={close} />) }
 
 /* ============================ custom exercises (issue #11) ============================ */
 // Name + body part is all it takes — the exercise then behaves like any built-in one
@@ -1044,7 +1064,12 @@ function CustomExForm({ existing, prefill, onDone, close }) {
     {existing && <><div style={{ height: 8 }} /><Button variant="danger" icon="trash" onClick={() => { close(); deleteCustomEx(existing) }}>{t('Delete exercise')}</Button></>}
   </>
 }
-export const customExSheet = (existing, onDone, prefill) => ui().openSheet(close => <CustomExForm existing={existing} prefill={prefill} onDone={onDone} close={close} />)
+// Only guarded for a brand-new exercise — editing one that already exists is not the "+" entry
+// point ISO-1392 names, and the 402 on PUT /api/data still catches it either way.
+export const customExSheet = (existing, onDone, prefill) => {
+  if (!existing && blockedByBilling()) return
+  ui().openSheet(close => <CustomExForm existing={existing} prefill={prefill} onDone={onDone} close={close} />)
+}
 
 export function deleteCustomEx(ex, afterDelete) {
   if (S().active?.entries.some(e => e.id === ex.id)) { toast(t('Finish your current workout first')); return }
@@ -2167,6 +2192,7 @@ export function WorkoutRow({ w, onClick }) {
 // `routineIds` accepts `string | string[] | null` — `[r.id]` for one routine,
 // `effectiveRoutineIds(...)` for today's planned session, `[]` / null for explicit freestyle.
 export function startFlow(routineIds) {
+  if (blockedByBilling()) return
   // The weigh-in is a setting (Settings → During a workout, issue #137): off goes straight
   // into the session with no body weight on it, same as "Start without weighing in".
   if (S().weighIn === false) { beginWorkout(routineIds, null); return }

@@ -97,6 +97,7 @@ export default function SyncBanner() {
     // Signed in, or with a session the server ended: the passkey right here. A guest goes to
     // Settings, where signing in sits next to creating a profile.
     signin: () => (user || status === 'auth' ? signInAgain() : nav('/settings')),
+    plan: () => nav('/configuracoes'),
   }[view.action]
   const label = actionLabel(view)
   const inner = <>

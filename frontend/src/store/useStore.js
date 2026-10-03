@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, setRemoteAuth } from '../lib/api.js'
+import { api, setRemoteAuth, fetchBillingStatus } from '../lib/api.js'
 import { localTZ } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
 import { registerCustom } from '../lib/exercises.js'
@@ -50,6 +50,15 @@ const LOGOUT_OWED_KEY = 'gym_logout_owed'
 // question was open). Kept in storage so an app killed with the question open asks it again on
 // the next start instead of pushing the copy it still holds.
 const ADOPT_KEY = 'gym_adopt'
+// The last GET /api/billing/status this device saw (ISO-1395), by account — an offline-first
+// device must still know it is read-only without reaching the server (ISO-1392 item 5: "o
+// dispositivo já sabia... o comportamento se mantém sem precisar de rede"). Account-level, not
+// device content, so it lives beside `sync`/`user`, never inside S — nothing here ever merges
+// or goes back to the server. Cleared on sign-out and on a different account signing in over this
+// device's data, the same moments KEY/SYNC_KEY are (setUser's `other` branch).
+const BILLING_KEY = 'gym_billing'
+const loadBilling = () => { try { return JSON.parse(localStorage.getItem(BILLING_KEY)) } catch { return null } }
+const saveBilling = b => { try { if (b) localStorage.setItem(BILLING_KEY, JSON.stringify(b)); else localStorage.removeItem(BILLING_KEY) } catch { /* storage refused — only the cache is lost */ } }
 // Reads the mark with no argument, sets or clears it with one. Storage that cannot be read owes nothing.
 function logoutOwed(on) {
   try {
@@ -310,6 +319,7 @@ export const useStore = create((set, get) => {
      rank them:
        'local'   no server: a phone in local mode, a guest, nobody signed in
        'auth'    the server refuses this device (a 401), or the phone has lost its pairing
+       'blocked' the server refused a write with a 402 — no active subscription (ISO-1395)
        'offline' the server could not be reached at all (no network, DNS, a timeout)
        'error'   it answered with a failure: 5xx, 403, 413, a page that is not Brilhart Fitness's
        'held'    signed in, but the question about this device's own entries is still open
@@ -317,11 +327,13 @@ export const useStore = create((set, get) => {
        'ok'      this device holds what the server holds
      `pending`: a change is owed and the last attempt did not land. `lastSynced`: when this device
      and the server last held the same copy. `lastError`: { status, code } of the failure behind
-     'auth', 'offline' or 'error' (status 0 without an HTTP answer). `server`: the base URL this
-     device syncs with, or null on a phone that has none. */
+     'auth', 'offline', 'blocked' or 'error' (status 0 without an HTTP answer). `server`: the base
+     URL this device syncs with, or null on a phone that has none. */
   // 'held': a sign-in's question about this device's own entries is still open (adoptProfile), and
   // nothing syncs until it is answered — said after a failed connection, which is why it is held.
-  const statusOf = (x, user) => x.auth ? 'auth' : !user ? 'local' : x.offline ? 'offline' : x.lastError ? 'error' : x.held ? 'held' : x.pending ? 'pending' : 'ok'
+  // 'blocked' ranks above 'offline': a 402 is the server speaking, not a lost connection, and the
+  // reason stays true whether or not the device still has a network (ISO-1392's own offline rule).
+  const statusOf = (x, user) => x.auth ? 'auth' : !user ? 'local' : x.billingBlocked ? 'blocked' : x.offline ? 'offline' : x.lastError ? 'error' : x.held ? 'held' : x.pending ? 'pending' : 'ok'
   const sameError = (a, b) => (a && b ? a.status === b.status && a.code === b.code : a === b)
   const setSync = patch => {
     const cur = get().sync
@@ -331,14 +343,20 @@ export const useStore = create((set, get) => {
   }
   const isNetworkError = e => e && e.status == null   // fetch itself failed, or gave up: no response at all
   const refused = e => e?.status === 401 || e?.code === 'not-paired'
+  // The 402 write gate (api/server.js, PUT /api/data): a real answer from the server, not a
+  // connection problem, and the one failure that must not be read as 'error' — ISO-1392's own
+  // vocabulary point (item 9.2) asks for a status the sync banner and the Settings row can word
+  // on their own instead of falling into the generic "server error" text.
+  const billingRefused = e => e?.status === 402 && e?.data?.code === 'billing'
   // The server answered: whatever was wrong with the connection is over.
-  const reached = (extra = {}) => setSync({ offline: false, auth: false, lastError: null, ...extra })
+  const reached = (extra = {}) => setSync({ offline: false, auth: false, billingBlocked: false, lastError: null, ...extra })
   // What a failed request says about the connection. A refused token and a phone without a
   // pairing are the same thing to the person holding it — the device has to be paired or signed
   // in again, and nothing on it is lost meanwhile.
   const failed = (e, extra = {}) => {
     const lastError = { status: e?.status ?? 0, code: e?.code || (e?.status === 401 ? 'auth' : isNetworkError(e) ? 'network' : 'http') }
-    if (refused(e)) setSync({ auth: true, offline: false, lastError, ...extra })
+    if (refused(e)) setSync({ auth: true, offline: false, billingBlocked: false, lastError, ...extra })
+    else if (billingRefused(e)) setSync({ billingBlocked: true, offline: false, auth: false, lastError, ...extra })
     else if (isNetworkError(e)) setSync({ offline: true, lastError, ...extra })
     else setSync({ offline: false, lastError, ...extra })
   }
@@ -442,6 +460,11 @@ export const useStore = create((set, get) => {
       pushTm = setTimeout(() => get().pushState(), 1500)
     }
     pushPending = false
+    // Fresh as of this boot rather than waiting for checkRev's own cadence — a cold start right
+    // after Checkout/the Portal, or right after another device's cancellation, should not show a
+    // stale plan state for up to POLL_MS. Unawaited: boot does not block on it, and the cached
+    // answer (loadBilling) is already on screen either way (ISO-1395).
+    if (get().user) get().refreshBillingStatus()
   }
 
   // A signed-in device shows what the server has. Coming back — to the tab, the window, the app,
@@ -453,6 +476,10 @@ export const useStore = create((set, get) => {
     if (!get().user || !get().ready || document.visibilityState === 'hidden') return
     if (!force && Date.now() - lastCheck < CHECK_MIN_MS) return
     lastCheck = Date.now()
+    // Piggybacks the billing refresh on this same, already-throttled cadence (ISO-1395) rather
+    // than a timer of its own — nothing here awaits it, so a slow or failed answer never holds up
+    // the rev check it rode in on.
+    get().refreshBillingStatus()
     // A sign-in still deciding what becomes of this copy: no check of its own. One whose adoption
     // never ran or did not get through (no server, a pairing that failed on the way to it) runs it
     // here, question and all; one already running is left to answer.
@@ -934,6 +961,13 @@ export const useStore = create((set, get) => {
        hangs off it via coachAvailable(), so an unconfigured instance renders exactly what it
        always did, and a configured one is the only place any of it appears. */
     config: null,
+    // The last GET /api/billing/status this device saw (ISO-1395) — { enabled, status, active,
+    // plan, firstPeriod, nextChargeDate, nextChargeAmount, cancelAtPeriodEnd, firstFullCharge } or
+    // null before the first fetch. Loaded from storage (BILLING_KEY) so a cold start offline still
+    // knows whether this account is read-only (lib/billing.js canWriteFromBilling), unlike
+    // `config` above, which is memory-only and re-asked every boot — billing has to survive one
+    // this device never gets to repeat until the network is back.
+    billing: loadBilling(),
     needsMobileOnboarding: false,   // mobile build only — set true by boot() on a genuine first launch
     // A one-time device-link code this page was opened with (?link=, #95), until it is redeemed.
     // Never persisted: the code is good for minutes and belongs to this one visit.
@@ -1094,6 +1128,21 @@ export const useStore = create((set, get) => {
       return configFetch
     },
 
+    // GET /api/billing/status (ISO-1395) — best-effort, piggybacked on checkRev's own cadence
+    // (focus, visibility, 'online', the 30s poll) rather than its own timer. Never clears the
+    // cached `billing` on failure: an offline device keeps believing whatever it last knew, which
+    // is the one thing ISO-1392 (item 5) asks for by name ("o dispositivo já sabia"). A billing-off
+    // instance's `{enabled:false}` is cached the same way canWriteFromBilling treats it as
+    // writable, same as never having fetched at all.
+    async refreshBillingStatus() {
+      if (!get().user) return
+      try {
+        const b = await fetchBillingStatus()
+        saveBilling(b)
+        set({ billing: b })
+      } catch { /* offline, refused, whatever — the cached answer stands */ }
+    },
+
     // `adopt` (a sign-in, a pairing — { alwaysAsk } for a device link): adoptProfile follows and
     // decides what becomes of this copy; until it has, nothing is pulled or pushed (ADOPT_KEY).
     setUser(u, { adopt } = {}) {
@@ -1126,6 +1175,11 @@ export const useStore = create((set, get) => {
           localStorage.removeItem(KEY)
           persist(clone(DEF), false)
           setSync({ pending: false, lastSynced: 0, lastError: null })
+          // The previous account's subscription must not read onto this one, even cached and
+          // offline — refreshBillingStatus (finishBoot, checkRev) overwrites it with this
+          // account's own answer as soon as it can reach the server.
+          saveBilling(null)
+          set({ billing: null })
         }
         // The mark, with the names of what this copy holds now (`pre`) — what the question is
         // about; whatever is logged later belongs to the account (runAdopt).
