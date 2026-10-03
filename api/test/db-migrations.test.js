@@ -114,10 +114,10 @@ test('a database that already ran 001 (with the FK) and 002 converges once 003 i
     `);
     assert.equal(before.length, 1, 'the FK from the originally-applied 001 is present, same as on Lyra');
 
-    // 003 and, since ISO-1393, 004 (adds users.stripe_customer_id) — both unrecorded on this
-    // database, same as any migration newer than whatever Lyra already ran.
+    // 003, 004 (ISO-1393, users.stripe_customer_id) and, since ISO-1447, 005 (stripe_cleanup) —
+    // all unrecorded on this database, same as any migration newer than whatever Lyra already ran.
     const count = await runMigrations(pool, MIGRATIONS_DIR);
-    assert.equal(count, 2, 'everything after 002 is newly applied — 001 and 002 were already recorded');
+    assert.equal(count, 3, 'everything after 002 is newly applied — 001 and 002 were already recorded');
 
     const { rows: after } = await pool.query(`
       SELECT conname FROM pg_constraint

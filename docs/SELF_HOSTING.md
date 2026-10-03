@@ -675,6 +675,24 @@ Whether an account may write at all is one function, `canWrite(subscription)` in
 Forms of payment are configured once in the Dashboard (Settings → Payment methods), never in
 code — Checkout never names them, so nothing here needs changing to add or remove one.
 
+### Account deletion and Stripe (ISO-1447, Phase 4 — LGPD)
+
+Deleting an account (`DELETE /api/account`, or `POST /api/admin/user/delete`) cancels any live
+subscription immediately (never "at period end") and deletes the Stripe customer. This can never
+leave the local delete half-done: the same transaction that removes the user row inserts a
+`stripe_cleanup` row holding only Stripe-side ids (a customer id, and whichever subscription ids
+were still live) — no name, no e-mail, nothing that stops making sense once the account it came
+from is gone. After that transaction commits, the API tries Stripe once, right away; success
+clears the row on the spot. A Stripe outage or any other failure leaves it — `DELETE /api/account`
+still answers 200, since the account is already gone locally either way — for a background tick
+(every 15 minutes, `tickStripeCleanup` in `api/billing.js`) to retry with exponential backoff,
+capped at an hour between attempts, logging each failure (`last_error` on the row) rather than
+hammering Stripe's API during a prolonged outage. A webhook event that arrives afterward for a
+customer or subscription that no longer resolves to any account (`customer.subscription.deleted`,
+`customer.deleted`, a late retry of anything else) is acknowledged with 200 and recreates nothing —
+`resolveUserId` (`api/billing.js`) checks the account still exists before handing its id to
+anything that would otherwise insert a row referencing it.
+
 ## 8. Notifications
 
 openGym can push two kinds of alert to your phone/desktop, even when the app isn't open:

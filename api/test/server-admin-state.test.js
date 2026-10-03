@@ -1,9 +1,12 @@
-/* The admin routes read state files nobody validated. PUT /api/data drops null and shapeless
-   entries and refuses a non-array `workouts`/`routines` (QA C16/C19), but a document written
-   before it did still sits on disk and answers to nobody — and every one of these routes walks
-   those lists and dereferences what it finds. One throw is a 500 for the whole drill-down: the
-   sheet never leaves "Loading…", and the Disable button lives inside that sheet, so the account
-   an operator opened the dashboard to stop stays un-disableable. Real server.js in a child. */
+/* The admin routes used to read state files nobody validated (routines/bodyweight/workouts) and
+   walk them to build the drill-down and the user list's workout count — a null or shapeless entry
+   in a document stored before PUT /api/data's own filter existed (QA C16/C19) could throw and turn
+   the whole drill-down into a 500. ISO-1447 (Phase 4, LGPD) removed that surface instead of
+   hardening it: an admin runs the instance, not its users' training, so neither route reads
+   routines, bodyweight or workouts out of the profile's state any more — this file now asserts
+   that absence holds even for a document from before the filter, not just for a clean one, and
+   that the two routes this issue did keep touching the state for (`lastSync`, and the disable
+   switch) still work. Real server.js in a child. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -47,13 +50,14 @@ async function startServer(t) {
   return h;
 }
 
-// One good entry of each kind, so every case below can say what survived as well as what did not.
 const okW = { id: 'w1', name: 'Fine', d: '2026-09-18', start: 1, end: 2, entries: [{ id: 'e', sets: [{ w: 10, r: 5, done: true }] }] };
 const okR = { id: 'r1', name: 'Full body', emoji: '💪', ex: [{ id: '0001', sets: 3, reps: 10 }] };
 const okB = { d: '2026-09-01', w: 80 };
 
 /* The shapes v1.3.7 accepted through PUT /api/data, one per line. `null` is the one the field
-   reports came in with; the rest are the same mistake one field over. */
+   reports came in with; the rest are the same mistake one field over. None of them should ever
+   reach a response any more — ISO-1447 dropped training data from both admin routes entirely,
+   which is also what makes every one of these shapes harmless now: nothing walks them. */
 const DOCS = {
   'a null routine entry': { workouts: [okW], routines: [null, okR], bodyweight: [okB], unit: 'kg' },
   'shapeless routine entries': { workouts: [okW], routines: [7, 'x', [], okR], bodyweight: [okB], unit: 'kg' },
@@ -67,53 +71,29 @@ const DOCS = {
   'no lists at all': { unit: 'kg' }
 };
 
-test('GET /api/admin/user opens a profile whose stored state predates the entry filter', async t => {
+test('GET /api/admin/user: no training data, for a clean document or one from before the entry filter', async t => {
   const h = await startServer(t);
   for (const [what, doc] of Object.entries(DOCS)) {
     await h.plant(doc);
     const r = await h.get(`/api/admin/user?id=${VICTIM}`);
     assert.equal(r.status, 200, `${what}: ${JSON.stringify(r.body)}`);
-    // Every list the sheet counts and walks comes back usable — the drill-down renders it
-    // without a guard of its own for anything but the workout entries.
-    for (const k of ['routines', 'bodyweight', 'workouts']) {
-      assert.ok(Array.isArray(r.body[k]), `${what}: ${k} is an array`);
-      assert.equal(r.body[k].some(x => !x || typeof x !== 'object' || Array.isArray(x)), false, `${what}: ${k} holds only entries`);
+    for (const k of ['routines', 'bodyweight', 'workouts', 'unit']) {
+      assert.equal(k in r.body, false, `${what}: ${k} should not be in the response`);
     }
+    assert.deepEqual(Object.keys(r.body).sort(), ['lastSync', 'subscription', 'user'].sort(), what);
   }
-  // The good entries are still there, and a routine's exercise count is a number in every case.
-  await h.plant(DOCS['a null routine entry']);
-  let r = await h.get(`/api/admin/user?id=${VICTIM}`);
-  assert.deepEqual(r.body.routines, [{ id: 'r1', name: 'Full body', emoji: '💪', count: 1 }]);
-  assert.deepEqual(r.body.workouts.map(w => w.id), ['w1']);
-  assert.deepEqual(r.body.bodyweight, [okB]);
-  await h.plant({ routines: [{ id: 'r2', name: 'Broken', ex: 'nope' }] });
-  r = await h.get(`/api/admin/user?id=${VICTIM}`);
-  assert.deepEqual(r.body.routines, [{ id: 'r2', name: 'Broken', count: 0 }]);   // an `ex` that is not a list counts as no exercises
   assert.equal(h.stackFrames(), 0, `stack traces in the log:\n${h.log}`);
 });
 
-test('GET /api/admin/user leaves a workout\'s photos and videos out', async t => {
-  const h = await startServer(t);
-  const ref = { kind: 'image', hash: 'a'.repeat(64), mime: 'image/webp', size: 10, width: 8, height: 6, at: 1 };
-  await h.plant({ workouts: [{ ...okW, media: [ref] }], routines: [okR], bodyweight: [okB], unit: 'kg' });
-  const r = await h.get(`/api/admin/user?id=${VICTIM}`);
-  assert.equal(r.status, 200);
-  assert.deepEqual(r.body.workouts.map(w => w.id), ['w1']);
-  assert.equal('media' in r.body.workouts[0], false);
-  assert.equal(JSON.stringify(r.body).includes('a'.repeat(64)), false);
-});
-
-test('the user list and the disable switch survive the same document', async t => {
+test('the user list and the disable switch survive the same document, with no training data either', async t => {
   const h = await startServer(t);
   for (const [what, doc] of Object.entries(DOCS)) {
     await h.plant(doc);
     const r = await h.get('/api/admin/users');
     assert.equal(r.status, 200, what);
     const row = r.body.users.find(u => u.id === VICTIM);
-    // "Workouts" is a count of what the drill-down will show, so it is a number, and it does
-    // not count entries the sheet drops.
-    assert.equal(typeof row.workouts, 'number', `${what}: workouts is a number`);
-    assert.equal(row.workouts, Array.isArray(doc.workouts) ? doc.workouts.filter(w => w && typeof w === 'object' && !Array.isArray(w)).length : 0, what);
+    for (const k of ['workouts', 'lastWorkout', 'live']) assert.equal(k in row, false, `${what}: ${k} should not be in the row`);
+    assert.equal(typeof row.online, 'boolean', what);
   }
   // The end state the whole thing is about: the account can be stopped from the dashboard.
   await h.plant(DOCS['a null routine entry']);

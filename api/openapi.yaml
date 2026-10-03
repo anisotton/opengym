@@ -862,6 +862,51 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Busy' }
 
+  /api/account:
+    delete:
+      tags: [auth]
+      operationId: deleteAccount
+      summary: Delete this account, and everything of theirs
+      description: |
+        Self-service (ISO-1447): the same deletion `POST /api/admin/user/delete` does, for your
+        own account — the row itself and everything that cascades from it (training data,
+        passkeys, push subscriptions, device links, sessions, e-mail tokens, subscriptions), an
+        active Stripe subscription (cancelled immediately, never at period end) and the Stripe
+        customer itself, the Coach's per-profile file and any credential stored for it, and
+        uploaded photos and videos. `invites.used_by` stays burned, same as it always has.
+
+        A session alone is not proof enough — see `OwnerProof` — so a stolen cookie cannot delete
+        the account out from under its owner: `cid`+`credential` (a passkey assertion made for
+        this request, `cid` from `POST /api/login/options`) or `current` (the account's password,
+        only while `PASSWORD_LOGIN` is on). The last admin standing cannot delete themselves —
+        promote someone else first. Not reversible. Audited as `account.delete`, by id alone —
+        never the name or e-mail. The response clears the session cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OwnerProof' }
+      responses:
+        '200':
+          description: The account and everything of theirs is gone.
+          headers:
+            Set-Cookie:
+              description: Clears the session cookie.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '400':
+          description: The caller is the last admin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "you are the last admin — make someone else admin first", code: "last-admin" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ProofRefused' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Busy' }
+
   /api/account/password:
     get:
       tags: [password]
@@ -1741,6 +1786,7 @@ paths:
                   active: { type: boolean }
                   plan: { oneOf: [{ type: string, enum: [monthly, quarterly, yearly] }, { type: 'null' }] }
                   firstPeriod: { type: boolean, description: Still on the R$1,99 first cycle. }
+                  since: { oneOf: [{ type: string, format: date-time }, { type: 'null' }], description: When this subscription was created. }
                   nextChargeDate: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
                   nextChargeAmount: { oneOf: [{ type: integer, description: Centavos. }, { type: 'null' }] }
                   cancelAtPeriodEnd: { type: boolean }
@@ -2404,9 +2450,9 @@ paths:
       operationId: adminUsers
       summary: 'Admin: list all users'
       description: >-
-        One row per user with workout counts, last sync, push status and live
-        presence. `workouts` counts only the entries the drill-down can show.
-        Admin only.
+        One row per user with last sync, push status and whether they are training right
+        now (`online`) — never which routine or how far into it (ISO-1447: an admin runs
+        the instance, not its users' training). Admin only.
       responses:
         '200':
           description: All users.
@@ -2432,12 +2478,10 @@ paths:
       operationId: adminUser
       summary: 'Admin: one user in detail'
       description: >-
-        Drill-down — full workout history (newest first) and body-weight log for one
-        user. Admin only. Anything in `routines`, `bodyweight` or `workouts` that is not
-        an object is left out, and a list that is not an array reads as empty: PUT
-        /api/data drops those entries now, but a state file written before it did still
-        has them and this route has to answer for it. A workout's `media` (its photos and
-        videos) is left out: they are the owner's own.
+        Account and subscription only (ISO-1447) — no routines, bodyweight, workouts or
+        unit: an admin runs the instance, not its users' training. `subscription` is
+        null while the instance has no Stripe configured, otherwise the exact
+        `GET /api/billing/status` shape for this account. Admin only.
       parameters:
         - name: id
           in: query
@@ -2510,11 +2554,12 @@ paths:
       operationId: adminUserDelete
       summary: 'Admin: delete a user and everything of theirs'
       description: |
-        Removes the account for good: the user record, their passkeys, their push
-        subscriptions, their live presence, their training history file, their uploaded
-        photos and videos (`DATA_DIR/uploads/<uid>/`) and any Coach credential stored for
-        them. Not reversible — `/api/admin/user/disable` is the
-        reversible one. An admin cannot delete their own account, and the last admin
+        Removes the account for good — the same deletion `DELETE /api/account` does for
+        someone deleting themselves: the user record and everything that cascades from it,
+        an active Stripe subscription and customer, uploaded photos and videos
+        (`DATA_DIR/uploads/<uid>/`) and any Coach credential stored for them. Not
+        reversible — `/api/admin/user/disable` is the reversible one. An admin cannot
+        delete their own account (use `DELETE /api/account` instead), and the last admin
         cannot be deleted. Audited by name, since the id stops meaning anything.
       requestBody:
         required: true
@@ -3812,17 +3857,16 @@ components:
         invitedBy:
           oneOf: [{ type: string }, { type: 'null' }]
           description: The invite code this account was created with.
-        workouts: { type: integer, description: Total logged workouts. }
-        lastWorkout:
-          oneOf: [{ type: string }, { type: 'null' }]
-          description: ISO day of the newest workout.
         lastSync:
           oneOf: [{ type: number }, { type: 'null' }]
           description: The state's `_ts` (ms).
         hasPush: { type: boolean, description: Has at least one push subscription. }
-        live:
-          oneOf: [{ $ref: '#/components/schemas/Presence' }, { type: 'null' }]
-          description: Currently training, or null.
+        online:
+          type: boolean
+          description: >-
+            Currently training (an /api/activity heartbeat in the last ~70s). ISO-1447:
+            which routine or how far into it is not an admin's to see — this used to be
+            the full live-workout snapshot (`live`), now just the one bit.
         password:
           type: boolean
           description: PASSWORD_LOGIN instances only — the profile has a password.
@@ -3830,20 +3874,12 @@ components:
           oneOf: [{ type: string }, { type: 'null' }]
           description: PASSWORD_LOGIN instances only — the e-mail the profile signs in with, if any.
 
-    Presence:
-      type: object
-      description: Live-workout snapshot (from /api/activity heartbeats).
-      properties:
-        name: { type: string }
-        exIdx: { type: integer }
-        exTotal: { type: integer }
-        setsDone: { type: integer }
-        setsTotal: { type: integer }
-        startedAt: { type: number }
-        updatedAt: { type: number }
-
     AdminUserDetail:
       type: object
+      description: >-
+        Account and subscription only (ISO-1447) — no routines, bodyweight, workouts or
+        unit; `GET /api/admin/audit` and the Coach admin routes are the same way, carrying
+        nothing of a user's training either.
       properties:
         user:
           type: object
@@ -3861,24 +3897,24 @@ components:
             resetUntil:
               oneOf: [{ type: number }, { type: 'null' }]
               description: PASSWORD_LOGIN instances only — expiry (ms) of an unused reset code.
-        unit: { type: string, enum: [kg, lb] }
         lastSync: { oneOf: [{ type: number }, { type: 'null' }] }
-        routines:
-          type: array
-          items:
-            type: object
-            properties:
-              id: { type: string }
-              name: { type: string }
-              emoji: { type: string }
-              count: { type: integer, description: Number of exercises. }
-        bodyweight:
-          type: array
-          items: { $ref: '#/components/schemas/BodyweightEntry' }
-        workouts:
-          type: array
-          description: Full history, newest first.
-          items: { $ref: '#/components/schemas/Workout' }
+        subscription:
+          description: >-
+            The exact `GET /api/billing/status` shape for this account, or null while the
+            instance has no Stripe configured.
+          oneOf:
+            - type: object
+              properties:
+                enabled: { type: boolean }
+                status: { type: string, enum: [none, active, past_due, canceled, incomplete, incomplete_expired, unpaid] }
+                active: { type: boolean }
+                plan: { oneOf: [{ type: string, enum: [monthly, quarterly, yearly] }, { type: 'null' }] }
+                firstPeriod: { type: boolean }
+                since: { oneOf: [{ type: string, format: date-time }, { type: 'null' }], description: When this subscription row was created. }
+                nextChargeDate: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                nextChargeAmount: { oneOf: [{ type: integer, description: Centavos. }, { type: 'null' }] }
+                cancelAtPeriodEnd: { type: boolean }
+            - type: 'null'
 
     Invite:
       type: object

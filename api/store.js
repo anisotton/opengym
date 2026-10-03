@@ -681,7 +681,7 @@ export async function consumeEmailToken(pool, tokenHash, purpose) {
  */
 
 function rowToSubscription(row) {
-  return { id: row.id, userId: row.user_id, ...row.data, updatedAt: row.updated_at.toISOString() };
+  return { id: row.id, userId: row.user_id, ...row.data, createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString() };
 }
 
 // The merge is shallow (`||`, not deep): every caller in billing.js passes the fields it knows
@@ -759,6 +759,55 @@ export async function claimStripeEvent(pool, { id, type, data }) {
 // as every other one-time claim in this file.
 export async function unclaimStripeEvent(pool, id) {
   await pool.query('DELETE FROM stripe_events WHERE id = $1', [id]);
+}
+
+/* ---------- Stripe account-deletion outbox (ISO-1447, Phase 4 — LGPD) ----------
+ * See migrations/005_stripe_cleanup.sql for why this table carries no personal data and why the
+ * insert below has to run on the same transaction client deleteAccount (server.js) uses for the
+ * user row's own delete.
+ */
+
+function rowToStripeCleanup(row) {
+  return {
+    id: row.id, customerId: row.customer_id, subscriptionIds: row.subscription_ids || [],
+    attempts: row.attempts
+  };
+}
+
+// `client` is a withTransaction client, same idea as consumeInvite/insertPasskey: this has to
+// commit or roll back together with the DELETE FROM users right next to it. Returns the row
+// (with its id) so a caller that wants to try the Stripe side immediately, right after the
+// transaction commits, has something to pass attemptStripeCleanup without a re-read.
+export async function insertStripeCleanup(client, { customerId, subscriptionIds }) {
+  const { rows } = await client.query(
+    'INSERT INTO stripe_cleanup (customer_id, subscription_ids) VALUES ($1, $2) RETURNING *',
+    [customerId, subscriptionIds || []]
+  );
+  return rowToStripeCleanup(rows[0]);
+}
+
+// Oldest first — whichever pending cleanup's backoff (bumpStripeCleanupFailure) has elapsed.
+export async function getStripeCleanupDue(pool, limit = 20) {
+  const { rows } = await pool.query(
+    'SELECT * FROM stripe_cleanup WHERE next_attempt_at <= now() ORDER BY id LIMIT $1', [limit]
+  );
+  return rows.map(rowToStripeCleanup);
+}
+
+export async function deleteStripeCleanup(pool, id) {
+  await pool.query('DELETE FROM stripe_cleanup WHERE id = $1', [id]);
+}
+
+// Exponential, capped at an hour — a prolonged Stripe outage backs off instead of hammering their
+// API every tick. `last_error` is kept only for an operator reading the table by hand; nothing
+// here reads it back.
+export async function bumpStripeCleanupFailure(pool, id, errorMessage) {
+  await pool.query(
+    `UPDATE stripe_cleanup SET attempts = attempts + 1, last_error = $2,
+       next_attempt_at = now() + (least(power(2, attempts + 1), 60) * interval '1 minute')
+     WHERE id = $1`,
+    [id, String(errorMessage || '').slice(0, 300)]
+  );
 }
 
 // Boot's one-time migration of whatever db.json still holds.

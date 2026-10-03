@@ -40,7 +40,7 @@ import {
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
   removePasskey, touchPasskeyUse, upsertPasskey,
-  createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent
+  createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup
 } from './store.js';
 import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
 import { sendMail } from './mail.js';
@@ -49,7 +49,8 @@ import { renderRecoverEmail } from './mail-templates/recover-access.js';
 import { renderPreChargeNotice } from './mail-templates/pre-charge-notice.js';
 import {
   BILLING_ON, getStripe, hasActiveAccess, createCheckoutSession, createPortalSession,
-  billingStatus, applyStripeEvent, setFirstPeriodNoticeHook, tickFirstPeriodNotices, nextChargeAmountCents
+  billingStatus, applyStripeEvent, setFirstPeriodNoticeHook, tickFirstPeriodNotices, nextChargeAmountCents,
+  attemptStripeCleanup, tickStripeCleanup
 } from './billing.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -914,6 +915,9 @@ const THROTTLED = {
   'POST /api/device-link/options': 'link', 'POST /api/device-link/verify': 'link',
   'POST /api/account/passkeys/options': null, 'POST /api/account/device-link': null,
   'DELETE /api/account/passkeys': null,
+  // Self-deletion (ISO-1447): proveOwner guards it the same as every other DELETE /api/account/*
+  // above, so a wrong passkey or password only spends the burst budget, not a `kind` of its own.
+  'DELETE /api/account': null,
   // E-mail confirmation and recovery (ISO-1397). A wrong or replayed token is a guess at the
   // same kind of secret a device-link code is, so it shares that pause; "resend" spends the same
   // budget, since both are "how many times can you poke the confirmation link for one account".
@@ -2065,6 +2069,52 @@ const mediaRoutes = {
   }
 };
 
+/* ---------- account deletion (ISO-1447, Phase 4 — LGPD) ----------
+ * One path for both ways an account goes: an admin removing someone else (POST
+ * /api/admin/user/delete) and someone removing themselves (DELETE /api/account). Everything the
+ * row's own cascade already takes (user_state/training data, passkeys, push_subscriptions,
+ * device_links, sessions, email_tokens, subscriptions) needs nothing here; this is everything that
+ * does not cascade — Stripe (queued in the same transaction as the delete, never a reason it half-
+ * applies — see billing.js's attemptStripeCleanup), the Coach's per-profile file and credential,
+ * uploaded media, and whatever only ever lived in this process's memory (presence, a pending
+ * pairing code, a scheduled rest-timer push). `invites.used_by` is deliberately left burned — see
+ * migrations/003_invites_used_by_no_fk.sql — so it is never touched here. The guards that decide
+ * whether a deletion may happen at all (the last admin, deleting yourself through the admin route)
+ * are each route's own, asked before this runs.
+ */
+async function deleteAccount(target) {
+  presence.delete(target.id);
+  for (const [k, v] of pairings) if (v.uid === target.id) pairings.delete(k);
+  cancelRestTimer(target.id);
+  let cleanup = null;
+  await withTransaction(pool, async client => {
+    if (target.stripeCustomerId) {
+      const { rows } = await client.query(
+        "SELECT id FROM subscriptions WHERE user_id = $1 AND data->>'status' IN ('active', 'past_due')",
+        [target.id]
+      );
+      cleanup = await insertStripeCleanup(client, { customerId: target.stripeCustomerId, subscriptionIds: rows.map(r => r.id) });
+    }
+    // Cascades to user_state, passkeys, push_subscriptions, device_links, sessions and
+    // subscriptions (`ON DELETE CASCADE`) — everything else this helper does by hand is what
+    // doesn't.
+    await deleteUser(client, target.id);
+  });
+  try { coachConfig.clearProfileAuth(target.id); } catch { /* nothing stored */ }
+  try { coachJobs.purgeUser(target.id); } catch (e) { console.error('coach: could not purge', target.id, e.message); }
+  try { MEDIA.removeUser(target.id); } catch (e) { console.error('media: could not remove uploads of', target.id, e.message); }
+  // Tried once, right now, outside the transaction above (which has already committed — the
+  // account is gone locally either way): success clears the row on the spot, a failure (Stripe
+  // down, a transient error) just leaves it for the periodic retry below.
+  if (cleanup) {
+    try { await attemptStripeCleanup(pool, cleanup); }
+    catch (e) { console.error('billing: stripe cleanup failed for customer', cleanup.customerId, e.message); }
+  }
+}
+if (BILLING_ON) setInterval(() => {
+  tickStripeCleanup(pool).catch(e => console.error('billing: stripe cleanup tick failed', e));
+}, 15 * 60000).unref();
+
 /* ---------- routes ---------- */
 const routes = {
   'GET /api/health': async (req, res) => json(res, 200, { ok: true, users: (await getAllUsers(pool)).length }),
@@ -2582,20 +2632,24 @@ const routes = {
   /* ---------- admin dashboard ---------- */
   // One row per user, cheap enough for a personal instance (one user_state query each, in
   // parallel — Postgres, not a directory of files, is what's paying for these now).
+  //
+  // ISO-1447 (item 2 of ISO-1394, LGPD): an admin runs the instance, not its users' training —
+  // nothing here answers with a workout count, a last-workout date, or (via `live`, below) which
+  // routine or how many sets someone is mid-way through right now. `lastSync` stays: it is an
+  // operational signal ("is this account even in use"), not a training fact.
   'GET /api/admin/users': async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
     const users = await Promise.all((await getAllUsers(pool)).map(async u => {
       const S = (await readState(u.id)) || {};
-      const workouts = records(S.workouts);
-      const last = workouts[workouts.length - 1];
       return {
         id: u.id, name: u.name, created: u.created || null,
         disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null,
-        workouts: workouts.length,
-        lastWorkout: last ? last.d : null,
         lastSync: lastSyncOf(u, S),
         hasPush: await hasPush(pool, u.id),
-        live: livePresence(u.id),
+        // Was: the live routine name and set-by-set progress (livePresence(u.id)). Whether a
+        // workout is in progress at all is still worth an admin seeing (FR-… "training now"); its
+        // content is not.
+        online: !!livePresence(u.id),
         // The sign-in e-mail is an admin's to see (to hand out a reset code, to tell two
         // profiles apart), and only while the instance takes passwords at all.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null } : {})
@@ -2604,7 +2658,9 @@ const routes = {
     json(res, 200, { users, invite_only: INVITE_ONLY, ...(PASSWORD_LOGIN ? { password_login: true } : {}), now: Date.now() });
   },
 
-  // Drill-down: full workout history + body-weight log for one user.
+  // Drill-down: account + billing only (ISO-1447) — no routines, bodyweight, workouts or unit.
+  // Before this, this route doubled as the dashboard's "export before you delete" offer; that
+  // training-history export is a separate concern now (the app side of ISO-1394, not this route).
   'GET /api/admin/user': async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
     const id = new URL(req.url, 'http://x').searchParams.get('id');
@@ -2618,13 +2674,10 @@ const routes = {
         // unused reset code is good.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {})
       },
-      unit: S.unit || 'kg',
       lastSync: lastSyncOf(u, S),
-      routines: records(S.routines).map(r => ({ id: r.id, name: r.name, emoji: r.emoji, count: records(r.ex).length })),
-      bodyweight: records(S.bodyweight),
-      // records() already copied, so this reverse is ours: newest first for display. A workout's
-      // photos and videos are the owner's own: the admin view gets no refs to them.
-      workouts: records(S.workouts).reverse().map(({ media, ...w }) => w)
+      // status/plan/dates — billingStatus is the exact same contract GET /api/billing/status
+      // gives the account itself, reused rather than re-derived here.
+      subscription: BILLING_ON ? await billingStatus(pool, u.id) : null
     });
   },
 
@@ -2645,10 +2698,9 @@ const routes = {
 
   // Disable locks an account out; this removes it. The one destructive action in the app, so the
   // client asks twice and this end refuses the two cases that cannot be undone from the UI
-  // afterwards: an admin deleting themselves, and the last admin standing (issue #107).
-  // The invite code that let them in stays burned — it was used, and freeing it would quietly
-  // widen an invite-only instance. `GET /api/admin/user` is the export: the dashboard offers it
-  // before the confirm, so the training history can be kept if anyone wants it.
+  // afterwards: an admin deleting themselves (DELETE /api/account, below, is how someone removes
+  // their own account), and the last admin standing (issue #107). The invite code that let them in
+  // stays burned — it was used, and freeing it would quietly widen an invite-only instance.
   'POST /api/admin/user/delete': async (req, res) => {
     const admin = await requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
@@ -2657,16 +2709,39 @@ const routes = {
     if (u.id === admin.id) return json(res, 400, { error: 'you cannot delete your own account' });
     if (isAdmin(u) && (await getAllUsers(pool)).filter(isAdmin).length <= 1) return json(res, 400, { error: 'cannot delete the last admin' });
     const name = u.name;
-    presence.delete(u.id);
-    // The row itself — cascades to user_state, push_subscriptions, device_links and passkeys
-    // (`ON DELETE CASCADE`), the last piece of db.json to move here too.
-    await deleteUser(pool, u.id);
-    try { coachConfig.clearProfileAuth(u.id); } catch { /* nothing stored */ }
-    // Their photos and videos — the one place a profile's folder under uploads/ is removed.
-    try { MEDIA.removeUser(u.id); } catch (e) { console.error('media: could not remove uploads of', u.id, e.message); }
-    // Logged with the name, because the id is about to mean nothing to anyone reading this back.
+    await deleteAccount(u);
+    // Logged with the name, because the id is about to mean nothing to anyone reading this back —
+    // the admin themselves (who did it) is still just `user: admin`, their own id and name.
     audit(req, 'admin.user.delete', { user: admin, msg: name });
     json(res, 200, { ok: true, id: u.id });
+  },
+
+  // Self-service (ISO-1447): the same deletion admin/user/delete does, for your own account. A
+  // session alone is not proof enough — see proveOwner's own comment — so a stolen cookie cannot
+  // delete the account out from under its owner; `code: 'last-admin'` is this route's own half of
+  // the last-admin rule (the other half, an admin targeting someone else, is that route's own
+  // check right above). Audited with the id alone, never the name — see proveOwner's `act` and
+  // audit()'s own `f.uid`/`f.user` split.
+  'DELETE /api/account': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    if (isAdmin(user) && (await getAllUsers(pool)).filter(isAdmin).length <= 1) {
+      return json(res, 400, { error: 'you are the last admin — make someone else admin first', code: 'last-admin' });
+    }
+    const proof = await proveOwner(req, res, user, body, 'account-delete');
+    if (!proof) return;
+    // Everything above awaited: a concurrent "sign out everywhere" or admin action may have ended
+    // this session, and a concurrent admin/user/delete of the one other admin may have made this
+    // account the last one in the meantime.
+    const fresh = await sessionStillValid(req, user);
+    if (!fresh) return json(res, 401, { error: 'not signed in' });
+    if (isAdmin(fresh) && (await getAllUsers(pool)).filter(isAdmin).length <= 1) {
+      return json(res, 400, { error: 'you are the last admin — make someone else admin first', code: 'last-admin' });
+    }
+    await deleteAccount(fresh);
+    audit(req, 'account.delete', { uid: fresh.id });
+    json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
 
   'GET /api/admin/invites': async (req, res) => {
