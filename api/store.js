@@ -6,6 +6,7 @@
 
 import { makeLinkCode, hashLinkCode, DEVICE_LINK_TTL_MS } from './device-link.js';
 import { passkeyName, transportsOf, MAX_PASSKEYS } from './passkeys-store.js';
+import { withTransaction } from './db.js';
 
 // { state, rev } — state is null and rev is 0 for a profile that has never pushed, exactly what
 // GET /api/data returned for a state file that did not exist yet.
@@ -567,11 +568,15 @@ export async function countPasskeys(pool, userId) {
   return rows[0].n;
 }
 
-// The count check and the insert are one statement (a subquery in the WHERE), not a separate
-// query followed by an INSERT — two additions racing the same account can't both slip past a
-// count checked before either had committed. Pass a transaction client in place of `pool` to
-// insert alongside the user row a fresh signup creates (registration ceremonies do) — same idea
-// as consumeInvite.
+// The count check and the insert used to be one statement (a subquery in the INSERT's WHERE) on
+// the theory that two additions racing the same account couldn't both slip past a count checked
+// before either had committed — but a plain SELECT count(*) takes no lock, so two concurrent
+// connections each get their own READ COMMITTED snapshot and can both see the same pre-race count
+// and both pass. A `pg_advisory_xact_lock` keyed on the user id forces the second one to wait for
+// the first to commit (or roll back) before it takes its own count, so it sees the row the first
+// one just added. Pass a transaction client in place of `pool` to insert alongside the user row a
+// fresh signup creates (registration ceremonies do) — same idea as consumeInvite; the lock then
+// lives for the rest of that transaction rather than one of its own.
 export async function insertPasskey(pool, userId, cred) {
   const name = passkeyName(cred.name);
   const row = {
@@ -579,21 +584,30 @@ export async function insertPasskey(pool, userId, cred) {
     transports: transportsOf(cred.transports), created: cred.created || new Date().toISOString(),
     ...(cred.lastUsed ? { lastUsed: cred.lastUsed } : {}), ...(name ? { name } : {})
   };
-  let rowCount;
-  try {
-    ({ rowCount } = await pool.query(
-      `INSERT INTO passkeys (id, user_id, public_key, counter, transports, name, created_at, last_used_at)
-       SELECT $1,$2,$3,$4,$5,$6,$7,$8
-       WHERE (SELECT count(*) FROM passkeys WHERE user_id = $2) < $9`,
-      [row.id, row.userId, row.publicKey, row.counter, row.transports, row.name || null,
-        new Date(row.created), row.lastUsed ? new Date(row.lastUsed) : null, MAX_PASSKEYS]
-    ));
-  } catch (e) {
-    if (e.code === '23505') return { error: 'credential already registered', code: 'credential-exists' }; // unique_violation
-    throw e;
-  }
-  if (rowCount === 0) return { error: `a profile can have at most ${MAX_PASSKEYS} passkeys`, code: 'passkey-limit' };
-  return { ok: true, row };
+  const run = async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
+    let rowCount;
+    try {
+      ({ rowCount } = await client.query(
+        `INSERT INTO passkeys (id, user_id, public_key, counter, transports, name, created_at, last_used_at)
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8
+         WHERE (SELECT count(*) FROM passkeys WHERE user_id = $2) < $9`,
+        [row.id, row.userId, row.publicKey, row.counter, row.transports, row.name || null,
+          new Date(row.created), row.lastUsed ? new Date(row.lastUsed) : null, MAX_PASSKEYS]
+      ));
+    } catch (e) {
+      if (e.code === '23505') return { error: 'credential already registered', code: 'credential-exists' }; // unique_violation
+      throw e;
+    }
+    if (rowCount === 0) return { error: `a profile can have at most ${MAX_PASSKEYS} passkeys`, code: 'passkey-limit' };
+    return { ok: true, row };
+  };
+  // A Pool (not a transaction client already) needs its own transaction, or the advisory lock
+  // released at that single statement's implicit commit would do nothing to order the INSERT. A
+  // checked-out client (what withTransaction hands its callback) still has a `connect` method of
+  // its own — it's a real pg Client under the hood — so `release` (only the pool ever hands out,
+  // never has itself) is what actually tells the two apart.
+  return typeof pool.release === 'function' ? run(pool) : withTransaction(pool, run);
 }
 
 export async function renamePasskey(pool, userId, credId, name) {
