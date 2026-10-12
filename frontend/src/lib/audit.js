@@ -60,6 +60,11 @@ const LABELS = {
   'auth.link.fail': 'Adding a device with a code failed',
   // The owner's proof (current password or a passkey) for one of the changes below was refused.
   'auth.proof.fail': 'Confirming a change failed',
+  // ISO-1480: the browser refused a passkey ceremony outright — a certificate the device does
+  // not trust, no screen lock, a non-secure origin — before any prompt could have been shown or
+  // dismissed. `msg` carries the classifier's own enum, the flow/step and the timing
+  // (lib/webauthn-error.js, POST /api/client-event); never a credential id or free text.
+  'auth.webauthn.fail': 'A passkey prompt was refused by the device, not the person',
   // The password throttle paused an address; `msg` says for what (password, signup).
   'auth.throttled': 'Too many failed attempts from one address',
   'admin.user.disable': 'Disabled an account',

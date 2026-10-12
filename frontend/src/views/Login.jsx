@@ -8,7 +8,7 @@ import { guestAllowed } from '../lib/guest.js'
 import { useState, useEffect } from 'react'
 import { Button, Segmented } from '../components/ui.jsx'
 import { askAddDeviceData } from '../sheets.jsx'
-import { passwordOn, PasswordRegisterForm, openPasswordSignIn } from '../components/PasswordAuth.jsx'
+import { passwordOn, PasswordRegisterForm, openPasswordSignIn, webauthnOutcome } from '../components/PasswordAuth.jsx'
 import SignupFlow from '../components/SignupFlow.jsx'
 import { openRecoverRequest } from '../components/AccountEmail.jsx'
 import logoColor from '../assets/brand/brilhart-fitness-vertical-cor.svg'
@@ -66,7 +66,10 @@ export default function Login() {
       await adoptProfile(askAddDeviceData)
       useUI.getState().toast(t('Welcome back, {0}', u.name))
     }
-    catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') useUI.getState().toast(e.message || t('Sign-in failed')) }
+    catch (e) {
+      const msg = webauthnOutcome(e, 'login', 'assertion')
+      if (msg !== null) useUI.getState().toast(msg ?? (e.message || t('Sign-in failed')))
+    }
   }
   const head = <>
     {/* The brand guide's vertical logo: the colour version on the light theme, the negative on dark. */}
