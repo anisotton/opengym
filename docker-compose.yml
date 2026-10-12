@@ -65,6 +65,16 @@ services:
     build:
       context: ./api
       target: ${API_TARGET:-default}
+      # Unset, these three default to "dev"/"dev"/"unknown" (the Dockerfile's own ARG defaults)
+      # — the image's org.opencontainers.image.revision label then says "dev" no matter what was
+      # actually built, which is exactly what made the Lyra incident (ISO-1479) take longer to
+      # pin down than it should have. Export VCS_REF (and ideally VERSION/BUILD_DATE) from git
+      # before `docker compose build`/`up --build` so a later `docker inspect` can say which
+      # commit is actually running.
+      args:
+        VERSION: ${VERSION:-dev}
+        VCS_REF: ${VCS_REF:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     restart: unless-stopped
     depends_on:
       db:
@@ -101,6 +111,10 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        VCS_REF: ${VCS_REF:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     restart: unless-stopped
     depends_on:
       media:
