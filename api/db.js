@@ -15,8 +15,14 @@ const { Pool } = pg;
 
 export const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations');
 
+// node-postgres emits 'error' on the Pool whenever an *idle* client's connection drops server-side
+// (e.g. a restart, or `pg_terminate_backend` — "terminating connection due to administrator
+// command"). With no listener, that's an unhandled EventEmitter error and Node crashes the
+// process (ISO-1479: this took the API down mid-passkey-ceremony on every Postgres restart).
 export function createPool(databaseUrl) {
-  return new Pool({ connectionString: databaseUrl });
+  const pool = new Pool({ connectionString: databaseUrl });
+  pool.on('error', err => console.error('pg: idle pool connection error', err.message));
+  return pool;
 }
 
 export async function withTransaction(pool, fn) {
