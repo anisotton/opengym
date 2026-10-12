@@ -38,6 +38,49 @@ describe('rest timer set to Off', () => {
   })
 })
 
+// ISO-1480: passkeySignIn (ServerSync.jsx) runs from a banner, a Settings row, a sheet — no one
+// place to hold a persistent, role="alert" error the way a form's own err state would (Login.jsx,
+// which has exactly one caller, does exactly that instead). A real WebAuthn classification is
+// long enough that the toast's usual 2.2s auto-dismiss risks nobody reading it in time, so a
+// `sticky` toast skips that timer and waits for dismissToast() (Toast.jsx wires that to a tap)
+// instead — every other toast() call in the app keeps the normal, auto-dismissing behavior.
+describe('toast', () => {
+  beforeEach(() => { vi.useFakeTimers(); useUI.setState({ toastMsg: '', toastSticky: false }) })
+  afterEach(() => { useUI.getState().dismissToast(); vi.useRealTimers() })
+
+  it('auto-dismisses after 2.2s by default', () => {
+    useUI.getState().toast('Copied')
+    expect(useUI.getState().toastMsg).toBe('Copied')
+    expect(useUI.getState().toastSticky).toBe(false)
+    vi.advanceTimersByTime(2199)
+    expect(useUI.getState().toastMsg).toBe('Copied')
+    vi.advanceTimersByTime(1)
+    expect(useUI.getState().toastMsg).toBe('')
+  })
+
+  it('a sticky toast outlives the usual 2.2s window', () => {
+    useUI.getState().toast('A long certificate explanation', { sticky: true })
+    expect(useUI.getState().toastSticky).toBe(true)
+    vi.advanceTimersByTime(60000)
+    expect(useUI.getState().toastMsg).toBe('A long certificate explanation')
+  })
+
+  it('dismissToast clears a sticky toast on demand', () => {
+    useUI.getState().toast('A long certificate explanation', { sticky: true })
+    useUI.getState().dismissToast()
+    expect(useUI.getState().toastMsg).toBe('')
+    expect(useUI.getState().toastSticky).toBe(false)
+  })
+
+  it('a later toast cancels an earlier one’s pending auto-dismiss, sticky or not', () => {
+    useUI.getState().toast('First', { sticky: true })
+    useUI.getState().toast('Second')
+    vi.advanceTimersByTime(2200)
+    // The sticky toast's own timer (there wasn't one) can't fire and clear the one that replaced it.
+    expect(useUI.getState().toastMsg).toBe('')
+  })
+})
+
 describe('opt-in timer screen flash', () => {
   let originalSettings
 
