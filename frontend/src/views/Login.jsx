@@ -47,13 +47,24 @@ function RegisterSheet({ close }) {
     onCreated={onCreated} header={<>{<h3>{t('Create your profile')}</h3>}{choose}</>} />
 }
 
+// ISO-1480 (Atena review): the classifier's sentences run long (a certificate explanation is
+// ~230 characters) and the one thing this screen cannot assume is that a first-time visitor
+// glances at exactly the right moment — the 2.2s toast every other message here uses is built for
+// "Welcome back", not for the one message someone actually needs to read and act on. Persistent,
+// role="alert" text in the flow itself, same shape as every other real WebAuthn call site
+// (SignupFlow.jsx, Passkeys.jsx, PasswordAuth.jsx) — never the toast, which is still right for
+// "Welcome back, {name}" right above it.
+const errStyle = { color: 'var(--red)', marginTop: 10, textAlign: 'start' }
+
 export default function Login() {
   const { setUser, adoptProfile, setGuest } = useStore()
   const config = useStore(s => s.config)
   const canGuest = guestAllowed(config)
   const pwOn = passwordOn(config)
+  const [err, setErr] = useState(null)
   const register = () => useUI.getState().openSheet(close => <RegisterSheet close={close} />)
   const signIn = async () => {
+    setErr(null)
     try {
       const u = await passkeyLogin()
       // login/verify answers only {id,name,admin} — unlike boot()'s GET /api/me, which also
@@ -68,7 +79,7 @@ export default function Login() {
     }
     catch (e) {
       const msg = webauthnOutcome(e, 'login', 'assertion')
-      if (msg !== null) useUI.getState().toast(msg ?? (e.message || t('Sign-in failed')))
+      if (msg !== null) setErr(msg ?? (e.message || t('Sign-in failed')))
     }
   }
   const head = <>
@@ -101,6 +112,7 @@ export default function Login() {
       <div className="muted" style={{ marginBottom: 34 }}>{t('Conditioning for ballet.')}</div>
       {webauthnOK() ? <>
         <Button variant="primary" icon="person" onClick={signIn}>{t('Sign in with passkey')}</Button>
+        {err && <div className="small" role="alert" style={errStyle}>{err}</div>}
         <div style={{ height: 10 }} />
         {pwOn && <><Button icon="key" onClick={() => openPasswordSignIn()}>{t('Sign in with password')}</Button><div style={{ height: 10 }} /></>}
         <Button icon="sparkles" onClick={register}>{t('Create new profile')}</Button>

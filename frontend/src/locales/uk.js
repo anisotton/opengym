@@ -294,6 +294,13 @@ export default {
   "This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.": 'Цей браузер не підтримує ключі доступу, а цей сервер вимагає акаунт. Спробуй браузер або пристрій із підтримкою ключів доступу.',
   'Continue without account': 'Продовжити без акаунта',
   'Passkeys use {0} — no passwords.': 'Ключі доступу використовують {0} — без паролів.',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "Цей пристрій не довіряє сертифікату безпеки цього сайту, тому браузер відмовляється створювати чи використовувати тут ключ доступу — навіть попри те, що сама сторінка відкрилася. Попроси сертифікат в адміністратора і встанови його, або відкрий сайт за адресою, якій твій пристрій вже довіряє.",
+  "Passkeys need a secure (https) address. This page did not open over one.": "Для ключів доступу потрібна безпечна (https) адреса. Ця сторінка відкрилася не за такою адресою.",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "Пристрій відмовився показати запит на ключ доступу. Перевір чи налаштовано блокування екрана і чи доступний менеджер ключів доступу (наприклад, Менеджер паролів Google), потім спробуй ще раз.",
+  "This browser cannot create passkeys here.": "Цей браузер не може створювати тут ключі доступу.",
   'Each profile keeps its own plan, workouts & body weight.': 'У кожного профілю свій план, тренування та вага тіла.',
   'Account': 'Акаунт',
   'Sign out?': 'Вийти?',

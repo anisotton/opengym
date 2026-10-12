@@ -328,6 +328,13 @@ export default {
   "This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.": '此浏览器不支持通行密钥，且此服务器需要账户。请换用支持通行密钥的浏览器或设备。',
   'Continue without account': '不用账号继续',
   'Passkeys use {0} — no passwords.': '通行密钥使用{0}——没有密码。',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "此设备不信任该网站的安全证书，因此即使页面本身已经打开，浏览器仍拒绝在此创建或使用通行密钥。请向管理员索取证书并安装，或从您的设备已经信任的地址打开该网站。",
+  "Passkeys need a secure (https) address. This page did not open over one.": "通行密钥需要安全（https）地址。此页面不是通过安全地址打开的。",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "设备拒绝显示通行密钥请求。请检查是否已设置屏幕锁定，以及是否有可用的通行密钥管理工具（例如 Google 密码管理工具），然后重试。",
+  "This browser cannot create passkeys here.": "此浏览器无法在此创建通行密钥。",
   // --- password sign-in (#118) ---
   'Sign in with password': '用密码登录',
   'Password': '密码',

@@ -150,7 +150,13 @@ export async function passkeySignIn() {
     toast(t('Welcome back, {0}', u.name))
   } catch (e) {
     const msg = webauthnOutcome(e, 'login', 'assertion')
-    if (msg !== null) toast(msg ?? (e.message || t('Sign-in failed')))
+    if (msg === null) return
+    // ISO-1480 (Atena review): passkeySignIn runs from a banner, a Settings row, a sheet — no
+    // one place to hold a persistent, role="alert" error the way a form's own err state would
+    // (Login.jsx, which has exactly one caller, does exactly that instead). A real classification
+    // is long enough that the toast's usual 2.2s auto-dismiss risks nobody reading it in time, so
+    // only this one sticks until tapped; the short, generic fallback below keeps the normal toast.
+    toast(msg ?? (e.message || t('Sign-in failed')), { sticky: msg != null })
   }
 }
 

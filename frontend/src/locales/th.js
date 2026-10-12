@@ -334,6 +334,13 @@ export default {
   "This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.": 'เบราว์เซอร์นี้ไม่รองรับพาสคีย์ และเซิร์ฟเวอร์นี้ต้องมีบัญชีผู้ใช้ ลองใช้เบราว์เซอร์หรืออุปกรณ์ที่รองรับพาสคีย์',
   'Continue without account': 'ใช้งานต่อโดยไม่มีบัญชี',
   'Passkeys use {0} — no passwords.': 'พาสคีย์ใช้ {0} — ไม่ต้องใช้รหัสผ่าน',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "อุปกรณ์นี้ไม่เชื่อถือใบรับรองความปลอดภัยของเว็บไซต์นี้ เบราว์เซอร์จึงปฏิเสธที่จะสร้างหรือใช้พาสคีย์ที่นี่ — แม้ว่าตัวหน้าเว็บจะเปิดได้ก็ตาม ขอใบรับรองจากผู้ดูแลระบบของคุณแล้วติดตั้ง หรือเปิดเว็บไซต์จากที่อยู่ที่อุปกรณ์ของคุณเชื่อถืออยู่แล้ว",
+  "Passkeys need a secure (https) address. This page did not open over one.": "พาสคีย์ต้องใช้ที่อยู่ที่ปลอดภัย (https) หน้านี้ไม่ได้เปิดผ่านที่อยู่แบบนั้น",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "อุปกรณ์ปฏิเสธที่จะแสดงคำขอพาสคีย์ ตรวจสอบว่าตั้งค่าการล็อกหน้าจอไว้แล้วและมีตัวจัดการพาสคีย์ (เช่น เครื่องมือจัดการรหัสผ่านของ Google) พร้อมใช้งาน แล้วลองอีกครั้ง",
+  "This browser cannot create passkeys here.": "เบราว์เซอร์นี้ไม่สามารถสร้างพาสคีย์ที่นี่ได้",
   // --- password sign-in (#118) ---
   'Sign in with password': 'เข้าสู่ระบบด้วยรหัสผ่าน',
   'Password': 'รหัสผ่าน',

@@ -328,6 +328,13 @@ export default {
   "This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.": 'यह ब्राउज़र पासकी सपोर्ट नहीं करता, और इस सर्वर के लिए खाता ज़रूरी है। पासकी सपोर्ट वाला ब्राउज़र या डिवाइस आज़माएँ।',
   'Continue without account': 'बिना खाते के जारी रखें',
   'Passkeys use {0} — no passwords.': 'पासकी {0} का उपयोग करती हैं — कोई पासवर्ड नहीं।',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "यह डिवाइस इस साइट के सुरक्षा प्रमाणपत्र पर भरोसा नहीं करता, इसलिए ब्राउज़र यहाँ पासकी बनाने या उपयोग करने से इनकार करता है — भले ही पेज खुद खुल गया हो। अपने एडमिन से प्रमाणपत्र माँगें और उसे इंस्टॉल करें, या साइट को उस पते से खोलें जिस पर आपका डिवाइस पहले से भरोसा करता है।",
+  "Passkeys need a secure (https) address. This page did not open over one.": "पासकी के लिए सुरक्षित (https) पता आवश्यक है। यह पेज एसे पते से नहीं खुला।",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "डिवाइस ने पासकी प्रॉम्प्ट दिखाने से इनकार कर दिया। जाँचें कि आपका स्क्रीन लॉक सेट है और कोई पासकी मैनेजर (जैसे Google पासवर्ड मैनेजर) उपलब्ध है, फिर दोबारा कोशिश करें।",
+  "This browser cannot create passkeys here.": "यह ब्राउज़र यहाँ पासकी नहीं बना सकता।",
   // --- password sign-in (#118) ---
   'Sign in with password': 'पासवर्ड से साइन इन करें',
   'Password': 'पासवर्ड',

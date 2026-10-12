@@ -328,6 +328,13 @@ export default {
   "This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.": 'Bu tarayıcı geçiş anahtarlarını desteklemiyor ve bu sunucu bir hesap gerektiriyor. Geçiş anahtarı destekleyen bir tarayıcı veya cihaz dene.',
   'Continue without account': 'Hesapsız devam et',
   'Passkeys use {0} — no passwords.': 'Geçiş anahtarları {0} kullanır — şifre yok.',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "Bu cihaz bu sitenin güvenlik sertifikasına güvenmiyor, bu yüzden sayfa açılmış olsa bile tarayıcı burada bir geçiş anahtarı oluşturmayı veya kullanmayı reddediyor. Sertifikayı yöneticinden iste ve kur, ya da siteyi cihazının zaten güvendiği bir adresten aç.",
+  "Passkeys need a secure (https) address. This page did not open over one.": "Geçiş anahtarları güvenli (https) bir adres gerektirir. Bu sayfa böyle bir adresten açılmadı.",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "Cihaz, geçiş anahtarı istemini göstermeyi reddetti. Ekran kilidinin ayarlı olduğunu ve bir geçiş anahtarı yöneticisinin (Google Şifre Yöneticisi gibi) kullanılabilir olduğunu kontrol et, sonra tekrar dene.",
+  "This browser cannot create passkeys here.": "Bu tarayıcı burada geçiş anahtarı oluşturamıyor.",
   // --- password sign-in (#118) ---
   'Sign in with password': 'Şifreyle giriş yap',
   'Password': 'Şifre',
