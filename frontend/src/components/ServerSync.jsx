@@ -13,7 +13,7 @@ import { syncMedia } from '../lib/media-sync.js'
 import { DEMO } from '../lib/demo.js'
 import { askAddDeviceData } from '../sheets.jsx'
 import { ConnectSheet } from '../views/MobileOnboarding.jsx'
-import { passwordOn, openPasswordSignIn } from './PasswordAuth.jsx'
+import { passwordOn, openPasswordSignIn, webauthnOutcome } from './PasswordAuth.jsx'
 import { Section, Row, Button } from './ui.jsx'
 
 const ui = () => useUI.getState()
@@ -148,7 +148,10 @@ export async function passkeySignIn() {
     st.setUser(u, { adopt: true })
     await st.adoptProfile(askAddDeviceData)
     toast(t('Welcome back, {0}', u.name))
-  } catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast(e.message || t('Sign-in failed')) }
+  } catch (e) {
+    const msg = webauthnOutcome(e, 'login', 'assertion')
+    if (msg !== null) toast(msg ?? (e.message || t('Sign-in failed')))
+  }
 }
 
 /* ---------------------------------------------------------- leaving the server ---------------

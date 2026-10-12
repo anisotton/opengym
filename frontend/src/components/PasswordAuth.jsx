@@ -12,7 +12,8 @@ import { useStore, hasData } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { dateLocale } from '../lib/i18n-core.js'
-import { api, webauthnOK, passkeyAssertion, passwordLogin, passwordRegister, passwordResetRedeem } from '../lib/api.js'
+import { api, webauthnOK, passkeyAssertion, passwordLogin, passwordRegister, passwordResetRedeem, reportWebauthnFailure } from '../lib/api.js'
+import { classifyWebauthnFailure, webauthnFailureText } from '../lib/webauthn-error.js'
 import { askAddDeviceData } from '../sheets.jsx'
 import { Row, Button } from './ui.jsx'
 
@@ -66,8 +67,27 @@ export function passwordError(e) {
   }
   return e?.message || t('Sign-in failed')
 }
-// A passkey prompt the person closed is their answer, not an error worth a line in red.
-const dismissed = e => e?.name === 'NotAllowedError' || e?.name === 'AbortError'
+// A WebAuthn ceremony's own rejection (never a server HttpError, which carries a `status`
+// instead) — the only kind classifyWebauthnFailure has an opinion about.
+const isCeremonyError = e => ['NotAllowedError', 'AbortError', 'NotSupportedError', 'SecurityError'].includes(e?.name)
+
+// ISO-1480: NotAllowedError/AbortError used to mean "the person cancelled" unconditionally, which
+// also swallowed a certificate Chrome refuses to trust, a device with no screen lock, and a
+// non-secure origin — three silent "nothing happened"s on the same Android phone. `elapsedMs`/
+// `isSecureContext` ride on the error from lib/api.js's timedCeremony. Returns: `null` to stay
+// silent exactly as before (a real dismissal is the person's answer); a sentence to show when the
+// classifier has one; `undefined` when the error is not a WebAuthn ceremony rejection at all, or
+// is one classifyWebauthnFailure has no specific wording for — either way the caller's own
+// passkeyError/passwordError(e) still applies. Every non-silent case is also reported to
+// POST /api/client-event (lib/api.js), sanitized down to the classifier's own enum, never the
+// error's message text.
+export function webauthnOutcome(e, flow, step) {
+  if (!isCeremonyError(e)) return undefined
+  const c = classifyWebauthnFailure(e, { isSecureContext: e?.isSecureContext, elapsedMs: e?.elapsedMs })
+  if (c.silent) return null
+  reportWebauthnFailure(flow, step, c.kind, e)
+  return webauthnFailureText(c, t) ?? undefined
+}
 
 // Signed in: the same steps as a passkey sign-in (Login.jsx) — and the same account coming back
 // merges what this device kept for it (adoptProfile).
@@ -255,8 +275,11 @@ export function ProveOwner({ passkey, password, onProof, explain = passwordError
       const body = await proof(ctl.signal)
       if (!live.current) return
       await onProof(body)
-    } catch (e) { if (live.current && !dismissed(e)) setErr(explain(e)) }
-    finally {
+    } catch (e) {
+      if (!live.current) return
+      const msg = webauthnOutcome(e, 'password-confirm', 'confirm')
+      if (msg !== null) setErr(msg ?? explain(e))
+    } finally {
       if (prompt.current === ctl) prompt.current = null
       if (live.current) setBusy(false)
     }
@@ -349,8 +372,10 @@ export function PasswordSheet({ status, close, done }) {
       await api('/api/account/password', { method: 'POST', body: JSON.stringify({ next, ...proof }) })
       close(); done()
       toast(t('Password saved — you are signed out everywhere else.'))
-    } catch (e) { if (!dismissed(e)) setErr(passwordError(e)) }
-    finally { setBusy(false) }
+    } catch (e) {
+      const msg = webauthnOutcome(e, 'password-confirm', 'save')
+      if (msg !== null) setErr(msg ?? passwordError(e))
+    } finally { setBusy(false) }
   }
   const remove = () => ui().openSheet(c => <RemovePasswordSheet status={status} close={c} done={() => { close(); done() }} />)
   return <>

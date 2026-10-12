@@ -605,6 +605,10 @@ const CSRF_EXEMPT = new Set([
   // caller's session, and the link that reaches account/email/verify or recover/redeem may open
   // in the mobile shell, whose origin is never ORIGIN.
   'POST /api/account/email/verify', 'POST /api/recover/request', 'POST /api/recover/redeem'
+  // POST /api/client-event (ISO-1480) is deliberately NOT here: it only ever fires from
+  // navigator.sendBeacon to this same page's own origin (lib/api.js beacon(); MOBILE never
+  // calls it), so Sec-Fetch-Site: same-origin already clears it below — exempting it too would
+  // let a cross-site page spam the audit log for free, for no caller that actually needs it.
 ]);
 const originsMatch = (a, b) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
 function csrfOk(req, key) {
@@ -856,6 +860,31 @@ if (AUDIT_ON) {
   setInterval(compactAudit, 3600000).unref();    // honour AUDIT_DAYS on an idle instance too
 }
 
+/* ---------- client-event beacon (ISO-1480) ---------- */
+// Three sign-in/sign-up/recovery flows looked like "nothing happened" on an Android phone whose
+// browser refused WebAuthn outright — a certificate it does not trust, no screen lock, no
+// credential manager — because the frontend's own NotAllowedError/AbortError handling treated
+// every such rejection as a tap-away (lib/webauthn-error.js fixes the frontend side). Anderson's
+// own ask was "olhem os logs": this is what makes the next one show up in audit.log without
+// needing a console pulled off the device. Never the error's own message text, a credential id,
+// or anything else that could be a fingerprint — only the small enum the frontend's classifier
+// already reduced it to.
+const WEBAUTHN_FLOWS = new Set(['register', 'login', 'device-link', 'settings-add-passkey', 'password-confirm']);
+const WEBAUTHN_KINDS = new Set(['cert-untrusted', 'insecure-context', 'instant-refusal', 'unsupported', 'other']);
+// Coarse enough to say "real Chrome on Android" apart from an in-app WebView without keeping
+// anything that identifies a device: WebView adds a "wv" token and a leading "Version/X.0" ahead
+// of the Chrome version that a full browser never does.
+function uaFamily(req) {
+  const ua = String(req.headers['user-agent'] || '');
+  const os = /Android/.test(ua) ? 'Android' : /iPhone|iPad|iPod/.test(ua) ? 'iOS'
+    : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : 'unknown';
+  const webview = /; ?wv\)/.test(ua) || /\bVersion\/[\d.]+ Chrome\//.test(ua);
+  const browser = /EdgA?\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
+    : /CriOS\//.test(ua) ? 'Chrome' : /Chrome\//.test(ua) ? (webview ? 'Chrome-WebView' : 'Chrome')
+    : /Version\/.*Safari\//.test(ua) ? 'Safari' : 'unknown';
+  return browser + '/' + os;
+}
+
 /* ---------- sign-in throttle ---------- */
 // The password routes are counted (rate-limit.js) — only on an instance with PASSWORD_LOGIN on,
 // since none of them exists otherwise — and so are the two that redeem a device link (#95).
@@ -928,7 +957,10 @@ const THROTTLED = {
   // Its own per-address pause on a guess that resolves to nobody is handled entirely inside the
   // handler instead, silently, with no answer that differs because of it.
   'POST /api/account/email/verify': 'email-verify', 'POST /api/account/email/resend': 'email-verify',
-  'POST /api/recover/redeem': 'recover'
+  'POST /api/recover/redeem': 'recover',
+  // Only the shared burst budget (ISO-1480): there is no secret here for a `kind` to guard, just
+  // an audit-log beacon a misbehaving or hostile page could otherwise spam without limit.
+  'POST /api/client-event': null
 };
 
 // Which address the throttle counts against. Unlike clientIp() above, which only labels a log
@@ -2149,6 +2181,22 @@ const routes = {
       ...(MEDIA_ON ? { media: mediaConfig(MEDIA_LIMITS) } : {}),
       ...((await readSession(req)) ? { coach: coachConfig.publicConfig() } : {})
     });
+  },
+
+  // ISO-1480: a classified WebAuthn ceremony failure from the frontend's three sign-in-shaped
+  // flows (lib/webauthn-error.js). Reachable with no session — register and login both are — so
+  // every field is clamped or dropped to an allowlisted enum before it reaches audit(); nothing
+  // free-text, and nothing that could identify a device, goes in the log. `null`/204 either way:
+  // a dropped beacon must never surface as an error the UI has to handle on top of its own.
+  'POST /api/client-event': async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const flow = WEBAUTHN_FLOWS.has(body?.flow) ? body.flow : 'unknown';
+    const step = typeof body?.step === 'string' ? body.step.slice(0, 24).replace(/[^a-z0-9-]/gi, '') || 'unknown' : 'unknown';
+    const kind = WEBAUTHN_KINDS.has(body?.kind) ? body.kind : 'other';
+    const elapsedMs = Number.isFinite(body?.elapsedMs) ? Math.max(0, Math.min(60000, Math.round(body.elapsedMs))) : null;
+    const secure = body?.isSecureContext !== false;
+    audit(req, 'auth.webauthn.fail', { ok: false, act: flow + ':' + step, msg: kind + ' elapsedMs=' + (elapsedMs ?? '?') + ' secure=' + secure + ' ua=' + uaFamily(req) });
+    json(res, 200, {});
   },
 
   // A paired phone's token was minted once, at pairing, and nothing ever renewed it: after
