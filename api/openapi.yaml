@@ -292,6 +292,51 @@ paths:
                 passwordLogin: { value: { invite_only: true, allow_guest: false, password_login: true } }
                 media: { value: { invite_only: false, allow_guest: true, media: { imageMB: 2, gifMB: 8, videoMB: 40, videoSec: 60, quotaMB: 200, workouts: true } } }
 
+  /api/client-event:
+    post:
+      tags: [meta]
+      operationId: postClientEvent
+      summary: Report a classified WebAuthn ceremony failure (ISO-1480)
+      description: |
+        Fire-and-forget beacon sent with `navigator.sendBeacon`, never by the paired mobile
+        app. `register`, `login`, `device-link` and the two Settings proof-of-ownership
+        flows (`settings-add-passkey`, `password-confirm`) can all have their passkey
+        prompt refused outright — an untrusted TLS certificate, a non-secure origin, no
+        screen lock — which used to look identical to the person simply dismissing the
+        prompt. This writes `auth.webauthn.fail` to the audit log so that case shows up
+        there instead of as silence.
+
+        Every field is clamped to a small allowlist before it is logged: an unrecognized
+        `flow`/`kind` becomes `unknown`/`other`, `elapsedMs` is clamped to
+        `[0, 60000]`, and nothing free-text (an error message, a credential id) is ever
+        accepted. Always `200 {}`, whatever the body contained — a dropped or malformed
+        beacon must never become an error the UI has to react to. Rate-limited by the
+        shared per-address burst budget only (60/min); there is no secret here for a
+        per-kind pause to guard.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                flow:
+                  type: string
+                  enum: [register, login, device-link, settings-add-passkey, password-confirm]
+                step: { type: string, maxLength: 24 }
+                kind:
+                  type: string
+                  enum: [cert-untrusted, insecure-context, instant-refusal, unsupported, other]
+                elapsedMs: { type: number }
+                isSecureContext: { type: boolean }
+            example: { flow: login, step: assertion, kind: cert-untrusted, elapsedMs: 42, isSecureContext: true }
+      responses:
+        '200':
+          description: Always.
+          content:
+            application/json:
+              schema: { type: object }
+
   /api/me:
     get:
       tags: [auth]

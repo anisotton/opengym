@@ -334,6 +334,13 @@ export default {
   'This browser doesn\'t support passkeys, and this instance requires an account. Try a browser or device with passkey support.': 'Ez a böngésző nem támogatja a jelszókulcsokat, ez a szerver pedig fiókot igényel. Próbálj egy jelszókulcsot támogató böngészőt vagy eszközt.',
   'Continue without account': 'Folytatás fiók nélkül',
   'Passkeys use {0} — no passwords.': 'A jelszókulcs ezt használja: {0} — jelszó nélkül.',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "Ez az eszköz nem bízik az oldal biztonsági tanúsítványában, ezért a böngésző megtagadja a jelszókulcs létrehozását vagy használatát itt — annak ellenére, hogy maga az oldal megnyílt. Kérd el a tanúsítványt az adminisztrátortól, és telepítsd, vagy nyisd meg az oldalt olyan címről, amelyben az eszközöd már megbízik.",
+  "Passkeys need a secure (https) address. This page did not open over one.": "A jelszókulcsokhoz biztonságos (https) cím szükséges. Ez az oldal nem ilyenen keresztül nyílt meg.",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "Az eszköz megtagadta a jelszókulcs-kérés megjelenítését. Ellenőrizd, hogy be van-e állítva a képernyőzár, és elérhető-e egy jelszókulcs-kezelő (például a Google Jelszókezelő), majd próbáld újra.",
+  "This browser cannot create passkeys here.": "Ez a böngésző itt nem tud jelszókulcsot létrehozni.",
   // --- password sign-in (#118) ---
   'Sign in with password': 'Bejelentkezés jelszóval',
   'Password': 'Jelszó',

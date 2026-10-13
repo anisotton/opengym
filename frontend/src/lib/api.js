@@ -255,12 +255,30 @@ function credToJSON(cred) {
   }
   return out
 }
+// How long the browser's own create()/get() took, and whether the page is a secure context —
+// ISO-1480: a NotAllowedError/AbortError thrown back before any prompt could plausibly have been
+// seen and dismissed (an untrusted certificate, no screen lock, no credential manager) looks
+// identical to a real tap-away unless something upstream of the throw timed it. Attached to the
+// rejection itself so every caller — the ones that already catch NotAllowedError/AbortError to
+// decide whether to show anything — can hand it to classifyWebauthnFailure (lib/webauthn-error.js)
+// without each one re-measuring its own ceremony.
+async function timedCeremony(run) {
+  const isSecureContext = typeof window === 'undefined' ? true : window.isSecureContext
+  const start = Date.now()
+  try { return await run() }
+  catch (e) {
+    e.elapsedMs = Date.now() - start
+    e.isSecureContext = isSecureContext
+    throw e
+  }
+}
+
 // ISO-1397: every signup now needs a unique e-mail (confirmed by mail after this ceremony);
 // `birthDate` (`YYYY-MM-DD`) is optional server-side and only ever feeds the under-18 notice
 // (ISO-1398) — it never blocks a signup either way.
 export async function passkeyRegister(name, code, email, birthDate) {
   const { cid, options } = await api('/api/register/options', { method: 'POST', body: JSON.stringify({ name, code: code || '', email, ...(birthDate ? { birthDate } : {}) }) })
-  const cred = await navigator.credentials.create({ publicKey: toCreationOptions(options) })
+  const cred = await timedCeremony(() => navigator.credentials.create({ publicKey: toCreationOptions(options) }))
   const res = await api('/api/register/verify', { method: 'POST', body: JSON.stringify({ cid, credential: credToJSON(cred) }) })
   return res.user
 }
@@ -270,7 +288,7 @@ export async function passkeyRegister(name, code, email, birthDate) {
 // ProveOwner) — which then rejects with an AbortError.
 export async function passkeyAssertion({ signal } = {}) {
   const { cid, options } = await api('/api/login/options', { method: 'POST', body: '{}' })
-  const cred = await navigator.credentials.get({ publicKey: toRequestOptions(options), ...(signal ? { signal } : {}) })
+  const cred = await timedCeremony(() => navigator.credentials.get({ publicKey: toRequestOptions(options), ...(signal ? { signal } : {}) }))
   return { cid, credential: credToJSON(cred) }
 }
 export async function passkeyLogin() {
@@ -283,8 +301,17 @@ export async function passkeyLogin() {
 // They are copied first — the conversion writes buffers into them, and a prompt dismissed by
 // mistake is tried again with the same ones.
 export async function createPasskey(options) {
-  const cred = await navigator.credentials.create({ publicKey: toCreationOptions(JSON.parse(JSON.stringify(options))) })
+  const cred = await timedCeremony(() => navigator.credentials.create({ publicKey: toCreationOptions(JSON.parse(JSON.stringify(options))) }))
   return credToJSON(cred)
+}
+
+// The beacon for ISO-1480's three silent flows: a classified WebAuthn failure, sanitized down to
+// an enum (lib/webauthn-error.js's `kind`), a flow/step pair and a timing — never the error's own
+// message text, which can embed a credential id or an origin. Best-effort and fire-and-forget,
+// like the existing `beacon()` above; a dropped one is simply a gap in the log, not a reason to
+// hold up the UI that already has its own, visible answer.
+export function reportWebauthnFailure(flow, step, kind, { elapsedMs, isSecureContext } = {}) {
+  beacon('/api/client-event', { flow, step, kind, elapsedMs: elapsedMs ?? null, isSecureContext: isSecureContext !== false })
 }
 
 // Name-and-password sign-in, on an instance that offers it (config.password_login). Each of

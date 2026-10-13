@@ -123,6 +123,11 @@ const runRest = (set, get) => {
 export const useUI = create((set, get) => ({
   sheets: [],          // { id, render:(close)=>JSX, kind:'sheet'|'center', locked }
   toastMsg: '',
+  toastSticky: false,  // ISO-1480: stays until dismissToast() instead of the usual 2.2s — for a
+                       // message too long and too load-bearing to risk nobody reading it in time
+                       // (passkeySignIn's WebAuthn classification, which has no sheet or form of
+                       // its own to hold a persistent, role="alert" error the way every other
+                       // real WebAuthn call site does — see Login.jsx for that version).
   timer: null,         // rest countdown between sets — { left, total, endsAt, forIdx, ready?, paused? }
                        // forIdx: index of the active entry whose set started the rest (undefined when unknown)
                        // paused: held at `left`; `endsAt` means nothing until resumeRest sets it again
@@ -143,10 +148,14 @@ export const useUI = create((set, get) => ({
   closeSheet(id) { set(s => ({ sheets: s.sheets.filter(x => x.id !== id) })) },
   closeAll() { set({ sheets: [] }) },
 
-  toast(msg) {
-    set({ toastMsg: msg })
-    clearTimeout(toastTm)
-    toastTm = setTimeout(() => set({ toastMsg: '' }), 2200)
+  toast(msg, { sticky = false } = {}) {
+    clearTimeout(toastTm); toastTm = null
+    set({ toastMsg: msg, toastSticky: sticky })
+    if (!sticky) toastTm = setTimeout(() => set({ toastMsg: '', toastSticky: false }), 2200)
+  },
+  dismissToast() {
+    clearTimeout(toastTm); toastTm = null
+    set({ toastMsg: '', toastSticky: false })
   },
 
   startRest(sec, forIdx) {

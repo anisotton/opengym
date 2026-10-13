@@ -328,6 +328,13 @@ export default {
   "This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.": '이 브라우저는 패스키를 지원하지 않고, 이 서버는 계정이 필요합니다. 패스키를 지원하는 브라우저나 기기를 사용해 보세요.',
   'Continue without account': '계정 없이 계속',
   'Passkeys use {0} — no passwords.': '패스키는 {0}을(를) 사용합니다 — 비밀번호 없음.',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "이 기기가 이 사이트의 보안 인증서를 신뢰하지 않아서, 페이지 자체는 열렸지만 브라우저가 여기서 패스키를 생성하거나 사용하는 것을 거부합니다. 관리자에게 인증서를 요청해 설치하거나, 기기가 이미 신뢰하는 주소로 사이트를 여세요.",
+  "Passkeys need a secure (https) address. This page did not open over one.": "패스키에는 보안(https) 주소가 필요합니다. 이 페이지는 보안 주소로 열리지 않았습니다.",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "기기가 패스키 요청 표시를 거부했습니다. 화면 잠금이 설정되어 있는지, 패스키 관리자(예: Google 비밀번호 관리자)를 사용할 수 있는지 확인한 다음 다시 시도하세요.",
+  "This browser cannot create passkeys here.": "이 브라우저는 여기서 패스키를 생성할 수 없습니다.",
   // --- password sign-in (#118) ---
   'Sign in with password': '비밀번호로 로그인',
   'Password': '비밀번호',

@@ -328,6 +328,13 @@ export default {
   "This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.": 'Questo browser non supporta le passkey e questo server richiede un account. Prova un browser o un dispositivo che supporti le passkey.',
   'Continue without account': 'Continua senza account',
   'Passkeys use {0} — no passwords.': 'Le passkey usano {0} — niente password.',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "Questo dispositivo non si fida del certificato di sicurezza di questo sito, quindi il browser si rifiuta di creare o usare una passkey qui — anche se la pagina stessa si è aperta. Chiedi il certificato al tuo amministratore e installalo, oppure apri il sito da un indirizzo di cui il tuo dispositivo si fida già.",
+  "Passkeys need a secure (https) address. This page did not open over one.": "Le passkey richiedono un indirizzo sicuro (https). Questa pagina non si è aperta tramite uno di questi.",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "Il dispositivo si è rifiutato di mostrare la richiesta della passkey. Controlla di avere impostato il blocco schermo e che sia disponibile un gestore di passkey (come il Gestore delle password di Google), poi riprova.",
+  "This browser cannot create passkeys here.": "Questo browser non può creare passkey qui.",
   // --- password sign-in (#118) ---
   'Sign in with password': 'Accedi con password',
   'Password': 'Password',

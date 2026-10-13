@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import { t } from '../lib/i18n.js'
 import { ageFromBirthDate } from '../lib/age.js'
 import { passkeyRegister, bio } from '../lib/api.js'
-import { looksLikeEmail, foldEmail, passwordError } from './PasswordAuth.jsx'
+import { looksLikeEmail, foldEmail, passwordError, webauthnOutcome } from './PasswordAuth.jsx'
 import { useMinorNotice, ResendEmailButton } from './AccountEmail.jsx'
 import { Button } from './ui.jsx'
 
@@ -52,7 +52,8 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
       await onCreated({ ...u, email: foldEmail(email), emailVerified: false, needsEmail: false })
       setStep('sent')
     } catch (e) {
-      if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') setErr(passwordError(e))
+      const msg = webauthnOutcome(e, 'register', 'create')
+      if (msg !== null) setErr(msg ?? passwordError(e))
     } finally { setBusy(false) }
   }
 

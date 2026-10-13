@@ -313,6 +313,13 @@ export default {
   'This browser doesn\'t support passkeys, and this instance requires an account. Try a browser or device with passkey support.': 'هذا المتصفح لا يدعم مفاتيح المرور، وهذه النسخة تتطلب حساباً. جرّب متصفحاً أو جهازاً يدعم مفاتيح المرور.',
   'Continue without account': 'متابعة بدون حساب',
   'Passkeys use {0} — no passwords.': 'تستخدم مفاتيح المرور {0} — لا حاجة لكلمات مرور.',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "هذا الجهاز لا يثق بشهادة الأمان الخاصة بهذا الموقع، لذلك يرفض المتصفح إنشاء أو استخدام مفتاح مرور هنا — حتى مع أن الصفحة نفسها قد فتحت. اطلب الشهادة من المسؤول وثبّتها، أو افتح الموقع من عنوان يثق به جهازك بالفعل.",
+  "Passkeys need a secure (https) address. This page did not open over one.": "تحتاج مفاتيح المرور إلى عنوان آمن (https). لم تفتح هذه الصفحة عبر عنوان من هذا النوع.",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "رفض الجهاز إظهار طلب مفتاح المرور. تحقق من إعداد قفل الشاشة ومن توفر مدير لمفاتيح المرور (مثل مدير كلمات المرور من Google)، ثم حاول مرة أخرى.",
+  "This browser cannot create passkeys here.": "لا يمكن لهذا المتصفح إنشاء مفاتيح مرور هنا.",
   'Each profile keeps its own plan, workouts & body weight.': 'يحتفظ كل ملف شخصي بخطته وتمارينه ووزن جسمه.',
   'Account': 'الحساب',
   'Sign out?': 'تسجيل الخروج؟',

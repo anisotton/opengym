@@ -328,6 +328,13 @@ export default {
   "This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.": 'Этот браузер не поддерживает ключи доступа, а на этом сервере нужен аккаунт. Попробуйте браузер или устройство с поддержкой ключей доступа.',
   'Continue without account': 'Продолжить без аккаунта',
   'Passkeys use {0} — no passwords.': 'Ключи доступа используют {0} — без паролей.',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  "This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.":
+    "Это устройство не доверяет сертификату безопасности этого сайта, поэтому браузер отказывается создавать или использовать здесь ключ доступа — даже притом что сама страница открылась. Попросите сертификат у администратора и установите его, либо откройте сайт по адресу, которому ваше устройство уже доверяет.",
+  "Passkeys need a secure (https) address. This page did not open over one.": "Для ключей доступа нужен безопасный (https) адрес. Эта страница была открыта не по такому адресу.",
+  "The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.":
+    "Устройство отказалось показать запрос на ключ доступа. Проверьте, настроена ли блокировка экрана и доступен ли диспетчер ключей доступа (например, Диспетчер паролей Google), затем попробуйте снова.",
+  "This browser cannot create passkeys here.": "Этот браузер не может создавать здесь ключи доступа.",
   // --- password sign-in (#118) ---
   'Sign in with password': 'Войти по паролю',
   'Password': 'Пароль',

@@ -1453,6 +1453,9 @@ body.chips-dragging *{cursor:inherit}
   width:max-content;max-width:88vw;text-align:center;
 }
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* ISO-1480: a sticky toast (passkeySignIn's WebAuthn classification) skips the 2.2s auto-dismiss
+   and waits for a tap instead — the one toast in the app a person can touch at all. */
+#toast.sticky{pointer-events:auto;cursor:pointer}
 
 /* ---------------------------------------------------------------- misc --- */
 .empty{text-align:center;color:var(--label-2);padding:44px 20px;font-size:15px;line-height:1.45}

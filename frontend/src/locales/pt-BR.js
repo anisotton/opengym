@@ -194,6 +194,14 @@ export const PT_BR_OVERRIDES = {
   'Edit or delete this exercise': 'Editar ou excluir este exercício',
   'This app is invite-only — enter the code you were given.': 'Este aplicativo é somente para convidados — informe o código que você recebeu.',
   'Passkeys use {0} — no passwords.': 'As chaves de acesso usam {0} — sem senhas.',
+  // --- WebAuthn ceremony refused outright, not dismissed by the person (ISO-1480) ---
+  'This device does not trust this site’s security certificate, so the browser refuses to create or use a passkey here — even though the page itself opened. Ask your admin for the certificate and install it, or open the site from an address your device already trusts.':
+    'Este aparelho não confia no certificado de segurança deste site, por isso o navegador se recusa a criar ou usar uma chave de acesso aqui — mesmo com a página tendo aberto normalmente. Peça ao seu administrador o certificado e instale-o, ou abra o site a partir de um endereço em que seu aparelho já confia.',
+  'Passkeys need a secure (https) address. This page did not open over one.':
+    'Chaves de acesso precisam de um endereço seguro (https). Esta página não abriu por um.',
+  'The device refused to show the passkey prompt. Check that your screen lock is set up and that a passkey manager (like Google Password Manager) is available, then try again.':
+    'O aparelho se recusou a mostrar o pedido da chave de acesso. Verifique se há um bloqueio de tela configurado e se um gerenciador de chaves de acesso (como o Gerenciador de senhas do Google) está disponível, depois tente de novo.',
+  'This browser cannot create passkeys here.': 'Este navegador não consegue criar chaves de acesso aqui.',
   'Strength shows retained muscle strength. Train again to reset it.': 'A força mostra quanto da força muscular foi mantida. Treine novamente para redefinir o valor.',
   'Added as your own': 'Adicionados como seus',
   'The file is in {0} and your profile is in {1} — weights will be converted.': 'O arquivo está em {0} e seu perfil em {1} — os pesos serão convertidos.',

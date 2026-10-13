@@ -12,7 +12,7 @@ import { api, webauthnOK, createPasskey } from '../lib/api.js'
 import { copyText } from '../lib/clipboard.js'
 import { deviceLinkUrl, deviceLabel } from '../lib/device-link.js'
 import { askAddDeviceData } from '../sheets.jsx'
-import { passwordError, notReached, useAgainOnceReached, ProveOwner } from './PasswordAuth.jsx'
+import { passwordError, notReached, useAgainOnceReached, ProveOwner, webauthnOutcome } from './PasswordAuth.jsx'
 import QrCanvas from './QrCanvas.jsx'
 import { Row, Button } from './ui.jsx'
 
@@ -20,8 +20,6 @@ const ui = () => useUI.getState()
 const toast = m => ui().toast(m)
 const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) })
 const errStyle = { color: 'var(--red)', marginTop: 10 }
-// A passkey prompt the person closed is their answer, not an error worth a line in red.
-const dismissed = e => e?.name === 'NotAllowedError' || e?.name === 'AbortError'
 // How long a code lives (api/device-link.js DEVICE_LINK_TTL_MS), for the sentence that says so.
 const LINK_MINUTES = 10
 // The server keeps a creation challenge five minutes; one older than four is asked for again
@@ -183,8 +181,9 @@ function AddPasskeySheet({ state, close, done }) {
       close()
       toast(t('Passkey added'))
     } catch (e) {
-      if (dismissed(e)) return
-      setErr(passkeyError(e))
+      const msg = webauthnOutcome(e, 'settings-add-passkey', 'create')
+      if (msg === null) return
+      setErr(msg ?? passkeyError(e))
       // The server spent the challenge on that answer: a retry starts from the proof again.
       if (e?.status) setReady(null)
     } finally { setBusy(false) }
@@ -305,7 +304,8 @@ export function DeviceLinkRedeemSheet({ close }) {
       // Not "Welcome back": this may be the first time this person has seen that profile.
       toast(t('Signed in as {0}', r.user.name))
     } catch (e) {
-      if (!dismissed(e)) setErr(passkeyError(e))
+      const msg = webauthnOutcome(e, 'device-link', 'create')
+      if (msg !== null) setErr(msg ?? passkeyError(e))
       // Answered by the server, the challenge is gone; the next try asks for a new one.
       if (spent || e?.status) setInfo(null)
     } finally { setBusy(false) }
