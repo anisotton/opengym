@@ -10,8 +10,9 @@ export default function TermsCheckbox({ checked, onChange }) {
       <input type="checkbox" name="terms" checked={checked} onChange={e => onChange(e.target.checked)} />
       <span>{t('I have read and accept the Terms of Use and the Privacy Policy.')}</span>
     </label>
-    <div className="small" style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 6 }}>
+    <div className="small" style={{ marginTop: 6 }}>
       <button type="button" className="linklike" onClick={() => openLegalSheet('termos')}>{t('Read the Terms of Use')}</button>
+      {' · '}
       <button type="button" className="linklike" onClick={() => openLegalSheet('privacidade')}>{t('Read the Privacy Policy')}</button>
     </div>
   </div>
