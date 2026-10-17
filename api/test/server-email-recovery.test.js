@@ -78,6 +78,9 @@ async function startServer(t, { env = {}, users = [] } = {}) {
     env: { ORIGIN, APP_URL: '', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env }
   });
   h.req = async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
+    // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
+    // server-terms.test.js's subject, not this file's.
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-17' };
     const r = await fetch(`${h.api}${p}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}), ...headers },
@@ -176,7 +179,10 @@ test('GET /api/me reports email/emailVerified/needsEmail; confirming the link se
   const ip = '198.51.100.20';
   const { user, cookie } = await h.register('Ada', 'ada@example.com', ip);
   const me1 = await h.req('GET', '/api/me', { cookie, ip });
-  assert.deepEqual(me1.body, { user, email: 'ada@example.com', emailVerified: false, needsEmail: false });
+  // ISO-1390's terms fields ride along; their own values are server-terms.test.js's subject.
+  assert.equal(typeof me1.body.termsAcceptedAt, 'string');
+  assert.deepEqual(me1.body, { user, email: 'ada@example.com', emailVerified: false, needsEmail: false,
+    termsVersion: '2026-10-17', termsAcceptedAt: me1.body.termsAcceptedAt, needsTerms: false });
 
   const { token } = h.mailedLink('verificar-email');
   const v = await h.req('POST', '/api/account/email/verify', { body: { token }, ip });
@@ -197,7 +203,8 @@ test('an old account (no e-mail) needs one; a wrong confirmation token is refuse
   const h = await startServer(t);
   await h.seedOldAccount('u_old', 'Grandfathered');
   const me = await h.req('GET', '/api/me', { cookie: mintSession('u_old'), ip: '198.51.100.30' });
-  assert.deepEqual(me.body, { user: { id: 'u_old', name: 'Grandfathered', admin: false }, email: null, emailVerified: false, needsEmail: true });
+  assert.deepEqual(me.body, { user: { id: 'u_old', name: 'Grandfathered', admin: false }, email: null, emailVerified: false, needsEmail: true,
+    termsVersion: null, termsAcceptedAt: null, needsTerms: true });
 
   const ip = '198.51.100.31';
   // 20 free wrong guesses, then the 21st is the one whose own failure locks the address — the
