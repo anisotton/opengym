@@ -54,7 +54,7 @@ export default {
         },
         'Em qualquer plano, o primeiro mês custa R$ 1,99. Antes da primeira cobrança no valor cheio do plano escolhido, enviamos um e-mail avisando a data e o valor, para você decidir com calma se quer continuar.',
         'O pagamento é processado pela Stripe, nossa parceira de pagamentos. Os dados do seu cartão são informados diretamente à Stripe; nós não vemos nem guardamos o número completo do cartão.',
-        'A assinatura renova automaticamente ao fim de cada período (mês, trimestre ou ano), cobrando o mesmo meio de pagamento, até que você cancele. Se uma cobrança falhar, podemos tentar de novo por alguns dias e, sem pagamento, suspender o acesso aos recursos pagos até a regularização.',
+        'A assinatura renova automaticamente ao fim de cada período (mês, trimestre ou ano), cobrando o mesmo meio de pagamento, até que você cancele. Se uma cobrança falhar, a assinatura pode ficar suspensa até que o pagamento seja concluído.',
         'Podemos alterar os preços. Se isso acontecer, avisamos por e-mail com pelo menos 30 dias de antecedência, e o novo valor só vale a partir da renovação seguinte ao aviso. Se não concordar, basta cancelar antes dela.',
       ],
     },
@@ -117,7 +117,7 @@ export default {
       heading: 'Disponibilidade, mudanças e encerramento',
       paragraphs: [
         'Trabalhamos para manter o app no ar e seus dados seguros, mas não garantimos que o serviço funcione de forma contínua e sem falhas. Podem ocorrer interrupções por manutenção, atualizações, problemas de rede ou de fornecedores; sempre que possível, avisamos antes as manutenções programadas.',
-        'O app evolui: podemos adicionar, mudar ou remover funcionalidades. Se uma mudança tirar algo essencial do plano que você paga, você pode cancelar e pedir o reembolso proporcional do período não usado.',
+        'O app evolui: podemos adicionar, mudar ou remover funcionalidades.',
         'Podemos suspender ou encerrar sua conta se você violar estes termos, usar o serviço de forma fraudulenta ou se a lei exigir. Em casos que não envolvam risco ou fraude, avisamos antes e damos a chance de corrigir.',
         'Você pode, a qualquer momento e pelo próprio app, em Configurações, exportar seus dados (em JSON ou ZIP) e excluir sua conta. Se decidirmos encerrar o serviço como um todo, avisaremos com antecedência razoável para que você possa exportar tudo, e devolveremos o valor proporcional ao período pago e não usado.',
       ],
