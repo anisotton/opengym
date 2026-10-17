@@ -4,6 +4,9 @@ export default {
   "Version {0}": "Versão {0}",
   "Terms of Use": "Termos de Uso",
   "Privacy Policy": "Política de Privacidade",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "Li e aceito os Termos de Uso e a Política de Privacidade.",
+  "Read the Terms of Use": "Ler os Termos de Uso",
+  "Read the Privacy Policy": "Ler a Política de Privacidade",
   // --- billing / subscription (ISO-1392/ISO-1395) ---
   "Read-only account": "Conta em modo de leitura",
   "Subscribe to log workouts again. Your history is still here.": "Subscreva para voltar a registar treinos. O seu histórico continua disponível.",

@@ -77,6 +77,7 @@ const byPlaceholder = (host, p) => host.querySelector(`input[placeholder="${p}"]
 const button = (host, text) => [...host.querySelectorAll('button')].find(b => b.textContent === text)
 const submit = async host => { act(() => { host.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle() }
 const alertText = host => host.querySelector('[role="alert"]')?.textContent || null
+const accept = host => act(() => { host.querySelector('input[name="terms"]').click() })
 const click = async (host, text) => { act(() => button(host, text).click()); await settle() }
 
 beforeEach(() => {
@@ -223,8 +224,9 @@ describe('PasswordRegisterForm', () => {
     expect(alertText(host)).toBe('The two passwords are not the same.')
     expect(mocks.passwordRegister).not.toHaveBeenCalled()
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    accept(host)
     await submit(host)
-    expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', '')
+    expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', '', '2026-10-17')
     expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo' })
     expect(mocks.pullState).toHaveBeenCalled()
     expect(mocks.toast).toHaveBeenCalledWith('Welcome, Cleo')
@@ -246,11 +248,27 @@ describe('PasswordRegisterForm', () => {
     expect(mocks.passwordRegister).not.toHaveBeenCalled()
     mocks.passwordRegister.mockRejectedValueOnce(fail(409, { code: 'email-taken' }))
     type(mail, ' cleo@example.com ')
+    accept(host)
     await submit(host)
-    expect(mocks.passwordRegister).toHaveBeenLastCalledWith('Cleo', 'correct horse battery', '', 'cleo@example.com')
+    expect(mocks.passwordRegister).toHaveBeenLastCalledWith('Cleo', 'correct horse battery', '', 'cleo@example.com', '2026-10-17')
     expect(alertText(host)).toBe('Another profile already uses this e-mail address.')
     await submit(host)
     expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo' })
+  })
+
+  it('keeps Create profile disabled until the terms are accepted, then sends LEGAL_VERSION', async () => {
+    mocks.passwordRegister.mockResolvedValue({ id: 'u9', name: 'Cleo' })
+    const host = mount(<Harness />)
+    const box = host.querySelector('input[name="terms"]')
+    expect(box.checked).toBe(false)
+    expect(button(host, 'Create profile').disabled).toBe(true)
+    type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(byPlaceholder(host, 'Password'), 'correct horse battery')
+    type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    accept(host)
+    expect(button(host, 'Create profile').disabled).toBe(false)
+    await submit(host)
+    expect(mocks.passwordRegister.mock.calls[0][4]).toBe('2026-10-17')
   })
 
   it('a name already taken by a password profile is said in words', async () => {
@@ -259,6 +277,7 @@ describe('PasswordRegisterForm', () => {
     type(byPlaceholder(host, 'Your name'), 'Ana')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    accept(host)
     await submit(host)
     expect(alertText(host)).toBe('Another profile already signs in with this name.')
   })
