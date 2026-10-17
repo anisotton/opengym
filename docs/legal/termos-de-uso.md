@@ -124,7 +124,7 @@ Recomendamos que você exporte seus dados de tempos em tempos e guarde uma cópi
 
 ## Alterações destes termos e versão
 
-Cada versão destes termos é identificada pela data em que entrou em vigor. A versão atual é a Versão 2026-10-17.
+Cada versão destes termos é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-17.
 
 Podemos atualizar estes termos para acompanhar mudanças no app ou na lei. Mudanças de preço seguem a regra da seção "Assinatura, preços, primeiro mês e renovação". Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app. Se você não aceitar, a versão anterior continua valendo até o fim do período já pago, e a assinatura não renova. Você também pode exportar e excluir seus dados a qualquer momento.
 

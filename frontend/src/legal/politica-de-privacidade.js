@@ -145,7 +145,7 @@ export default {
     {
       heading: 'Alterações e versão',
       paragraphs: [
-        `Cada versão desta política é identificada pela data em que entrou em vigor. A versão atual é a Versão ${LEGAL_VERSION}.`,
+        `Cada versão desta política é identificada pela data em que entrou em vigor. A versão atual é a de ${LEGAL_VERSION}.`,
         'Podemos atualizar esta política para acompanhar mudanças no app ou na lei. Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app. Se você não aceitar, a versão anterior continua valendo até o fim do período já pago, e a assinatura não renova. Você também pode exportar e excluir seus dados a qualquer momento.',
         'A versão que você aceitou e a data do aceite ficam registradas na sua conta.',
       ],
