@@ -1761,4 +1761,18 @@ export default {
   'Delete my account': 'Usuń moje konto',
   'Could not delete — are you online?': 'Nie udało się usunąć — czy jesteś online?',
   'Account deleted': 'Konto usunięte',
+  // ISO-1390 — terms & privacy acceptance
+  "Version {0}": "Wersja {0}",
+  "Terms of Use": "Regulamin",
+  "Privacy Policy": "Polityka prywatności",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "Przeczytałem(-am) Regulamin i Politykę prywatności i je akceptuję.",
+  "Read the Terms of Use": "Przeczytaj Regulamin",
+  "Read the Privacy Policy": "Przeczytaj Politykę prywatności",
+  "We updated our terms": "Zaktualizowaliśmy nasze zasady",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Aby dalej korzystać z Brilhart Fitness, przeczytaj i zaakceptuj aktualny Regulamin oraz Politykę prywatności.",
+  "You accepted version {0} on {1}.": "Zaakceptowano wersję {0} dnia {1}.",
+  "Accept and continue": "Akceptuję i kontynuuję",
+  "Update the app to accept the new terms.": "Zaktualizuj aplikację, aby zaakceptować nowe zasady.",
+  "Reload": "Odśwież",
+  "Could not save your acceptance — are you online?": "Nie udało się zapisać akceptacji — czy jesteś online?",
 }

@@ -1758,4 +1758,18 @@ export default {
   'Delete my account': 'Видалити мій обліковий запис',
   'Could not delete — are you online?': 'Не вдалося видалити — ти онлайн?',
   'Account deleted': 'Обліковий запис видалено',
+  // ISO-1390 — terms & privacy acceptance
+  "Version {0}": "Версія {0}",
+  "Terms of Use": "Умови використання",
+  "Privacy Policy": "Політика конфіденційності",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "Я прочитав(ла) Умови використання та Політику конфіденційності й приймаю їх.",
+  "Read the Terms of Use": "Прочитати Умови використання",
+  "Read the Privacy Policy": "Прочитати Політику конфіденційності",
+  "We updated our terms": "Ми оновили наші умови",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Щоб і далі користуватися Brilhart Fitness, прочитайте та прийміть чинні Умови використання й Політику конфіденційності.",
+  "You accepted version {0} on {1}.": "Ви прийняли версію {0} {1}.",
+  "Accept and continue": "Прийняти й продовжити",
+  "Update the app to accept the new terms.": "Оновіть застосунок, щоб прийняти нові умови.",
+  "Reload": "Перезавантажити",
+  "Could not save your acceptance — are you online?": "Не вдалося зберегти вашу згоду — ви онлайн?",
 }

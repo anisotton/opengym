@@ -1761,4 +1761,18 @@ export default {
   'Delete my account': '내 계정 삭제',
   'Could not delete — are you online?': '삭제하지 못했습니다 — 온라인 상태인가요?',
   'Account deleted': '계정이 삭제되었습니다',
+  // ISO-1390 — terms & privacy acceptance
+  "Version {0}": "버전 {0}",
+  "Terms of Use": "이용약관",
+  "Privacy Policy": "개인정보처리방침",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "이용약관과 개인정보처리방침을 읽었으며 이에 동의합니다.",
+  "Read the Terms of Use": "이용약관 읽기",
+  "Read the Privacy Policy": "개인정보처리방침 읽기",
+  "We updated our terms": "약관이 업데이트되었습니다",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Brilhart Fitness를 계속 사용하려면 현재의 이용약관과 개인정보처리방침을 읽고 동의해 주세요.",
+  "You accepted version {0} on {1}.": "{1}에 버전 {0}에 동의하셨습니다.",
+  "Accept and continue": "동의하고 계속",
+  "Update the app to accept the new terms.": "새 약관에 동의하려면 앱을 업데이트하세요.",
+  "Reload": "새로고침",
+  "Could not save your acceptance — are you online?": "동의를 저장하지 못했습니다 — 온라인 상태인가요?",
 }

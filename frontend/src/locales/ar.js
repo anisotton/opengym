@@ -1814,4 +1814,18 @@ export default {
   'Delete my account': 'حذف حسابي',
   'Could not delete — are you online?': 'تعذّر الحذف — هل أنت متصل بالإنترنت؟',
   'Account deleted': 'تم حذف الحساب',
+  // ISO-1390 — terms & privacy acceptance
+  "Version {0}": "الإصدار {0}",
+  "Terms of Use": "شروط الاستخدام",
+  "Privacy Policy": "سياسة الخصوصية",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "قرأتُ شروط الاستخدام وسياسة الخصوصية وأوافق عليهما.",
+  "Read the Terms of Use": "اقرأ شروط الاستخدام",
+  "Read the Privacy Policy": "اقرأ سياسة الخصوصية",
+  "We updated our terms": "حدّثنا شروطنا",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "لمتابعة استخدام Brilhart Fitness، اقرأ شروط الاستخدام وسياسة الخصوصية الحالية ووافق عليهما.",
+  "You accepted version {0} on {1}.": "وافقتَ على الإصدار {0} بتاريخ {1}.",
+  "Accept and continue": "موافقة ومتابعة",
+  "Update the app to accept the new terms.": "حدّث التطبيق لقبول الشروط الجديدة.",
+  "Reload": "إعادة التحميل",
+  "Could not save your acceptance — are you online?": "تعذّر حفظ موافقتك — هل أنت متصل بالإنترنت؟",
 }
