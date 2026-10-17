@@ -1770,7 +1770,7 @@ export default {
   "Read the Privacy Policy": "गोपनीयता नीति पढ़ें",
   "We updated our terms": "हमने अपनी शर्तें अपडेट की हैं",
   "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Brilhart Fitness का उपयोग जारी रखने के लिए, वर्तमान उपयोग की शर्तें और गोपनीयता नीति पढ़ें और स्वीकार करें।",
-  "You accepted version {0} on {1}.": "आपने संस्करण {0} को {1} को स्वीकार किया था।",
+  "You accepted version {0} on {1}.": "आपने {1} को संस्करण {0} स्वीकार किया था।",
   "Accept and continue": "स्वीकार करें और आगे बढ़ें",
   "Update the app to accept the new terms.": "नई शर्तें स्वीकार करने के लिए ऐप अपडेट करें।",
   "Reload": "फिर से लोड करें",

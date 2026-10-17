@@ -1770,7 +1770,7 @@ export default {
   "Read the Privacy Policy": "개인정보처리방침 읽기",
   "We updated our terms": "약관이 업데이트되었습니다",
   "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Brilhart Fitness를 계속 사용하려면 현재의 이용약관과 개인정보처리방침을 읽고 동의해 주세요.",
-  "You accepted version {0} on {1}.": "{1}에 버전 {0}에 동의하셨습니다.",
+  "You accepted version {0} on {1}.": "{1}, 버전 {0}에 동의하셨습니다.",
   "Accept and continue": "동의하고 계속",
   "Update the app to accept the new terms.": "새 약관에 동의하려면 앱을 업데이트하세요.",
   "Reload": "새로고침",

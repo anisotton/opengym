@@ -1769,7 +1769,7 @@ export default {
   "Read the Terms of Use": "Kullanım Koşulları'nı oku",
   "Read the Privacy Policy": "Gizlilik Politikası'nı oku",
   "We updated our terms": "Koşullarımızı güncelledik",
-  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Brilhart Fitness'ı kullanmaya devam etmek için güncel Kullanım Koşulları'nı ve Gizlilik Politikası'nı okuyup kabul et.",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Brilhart Fitness'i kullanmaya devam etmek için güncel Kullanım Koşulları'nı ve Gizlilik Politikası'nı okuyup kabul et.",
   "You accepted version {0} on {1}.": "{1} tarihinde {0} sürümünü kabul ettin.",
   "Accept and continue": "Kabul et ve devam et",
   "Update the app to accept the new terms.": "Yeni koşulları kabul etmek için uygulamayı güncelle.",

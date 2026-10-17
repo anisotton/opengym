@@ -1774,5 +1774,5 @@ export default {
   "Accept and continue": "接受并继续",
   "Update the app to accept the new terms.": "请更新应用以接受新条款。",
   "Reload": "重新加载",
-  "Could not save your acceptance — are you online?": "无法保存你的同意 — 你在线吗？",
+  "Could not save your acceptance — are you online?": "无法保存你的确认 — 你在线吗？",
 }
