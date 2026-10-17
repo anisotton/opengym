@@ -74,6 +74,8 @@ function rowToUser(row) {
     sv: row.session_version,
     ...(row.email ? { email: row.email } : {}),
     ...(row.email_verified_at ? { emailVerifiedAt: row.email_verified_at.toISOString() } : {}),
+    ...(row.terms_accepted_version ? { termsAcceptedVersion: row.terms_accepted_version } : {}),
+    ...(row.terms_accepted_at ? { termsAcceptedAt: row.terms_accepted_at.toISOString() } : {}),
     ...(row.birth_date ? { birthDate: row.birth_date.toISOString().slice(0, 10) } : {}),
     ...(row.stripe_customer_id ? { stripeCustomerId: row.stripe_customer_id } : {}),
     ...(row.invited_by || row.extra?.invitedBy ? { invitedBy: row.invited_by || row.extra.invitedBy } : {}),
@@ -112,12 +114,23 @@ export async function getAllUsers(pool) {
 // then, same as `lastReminder`; rowToUser reads either place.
 export async function createUser(pool, user) {
   await pool.query(
-    `INSERT INTO users (id, name, email, birth_date, password_hash, password_set_at, created_at, extra)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `INSERT INTO users (id, name, email, birth_date, password_hash, password_set_at, created_at, extra,
+       terms_accepted_version, terms_accepted_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       user.id, user.name, user.email || null, user.birthDate || null,
-      user.pw?.h || null, user.pw?.set || null, user.created, extraOf(user)
+      user.pw?.h || null, user.pw?.set || null, user.created, extraOf(user),
+      user.termsAcceptedVersion || null, user.termsAcceptedAt || null
     ]
+  );
+}
+
+// Records the Terms/Privacy version an existing account accepted and when (ISO-1390). Called for
+// accounts that predate the acceptance step, or when LEGAL_VERSION moves on and they re-accept.
+export async function setTermsAccepted(pool, id, version, at) {
+  await pool.query(
+    'UPDATE users SET terms_accepted_version = $2, terms_accepted_at = $3 WHERE id = $1',
+    [id, version, at]
   );
 }
 
