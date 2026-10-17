@@ -1761,4 +1761,14 @@ export default {
   'Delete my account': 'मेरा खाता हटाएँ',
   'Could not delete — are you online?': 'हटाया नहीं जा सका — क्या आप ऑनलाइन हैं?',
   'Account deleted': 'खाता हटाया गया',
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': 'अपना ईमेल पुष्टि करें',
+  'Open the link we sent to {0}.': 'वह लिंक खोलें जो हमने {0} पर भेजा है।',
+  'Sent': 'भेज दिया',
+  'Just a moment.': 'एक पल।',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'आपका खाता पुष्ट हो गया। अगर कभी यह डिवाइस खो जाए, तो इसी ईमेल से आप वापस लौटेंगे।',
+  'Your e-mail was already confirmed.': 'आपका ईमेल पहले से पुष्ट था।',
+  'This link no longer works': 'यह लिंक अब काम नहीं करता',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'यह समाप्त हो गया या पहले ही इस्तेमाल हो चुका है। नया माँगें और सबसे नया ईमेल खोलें।',
+  'Send a new link': 'नया लिंक भेजें',
 }

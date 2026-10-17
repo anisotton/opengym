@@ -1772,4 +1772,14 @@ export default {
   'Delete my account': 'ลบบัญชีของฉัน',
   'Could not delete — are you online?': 'ลบไม่สำเร็จ — คุณออนไลน์อยู่หรือไม่?',
   'Account deleted': 'ลบบัญชีแล้ว',
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': 'ยืนยันอีเมลของคุณ',
+  'Open the link we sent to {0}.': 'เปิดลิงก์ที่เราส่งไปยัง {0}',
+  'Sent': 'ส่งแล้ว',
+  'Just a moment.': 'รอสักครู่',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'บัญชีของคุณได้รับการยืนยันแล้ว หากวันหนึ่งคุณทำอุปกรณ์นี้หาย อีเมลนี้คือทางกลับเข้ามา',
+  'Your e-mail was already confirmed.': 'อีเมลของคุณได้รับการยืนยันไว้แล้ว',
+  'This link no longer works': 'ลิงก์นี้ใช้ไม่ได้แล้ว',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'หมดอายุหรือถูกใช้ไปแล้ว ขอลิงก์ใหม่แล้วเปิดอีเมลล่าสุด',
+  'Send a new link': 'ส่งลิงก์ใหม่',
 }

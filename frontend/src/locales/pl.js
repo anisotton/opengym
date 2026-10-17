@@ -1761,4 +1761,14 @@ export default {
   'Delete my account': 'Usuń moje konto',
   'Could not delete — are you online?': 'Nie udało się usunąć — czy jesteś online?',
   'Account deleted': 'Konto usunięte',
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': 'Potwierdź swój e-mail',
+  'Open the link we sent to {0}.': 'Otwórz link, który wysłaliśmy na {0}.',
+  'Sent': 'Wysłano',
+  'Just a moment.': 'Chwileczkę.',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'Twoje konto jest potwierdzone. Jeśli kiedyś stracisz to urządzenie, wrócisz przez ten e-mail.',
+  'Your e-mail was already confirmed.': 'Twój e-mail był już potwierdzony.',
+  'This link no longer works': 'Ten link już nie działa',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'Wygasł albo został już użyty. Poproś o nowy i otwórz najnowszy e-mail.',
+  'Send a new link': 'Wyślij nowy link',
 }

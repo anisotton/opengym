@@ -1761,4 +1761,14 @@ export default {
   'Delete my account': '删除我的账户',
   'Could not delete — are you online?': '删除失败 — 你在线吗？',
   'Account deleted': '账户已删除',
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': '确认你的邮箱',
+  'Open the link we sent to {0}.': '打开我们发送到 {0} 的链接。',
+  'Sent': '已发送',
+  'Just a moment.': '请稍等。',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': '你的账户已确认。如果有一天这台设备丢了，就靠这个邮箱重新登录。',
+  'Your e-mail was already confirmed.': '你的邮箱之前已经确认过了。',
+  'This link no longer works': '这个链接已失效',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': '它已过期或已被使用。请申请一个新的，并打开最新的邮件。',
+  'Send a new link': '发送新链接',
 }
