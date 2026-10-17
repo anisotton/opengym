@@ -13,7 +13,7 @@ export default {
         'Esta política explica quais dados pessoais o Brilhart Fitness trata, para quê, com quem eles são compartilhados e como você controla tudo isso, de acordo com a Lei Geral de Proteção de Dados (LGPD, Lei 13.709/2018).',
         'A controladora dos seus dados, ou seja, quem decide como eles são tratados e responde por isso, é a Brilhart Escola — [CONFIRMAR razão social], CNPJ [CONFIRMAR], com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nesta política, "nós" se refere à Brilhart Escola.',
         'A Isotton faz o desenvolvimento e a operação técnica do aplicativo e trata os dados como operadora, só em nome da Brilhart Escola e seguindo as instruções dela.',
-        'Para qualquer assunto de privacidade, inclusive falar com o encarregado pelo tratamento de dados, escreva para privacidade@brilhart.com.br [CONFIRMAR].',
+        'O encarregado pelo tratamento de dados é [CONFIRMAR nome ou "dispensado — Res. ANPD 2/2022"], pelo e-mail privacidade@brilhart.com.br [CONFIRMAR]. Use esse e-mail para qualquer assunto de privacidade.',
       ],
     },
     {
@@ -24,11 +24,11 @@ export default {
           list: [
             'Nome — identificar sua conta e falar com você — execução de contrato;',
             'E-mail — confirmar a conta pelo link que enviamos, recuperar seu acesso e enviar avisos de cobrança e de mudanças nos termos — execução de contrato;',
-            'Data de nascimento (opcional) — só para mostrar um aviso quando a pessoa tem menos de 18 anos — execução de contrato;',
+            'Data de nascimento (opcional) — só para mostrar um aviso quando a pessoa tem menos de 18 anos — consentimento;',
             'Passkeys — permitir seu login; guardamos apenas a chave pública, e a chave privada nunca sai do seu dispositivo — execução de contrato;',
             'Senha (só quando o login por senha estiver disponível) — permitir seu login; guardamos apenas um hash da senha, nunca a senha em si — execução de contrato;',
             'Treinos, cargas, rotinas e peso corporal — é o próprio serviço: registrar, mostrar sua evolução e calcular progressões — consentimento, por poderem ser dados de saúde (veja a próxima seção);',
-            'Fotos e vídeos anexados a treinos (opcional, só quando você mesmo envia) — guardar e mostrar esse conteúdo para você dentro do app — consentimento;',
+            'Fotos e vídeos anexados a treinos (opcional, só quando você mesmo envia) — guardar e mostrar esse conteúdo para você dentro do app, nunca usados em publicidade nem mostrados a outros usuários — consentimento, que você pode retirar apagando o arquivo;',
             'Identificadores e status da assinatura — saber se sua assinatura está ativa; os dados do cartão ficam com a Stripe, e nós não os vemos — execução de contrato e, para registros fiscais, obrigação legal;',
             'Inscrição para notificações push (opcional) — enviar os avisos que você ativou — consentimento;',
             'Log de segurança — registrar entradas na conta e ações administrativas para detectar e investigar abusos; por padrão não guarda o seu endereço IP — legítimo interesse;',
@@ -41,9 +41,9 @@ export default {
     {
       heading: 'Dados de saúde',
       paragraphs: [
-        'Seus treinos, cargas e peso corporal podem revelar informações sobre sua saúde. Por isso, tratamos esses dados como dados pessoais sensíveis (LGPD, art. 11): só com o seu consentimento, dado no cadastro, e apenas para prestar o serviço a você.',
-        'A equipe não vê seu histórico de treinos no painel de administração do app. Esses dados não são usados para publicidade nem compartilhados com outros usuários.',
-        'Você pode retirar esse consentimento a qualquer momento excluindo sua conta, como explicado na seção "Seus direitos e como exercer".',
+        'Seus treinos, cargas e peso corporal podem revelar informações sobre sua saúde. Por isso, tratamos esses dados como dados pessoais sensíveis (LGPD, art. 11).',
+        'Ao marcar "Li e aceito" no cadastro, além de aceitar os Termos, você dá seu consentimento específico para que tratemos esses dados com uma única finalidade: registrar seus treinos e mostrar sua evolução para você. Sem esse consentimento não é possível usar o app, porque esse registro é o próprio serviço (LGPD, art. 9º, §3º). Você pode retirá-lo a qualquer momento, de graça, excluindo sua conta em Configurações ou pelo canal de privacidade.',
+        'A equipe não vê seu histórico de treinos no painel de administração do app. Seus registros individuais não são usados para publicidade nem compartilhados com outros usuários; a única exceção, opcional e só com números agregados, está na seção "Coach com inteligência artificial".',
       ],
     },
     {
@@ -63,7 +63,8 @@ export default {
             'Stripe — processa os pagamentos e guarda os dados do cartão e as faturas;',
             'provedor de e-mail transacional [CONFIRMAR] — envia os e-mails de confirmação de conta, recuperação de acesso e avisos de cobrança;',
             'hospedagem — os servidores do app, administrados com a plataforma Coolify, ficam em [CONFIRMAR local/provedor];',
-            'a Isotton, como operadora técnica, conforme a seção "Controladora e contato".',
+            'a Isotton, como operadora técnica, conforme a seção "Controladora e contato";',
+            'provedor de inteligência artificial [CONFIRMAR] — só quando o Coach estiver ativado e você tiver consentido, conforme a seção "Coach com inteligência artificial".',
           ],
         },
         'Quando um desses operadores tratar dados fora do Brasil, essa transferência internacional só acontece com as garantias exigidas pela LGPD.',
@@ -98,18 +99,18 @@ export default {
             'cópias de segurança: são sobrescritas em até [CONFIRMAR] dias, então um dado apagado da conta some também das cópias dentro desse prazo.',
           ],
         },
-        'Cancelar a assinatura não apaga sua conta. Seus dados só são apagados quando você exclui a conta.',
+        'Cancelar a assinatura não apaga sua conta nem seus dados; para isso, exclua a conta.',
       ],
     },
     {
       heading: 'Seus direitos e como exercer',
       paragraphs: [
         'A LGPD garante a você, entre outros, o direito de confirmar que tratamos seus dados, acessá-los, corrigi-los, levá-los para outro serviço, pedir sua eliminação, saber com quem os compartilhamos e retirar o consentimento.',
-        'Boa parte disso você faz sozinho, pelo próprio app, em Configurações:',
+        'Boa parte disso você mesmo faz, pelo próprio app, em Configurações:',
         {
           list: [
             'exportar todos os seus dados, em JSON ou ZIP;',
-            'excluir sua conta, o que apaga o estado do app, suas mídias, suas passkeys, suas sessões e seu cadastro de cliente na Stripe;',
+            'excluir sua conta, o que apaga o estado do app, suas mídias, suas passkeys, suas sessões e seu cadastro de cliente na Stripe — exceto o que a seção "Por quanto tempo guardamos" diz que permanece por prazo limitado;',
             'trocar seu e-mail e remover passkeys de aparelhos que você não usa mais.',
           ],
         },
@@ -124,8 +125,8 @@ export default {
         {
           list: [
             'login por passkey, que não depende de senha e resiste a sites falsos;',
-            'conexão sempre criptografada (HTTPS);',
-            'cookie de sessão assinado, que não pode ser forjado;',
+            'conexão criptografada (HTTPS);',
+            'cookie de sessão assinado, que impede falsificação sem a chave do servidor;',
             'senha, quando existe, guardada apenas como hash;',
             'sessões que podem ser encerradas por dispositivo, de modo que sair em um aparelho invalida aquele acesso.',
           ],
@@ -137,14 +138,15 @@ export default {
       heading: 'Coach com inteligência artificial',
       paragraphs: [
         'Quando o recurso estiver ativado nesta instância, o app pode oferecer um Coach que usa inteligência artificial para revisar seus treinos e sugerir ajustes.',
-        'Para isso, um resumo dos seus treinos é enviado a um provedor de inteligência artificial [CONFIRMAR provedor]. Isso só acontece depois que você dá um consentimento próprio para o Coach, dentro do app, e você pode desligá-lo a qualquer momento.',
+        'Para isso, um resumo dos seus treinos é enviado a um provedor de inteligência artificial [CONFIRMAR provedor]. Isso só acontece depois que você dá um consentimento próprio para o Coach, dentro do app, e você pode desligá-lo a qualquer momento. Se esse provedor estiver fora do Brasil, a transferência é internacional e segue as garantias descritas na seção "Com quem compartilhamos".',
+        'Se esta instância oferecer a comparação com outros usuários e você optar por participar, seus números entram apenas em medianas de pelo menos três pessoas, nunca individualmente nem com peso corporal ou datas; você pode sair dessa comparação a qualquer momento.',
       ],
     },
     {
       heading: 'Alterações e versão',
       paragraphs: [
         `Cada versão desta política é identificada pela data em que entrou em vigor. A versão atual é a Versão ${LEGAL_VERSION}.`,
-        'Podemos atualizar esta política para acompanhar mudanças no app ou na lei. Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app.',
+        'Podemos atualizar esta política para acompanhar mudanças no app ou na lei. Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app. Se você não aceitar, a versão anterior continua valendo até o fim do período já pago, e a assinatura não renova. Você também pode exportar e excluir seus dados a qualquer momento.',
         'A versão que você aceitou e a data do aceite ficam registradas na sua conta.',
       ],
     },

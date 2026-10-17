@@ -16,7 +16,9 @@ describe('Política de Privacidade', () => {
   it('states the decided facts', () => {
     const text = flat(privacidade)
     for (const fact of ['Brilhart Escola', 'Isotton', 'LGPD', 'Stripe', 'Coolify', 'privacidade@brilhart.com.br',
-      '90 dias', '5 mil', 'ANPD', 'passkey', '12 anos', '18 anos', 'exportar', 'excluir', '[CONFIRMAR]'])
+      '90 dias', '5 mil', 'ANPD', 'passkey', '12 anos', '18 anos', 'exportar', 'excluir', '[CONFIRMAR]',
+      'provedor de inteligência artificial [CONFIRMAR]', 'medianas de pelo menos três pessoas', 'Res. ANPD 2/2022',
+      'art. 9º, §3º', 'consentimento específico'])
       expect(text, fact).toContain(fact)
   })
   it('has no markup inside the strings', () => {
