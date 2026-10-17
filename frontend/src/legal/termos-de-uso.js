@@ -13,21 +13,21 @@ export default {
         'O Brilhart Fitness é um aplicativo para você registrar seus treinos, acompanhar as cargas que levanta, montar e seguir rotinas e anotar seu peso corporal ao longo do tempo. Ele funciona no navegador, pode ser instalado na tela inicial do celular e também tem uma versão para Android.',
         'Quem vende o serviço e responde por ele perante você é a Brilhart Escola — [CONFIRMAR razão social], CNPJ [CONFIRMAR], com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nestes termos, "nós" se refere à Brilhart Escola.',
         'O desenvolvimento e a operação técnica do aplicativo (servidores, atualizações e segurança) são feitos pela Isotton, que atua em nome da Brilhart Escola.',
-        'Ao criar sua conta e marcar que leu e aceita estes Termos de Uso e a Política de Privacidade, você fecha um contrato conosco nas condições abaixo. Se não concordar com algum ponto, não crie a conta.',
+        'Ao criar sua conta e marcar que leu e aceita estes Termos de Uso e a Política de Privacidade (ou, se já tem conta, ao aceitá-los no próximo acesso), você fecha um contrato conosco nas condições abaixo. Se não concordar com algum ponto, não crie a conta.',
       ],
     },
     {
       heading: 'Conta, passkeys e e-mail',
       paragraphs: [
         'Para usar o app você cria uma conta com seu nome e seu e-mail. O e-mail precisa ser confirmado pelo link que enviamos para ele antes de a conta ficar ativa.',
-        'O acesso é feito por passkey: uma chave de acesso guardada no seu celular, computador ou gerenciador de senhas, desbloqueada com sua digital, rosto ou PIN do aparelho. Login por senha só existe se estiver habilitado na instância que você usa; quando estiver, a senha é pessoal e você não deve reutilizá-la em outros serviços.',
+        'O acesso é feito por passkey: uma chave de acesso guardada no seu celular, computador ou gerenciador de senhas, desbloqueada com sua digital, rosto ou PIN do aparelho. Se o login por senha estiver disponível para você, a senha é pessoal e você não deve reutilizá-la em outros serviços.',
         'Você é responsável por:',
         {
           list: [
             'informar dados verdadeiros e manter seu e-mail atualizado;',
             'manter o acesso ao seu e-mail, porque é por ele que avisamos sobre cobranças, mudanças nestes termos e recuperação de acesso;',
             'proteger os dispositivos onde suas passkeys estão guardadas e removê-las da conta (em Configurações) se perder um aparelho;',
-            'tudo o que for feito na sua conta a partir dos seus dispositivos ou credenciais.',
+            'tudo o que for feito na sua conta a partir dos seus dispositivos ou credenciais, salvo quando houver falha de segurança nossa.',
           ],
         },
         'Se suspeitar de acesso indevido, fale com a gente pelos canais da última seção o quanto antes.',
@@ -82,7 +82,7 @@ export default {
             'usar o serviço para acompanhar os seus próprios treinos, sem revendê-lo ou explorá-lo comercialmente;',
             'não compartilhar sua conta nem suas credenciais com outras pessoas;',
             'não tentar burlar a segurança, acessar contas ou dados de terceiros, sobrecarregar os servidores ou contornar a cobrança;',
-            'não usar robôs, raspagem de dados ou engenharia reversa no serviço hospedado, exceto o que a licença do código-fonte permite;',
+            'não usar robôs ou raspagem de dados contra o serviço hospedado;',
             'enviar apenas fotos, vídeos e textos que sejam seus ou que você tenha direito de usar, sem conteúdo ilegal, ofensivo ou que exponha outras pessoas sem autorização.',
           ],
         },
@@ -129,9 +129,9 @@ export default {
         'Dentro do que a lei permite, não respondemos por:',
         {
           list: [
-            'lesões ou problemas de saúde decorrentes de uso inadequado do app, de execução incorreta dos exercícios ou de treino sem a orientação profissional recomendada no aviso de saúde;',
+            'lesões decorrentes de uso inadequado do app ou de execução incorreta dos exercícios;',
             'perda de acesso causada pela perda dos seus dispositivos, passkeys ou do acesso ao seu e-mail;',
-            'falhas da sua conexão com a internet, do seu aparelho ou de serviços de terceiros que não estejam sob nosso controle;',
+            'falhas da sua conexão com a internet, do seu aparelho ou de serviços de terceiros que você escolheu usar, como seu provedor de internet ou gerenciador de senhas;',
             'uso da sua conta por pessoas a quem você deu acesso.',
           ],
         },
@@ -142,7 +142,7 @@ export default {
       heading: 'Alterações destes termos e versão',
       paragraphs: [
         `Cada versão destes termos é identificada pela data em que entrou em vigor. A versão atual é a Versão ${LEGAL_VERSION}.`,
-        'Podemos atualizar estes termos para acompanhar mudanças no app, nos preços ou na lei. Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app; se não concordar, pode cancelar a assinatura e exportar e excluir seus dados.',
+        'Podemos atualizar estes termos para acompanhar mudanças no app ou na lei. Mudanças de preço seguem a regra da seção "Assinatura, preços, primeiro mês e renovação". Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app. Se você não aceitar, a versão anterior continua valendo até o fim do período já pago, e a assinatura não renova. Você também pode exportar e excluir seus dados a qualquer momento.',
         'A versão que você aceitou e a data do aceite ficam registradas na sua conta.',
       ],
     },
