@@ -27,6 +27,7 @@ import { openDeviceLinkRedeem } from './components/Passkeys.jsx'
 import { needsEmailPromptDue, openNeedsEmailPrompt } from './components/AccountEmail.jsx'
 import Login from './views/Login.jsx'
 import EmailVerify from './views/EmailVerify.jsx'
+import Legal from './views/Legal.jsx'
 import RecoverAccess from './views/RecoverAccess.jsx'
 import MobileOnboarding from './views/MobileOnboarding.jsx'
 import Home from './views/Home.jsx'
@@ -143,7 +144,7 @@ function Shell() {
   // ISO-1398) — not consumed in those cases, so it still fires once the route or the pending code
   // clears, rather than being skipped for the rest of the visit.
   const needsEmailOffered = useRef(false)
-  const emailSheetRoute = loc.pathname === '/recuperar' || loc.pathname === '/verificar-email'
+  const emailSheetRoute = loc.pathname === '/recuperar' || loc.pathname === '/verificar-email' || loc.pathname === '/termos' || loc.pathname === '/privacidade'
   useEffect(() => {
     if (!ready || !user?.needsEmail || needsEmailOffered.current || !needsEmailPromptDue()) return
     if (emailSheetRoute || linkCode) return
@@ -185,6 +186,9 @@ function Shell() {
   // App.jsx's own `linkCode` effect opens below (it needs somewhere to render into), and its
   // "Passkey added" toast lands the same way a device-link QR redeem's does.
   if (loc.pathname === '/verificar-email') return <><div id="app" className="vfade"><EmailVerify /></div><Modals /><Toast /></>
+  // Terms and privacy text: public, same reasoning (views/Legal.jsx, ISO-1390).
+  if (loc.pathname === '/termos') return <><div id="app" className="vfade"><Legal id="termos" /></div><Modals /><Toast /></>
+  if (loc.pathname === '/privacidade') return <><div id="app" className="vfade"><Legal id="privacidade" /></div><Modals /><Toast /></>
   if (loc.pathname === '/recuperar') return <><div id="app" className="vfade"><RecoverAccess /></div><Modals /><Toast /></>
 
   const authed = user || isGuest

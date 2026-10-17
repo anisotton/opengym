@@ -5,6 +5,10 @@ import pt from './pt.js'
 
 export const PT_BR_OVERRIDES = {
   // --- billing / subscription (ISO-1392/ISO-1395) ---
+  // --- legal pages (ISO-1390) ---
+  "Version {0}": "Versão {0}",
+  "Terms of Use": "Termos de Uso",
+  "Privacy Policy": "Política de Privacidade",
   "Read-only account": "Conta em modo leitura",
   "Subscribe to log workouts again. Your history is still here.": "Assine para voltar a registrar treinos. Seu histórico continua disponível.",
   "View plans": "Ver planos",

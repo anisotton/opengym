@@ -1,5 +1,9 @@
 // Portuguese UI strings. Keys are the English source strings (see lib/i18n.js).
 export default {
+  // --- legal pages (ISO-1390) ---
+  "Version {0}": "Versão {0}",
+  "Terms of Use": "Termos de Uso",
+  "Privacy Policy": "Política de Privacidade",
   // --- billing / subscription (ISO-1392/ISO-1395) ---
   "Read-only account": "Conta em modo de leitura",
   "Subscribe to log workouts again. Your history is still here.": "Subscreva para voltar a registar treinos. O seu histórico continua disponível.",
