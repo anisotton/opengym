@@ -2,7 +2,6 @@ import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { api, webauthnOK, passkeyLogin } from '../lib/api.js'
 import { hasData } from '../store/useStore.js'
-import { userFromMe } from '../lib/session-user.js'
 import { t } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { guestAllowed } from '../lib/guest.js'
@@ -58,7 +57,7 @@ function RegisterSheet({ close }) {
 const errStyle = { color: 'var(--red)', marginTop: 10, textAlign: 'start' }
 
 export default function Login() {
-  const { setUser, adoptProfile, setGuest } = useStore()
+  const { setUser, setUserFromMe, adoptProfile, setGuest } = useStore()
   const config = useStore(s => s.config)
   const canGuest = guestAllowed(config)
   const pwOn = passwordOn(config)
@@ -74,7 +73,7 @@ export default function Login() {
       // terms sheet are right from this sign-in on, not only after the next full reload. A
       // failure here still leaves a signed-in user; the fields just catch up on the next boot.
       const me = await api('/api/me').catch(() => null)
-      setUser(me ? userFromMe(me, u) : u, { adopt: true })
+      if (me) setUserFromMe(me, u, { adopt: true }); else setUser(u, { adopt: true })
       await adoptProfile(askAddDeviceData)
       useUI.getState().toast(t('Welcome back, {0}', u.name))
     }

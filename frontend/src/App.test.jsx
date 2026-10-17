@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => {
   const state = {
     ready: true, linkCode: null, needsEmail: true, promptDue: true,
     config: {}, S: {}, isGuest: false, needsMobileOnboarding: false,
-    needsTerms: false, online: true, signedIn: true,
+    needsTerms: false, online: true, signedIn: true, termsChecked: true,
   }
   state.snapshot = () => ({
     S: state.S, config: state.config, boot: vi.fn(), linkCode: state.linkCode,
@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
     isGuest: () => state.isGuest,
     user: state.ready && state.signedIn ? { id: 'u1', needsEmail: state.needsEmail, needsTerms: state.needsTerms, admin: false } : null,
     ready: state.ready,
+    termsChecked: state.termsChecked,
   })
   return state
 })
@@ -100,6 +101,7 @@ beforeEach(() => {
   mocks.online = true
   mocks.signedIn = true
   mocks.isGuest = false
+  mocks.termsChecked = true
   openNeedsEmailPrompt.mockClear()
   openDeviceLinkRedeem.mockClear()
   openTermsSheet.mockClear()
@@ -176,5 +178,21 @@ describe('App: terms sheet (ISO-1390)', () => {
     mocks.needsTerms = false
     rerender()
     expect(openDeviceLinkRedeem).toHaveBeenCalledTimes(1)
+  })
+
+  // A `needsTerms: true` read back from storage on a boot whose /api/me never answered (a 5xx, a
+  // proxy, a network that only looks online) must not lock the offline-first app: the sheet waits
+  // for this visit's own answer (termsChecked, set by setUserFromMe).
+  it('stays shut on a stored needsTerms until this visit\'s /api/me has answered', () => {
+    mocks.needsTerms = true
+    mocks.termsChecked = false
+    mocks.linkCode = 'ABC123'
+    mount('#/home')
+    expect(openTermsSheet).not.toHaveBeenCalled()
+    // Nothing waits behind a lock that is not there.
+    expect(openDeviceLinkRedeem).toHaveBeenCalledTimes(1)
+    mocks.termsChecked = true
+    rerender()
+    expect(openTermsSheet).toHaveBeenCalledTimes(1)
   })
 })

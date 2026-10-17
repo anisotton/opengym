@@ -2,6 +2,7 @@
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { userFromMe } from '../lib/session-user.js'
 import { passwordError, PasswordSignInSheet, PasswordRegisterForm, PasswordRow, PasswordSheet, EmailSheet, looksLikeEmail } from './PasswordAuth.jsx'
 import { normalizeEmail } from '../../../api/password.js'
 
@@ -15,6 +16,8 @@ const mocks = vi.hoisted(() => {
   const state = { webauthn: true, hasData: false, sheets: [], answers: {}, calls: [] }
   state.toast = vi.fn()
   state.setUser = vi.fn()
+  // The store's setUserFromMe: the real mapping (set after import below) into the setUser spy.
+  state.setUserFromMe = vi.fn((me, base, opts) => state.setUser(state.userFromMe(me, base), opts))
   state.adoptProfile = vi.fn(async () => ({}))
   state.pushState = vi.fn(async () => {})
   state.pullState = vi.fn(async () => {})
@@ -30,7 +33,7 @@ const mocks = vi.hoisted(() => {
   })
   state.snapshot = () => ({
     S: {}, config: { password_login: true },
-    setUser: state.setUser, adoptProfile: state.adoptProfile, pushState: state.pushState, pullState: state.pullState,
+    setUser: state.setUser, setUserFromMe: state.setUserFromMe, adoptProfile: state.adoptProfile, pushState: state.pushState, pullState: state.pullState,
   })
   return state
 })
@@ -87,7 +90,8 @@ beforeEach(() => {
   mocks.answers = {}
   mocks.calls.length = 0
   for (const f of [mocks.toast, mocks.setUser, mocks.adoptProfile, mocks.pushState, mocks.pullState, mocks.passwordLogin,
-    mocks.passwordRegister, mocks.passwordResetRedeem, mocks.passkeyAssertion]) f.mockClear()
+    mocks.passwordRegister, mocks.passwordResetRedeem, mocks.passkeyAssertion, mocks.setUserFromMe]) f.mockClear()
+  mocks.userFromMe = userFromMe
 })
 afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { root.unmount(); host.remove() }) }) })
 
@@ -101,6 +105,9 @@ describe('passwordError', () => {
     expect(passwordError(fail(409, { code: 'last-way-in' }))).toMatch(/only way into your profile/)
     expect(passwordError(fail(429, { code: 'locked', retryAfter: 120 }))).toBe('Too many attempts — try again in 2 minutes.')
     expect(passwordError(fail(429, { code: 'locked', retryAfter: 30 }))).toBe('Too many attempts — try again in 30 seconds.')
+    // ISO-1390: a signup refused over the terms — both mean "update the app", never raw English.
+    expect(passwordError(fail(400, { error: 'terms version is stale', code: 'terms-version-stale' }))).toBe('Update the app to accept the new terms.')
+    expect(passwordError(fail(400, { error: 'update the app to accept the terms', code: 'terms-required' }))).toBe('Update the app to accept the new terms.')
     // No code: what the server said, as it said it.
     expect(passwordError(fail(500, { error: 'server error' }))).toBe('server error')
   })
@@ -124,6 +131,7 @@ describe('PasswordSignInSheet', () => {
     expect(mocks.passwordLogin).toHaveBeenCalledWith('Ana', 'correct horse battery')
     expect(mocks.calls.some(c => c.path === '/api/me' && c.method === 'GET')).toBe(true)
     expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana', termsVersion: null, termsAcceptedAt: null, needsTerms: true }, { adopt: true })   // nothing syncs until the question is answered
+    expect(mocks.setUserFromMe).toHaveBeenCalledTimes(1)   // this visit's terms check (termsChecked)
     expect(close).toHaveBeenCalled()
     expect(mocks.adoptProfile).toHaveBeenCalled()
     expect(mocks.toast).toHaveBeenCalledWith('Welcome back, Ana')
@@ -183,6 +191,7 @@ describe('PasswordSignInSheet', () => {
     await submit(host)
     expect(mocks.passwordLogin).toHaveBeenCalledWith('Ana@Example.com', 'correct horse battery')
     expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana' }, { adopt: true })
+    expect(mocks.setUserFromMe).not.toHaveBeenCalled()   // a failed refetch is no terms check
   })
 
   it('a reset code is redeemed with the e-mail too', async () => {
@@ -232,7 +241,9 @@ describe('PasswordRegisterForm', () => {
     accept(host)
     await submit(host)
     expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', '', '2026-10-17')
-    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo' })
+    // The acceptance the server recorded in that request (ISO-1390), so Settings shows its date now.
+    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo', termsVersion: '2026-10-17', termsAcceptedAt: expect.any(String), needsTerms: false })
+    expect(Number.isNaN(Date.parse(mocks.setUser.mock.calls[0][0].termsAcceptedAt))).toBe(false)
     expect(mocks.pullState).toHaveBeenCalled()
     expect(mocks.toast).toHaveBeenCalledWith('Welcome, Cleo')
   })
@@ -258,7 +269,7 @@ describe('PasswordRegisterForm', () => {
     expect(mocks.passwordRegister).toHaveBeenLastCalledWith('Cleo', 'correct horse battery', '', 'cleo@example.com', '2026-10-17')
     expect(alertText(host)).toBe('Another profile already uses this e-mail address.')
     await submit(host)
-    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo' })
+    expect(mocks.setUser).toHaveBeenCalledWith(expect.objectContaining({ id: 'u9', name: 'Cleo' }))
   })
 
   it('keeps Create profile disabled until the terms are accepted, then sends LEGAL_VERSION', async () => {

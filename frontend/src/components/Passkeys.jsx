@@ -9,7 +9,6 @@ import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { dateLocale } from '../lib/i18n-core.js'
 import { api, webauthnOK, createPasskey } from '../lib/api.js'
-import { userFromMe } from '../lib/session-user.js'
 import { copyText } from '../lib/clipboard.js'
 import { deviceLinkUrl, deviceLabel } from '../lib/device-link.js'
 import { askAddDeviceData } from '../sheets.jsx'
@@ -298,7 +297,8 @@ export function DeviceLinkRedeemSheet({ close }) {
       // before it is answered (adoptProfile).
       // The verify answer is bare; /api/me is where `needsTerms` comes from (ISO-1390).
       const me = await api('/api/me').catch(() => null)
-      st.setUser(me ? userFromMe(me, r.user) : r.user, same ? undefined : { adopt: { alwaysAsk: true } })
+      const opts = same ? undefined : { adopt: { alwaysAsk: true } }
+      if (me) st.setUserFromMe(me, r.user, opts); else st.setUser(r.user, opts)
       close()
       if (same) { toast(t('Passkey added')); return }
       // Signed in by now whatever happens next: a pull that fails is the sync banner's to say

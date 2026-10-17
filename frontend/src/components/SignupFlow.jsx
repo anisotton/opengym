@@ -54,7 +54,9 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
     setBusy(true); setErr(null)
     try {
       const u = await passkeyRegister(n, code.trim(), foldEmail(email), birthDate, LEGAL_VERSION)
-      await onCreated({ ...u, email: foldEmail(email), emailVerified: false, needsEmail: false })
+      // The terms fields too (ISO-1390): the server recorded this acceptance in the same request,
+      // so Settings shows its date from the start, not only after the next /api/me.
+      await onCreated({ ...u, email: foldEmail(email), emailVerified: false, needsEmail: false, termsVersion: LEGAL_VERSION, termsAcceptedAt: new Date().toISOString(), needsTerms: false })
       setStep('sent')
     } catch (e) {
       const msg = webauthnOutcome(e, 'register', 'create')

@@ -104,7 +104,7 @@ test('register/options: no termsVersion → 400 terms-required; wrong type too; 
   const ip = '198.51.100.40';
   const missing = await h.req('POST', '/api/register/options', { body: { name: 'A', email: 'a@x.io' }, ip });
   assert.equal(missing.status, 400);
-  assert.deepEqual(missing.body, { error: 'accept the terms to continue', code: 'terms-required' });
+  assert.deepEqual(missing.body, { error: 'update the app to accept the terms', code: 'terms-required' });
   for (const termsVersion of [42, '', '   ']) {
     const r = await h.req('POST', '/api/register/options', { body: { name: 'A', email: 'a@x.io', termsVersion }, ip });
     assert.equal(r.status, 400, JSON.stringify(termsVersion));

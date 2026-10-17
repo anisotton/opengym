@@ -2,6 +2,7 @@
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { userFromMe } from '../lib/session-user.js'
 import { passkeyError, PasskeysRow, PasskeysSheet, DeviceLinkSheet, DeviceLinkRedeemSheet } from './Passkeys.jsx'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -14,6 +15,8 @@ const mocks = vi.hoisted(() => {
   const state = { webauthn: true, sheets: [], answers: {}, calls: [], store: {} }
   state.toast = vi.fn()
   state.setUser = vi.fn()
+  // The store's setUserFromMe: the real mapping (set after import below) into the setUser spy.
+  state.setUserFromMe = vi.fn((me, base, opts) => state.setUser(state.userFromMe(me, base), opts))
   state.adoptProfile = vi.fn(async () => ({}))
   state.passkeyAssertion = vi.fn(async () => ({ cid: 'login-cid', credential: { id: 'k1' } }))
   state.createPasskey = vi.fn(async () => ({ id: 'new-key', response: {} }))
@@ -26,7 +29,7 @@ const mocks = vi.hoisted(() => {
     if (a instanceof Error) throw a
     return typeof a === 'function' ? a() : a ?? {}
   })
-  state.snapshot = () => ({ ...state.store, setUser: state.setUser, adoptProfile: state.adoptProfile })
+  state.snapshot = () => ({ ...state.store, setUser: state.setUser, setUserFromMe: state.setUserFromMe, adoptProfile: state.adoptProfile })
   return state
 })
 vi.mock('../store/useStore.js', () => {
@@ -107,7 +110,8 @@ beforeEach(() => {
   mocks.answers = {}
   mocks.calls.length = 0
   mocks.store = { user: { id: 'u1', name: 'Ana' }, linkCode: null }
-  for (const f of [mocks.toast, mocks.setUser, mocks.adoptProfile, mocks.passkeyAssertion, mocks.createPasskey, mocks.copyText, mocks.askAddDeviceData]) f.mockClear()
+  for (const f of [mocks.toast, mocks.setUser, mocks.adoptProfile, mocks.passkeyAssertion, mocks.createPasskey, mocks.copyText, mocks.askAddDeviceData, mocks.setUserFromMe]) f.mockClear()
+  mocks.userFromMe = userFromMe
 })
 afterEach(() => { vi.useRealTimers(); act(() => { mounted.splice(0).forEach(({ root, host }) => { root.unmount(); host.remove() }) }) })
 

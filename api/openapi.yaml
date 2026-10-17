@@ -458,7 +458,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 name: { value: { error: "name required" } }
-                termsRequired: { value: { error: "accept the terms to continue", code: "terms-required" } }
+                termsRequired: { value: { error: "update the app to accept the terms", code: "terms-required" } }
                 termsStale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
                 email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
                 birthDate: { value: { error: "that is not a date", code: "birth-date-invalid" } }
@@ -865,7 +865,7 @@ paths:
               examples:
                 policy: { value: { error: "this password is too easy to guess", code: "too-common" } }
                 email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
-                termsRequired: { value: { error: "accept the terms to continue", code: "terms-required" } }
+                termsRequired: { value: { error: "update the app to accept the terms", code: "terms-required" } }
                 termsStale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
         '403':
           description: Invite-only and the code is missing, used or revoked.
@@ -1302,7 +1302,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
-                required: { value: { error: "accept the terms to continue", code: "terms-required" } }
+                required: { value: { error: "update the app to accept the terms", code: "terms-required" } }
                 stale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }

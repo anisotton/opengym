@@ -30,6 +30,10 @@ export function TermsSheet({ close }) {
       close()
     } catch (e) {
       if (e?.data?.code === 'terms-version-stale') setStale(true)
+      // The session itself is gone (expired, revoked, signed out everywhere): no Accept can ever
+      // land, and a locked sheet over it would be a dead end. Closed, and the store takes the
+      // same revoked-session path boot does — the sign-in screen and the banner say why.
+      else if (e?.status === 401) { close(); useStore.getState().sessionRefused(e) }
       // Anything else — usually no network: the sheet stays, and says why nothing happened.
       else setErr(t('Could not save your acceptance — are you online?'))
     } finally { setBusy(false) }

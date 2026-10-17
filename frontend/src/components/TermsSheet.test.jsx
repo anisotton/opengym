@@ -11,9 +11,10 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const mocks = vi.hoisted(() => {
   const state = { config: {}, user: { id: 'u1', name: 'Ana', needsTerms: true } }
   state.setUser = vi.fn()
+  state.sessionRefused = vi.fn()
   state.termsAccept = vi.fn()
   state.openLegalSheet = vi.fn()
-  state.snapshot = () => ({ config: state.config, user: state.user, setUser: state.setUser })
+  state.snapshot = () => ({ config: state.config, user: state.user, setUser: state.setUser, sessionRefused: state.sessionRefused })
   return state
 })
 vi.mock('../store/useStore.js', () => {
@@ -50,6 +51,7 @@ beforeEach(() => {
   mocks.config = {}
   mocks.user = { id: 'u1', name: 'Ana', needsTerms: true }
   mocks.setUser.mockClear()
+  mocks.sessionRefused.mockClear()
   mocks.termsAccept.mockReset()
   mocks.openLegalSheet.mockClear()
 })
@@ -96,6 +98,28 @@ describe('TermsSheet', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toMatch(/Could not save your acceptance/)
     expect(button(host, 'Accept and continue')).toBeTruthy()
     expect(close).not.toHaveBeenCalled()
+  })
+
+  // A dead session must not leave a locked sheet with an Accept that can never land.
+  it('a 401 closes the sheet and takes the store\'s revoked-session path', async () => {
+    const e = fail(401)
+    mocks.termsAccept.mockRejectedValue(e)
+    const close = vi.fn()
+    const host = mount(<TermsSheet close={close} />)
+    await click(host, 'Accept and continue')
+    expect(close).toHaveBeenCalled()
+    expect(mocks.sessionRefused).toHaveBeenCalledWith(e)
+    expect(mocks.setUser).not.toHaveBeenCalled()
+  })
+
+  it('a server error keeps the sheet open with the alert, signed in', async () => {
+    mocks.termsAccept.mockRejectedValue(fail(500))
+    const close = vi.fn()
+    const host = mount(<TermsSheet close={close} />)
+    await click(host, 'Accept and continue')
+    expect(host.querySelector('[role="alert"]')?.textContent).toMatch(/Could not save your acceptance/)
+    expect(close).not.toHaveBeenCalled()
+    expect(mocks.sessionRefused).not.toHaveBeenCalled()
   })
 
   it('starts stale when the server already announces a newer legal_version', () => {

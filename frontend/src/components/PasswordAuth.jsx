@@ -18,7 +18,6 @@ import { askAddDeviceData } from '../sheets.jsx'
 import { Row, Button } from './ui.jsx'
 import TermsCheckbox from './TermsCheckbox.jsx'
 import { LEGAL_VERSION } from '../legal/version.js'
-import { userFromMe } from '../lib/session-user.js'
 
 // The server's floor (api/password.js MIN_LENGTH), checked here first so the common mistake is
 // answered without a round trip. The server still decides.
@@ -67,6 +66,10 @@ export function passwordError(e) {
     case 'reset-invalid': return t('That reset code is wrong or has expired — ask your admin for a new one.')
     case 'disabled': return t('This account has been disabled.')
     case 'busy': return t('The server is busy — try again in a moment.')
+    // ISO-1390: a signup the server refused over the terms. This bundle always sends its own
+    // LEGAL_VERSION, so `terms-required` only reaches an older one that sends none — for both,
+    // the way forward is a newer app.
+    case 'terms-required': case 'terms-version-stale': return t('Update the app to accept the new terms.')
   }
   return e?.message || t('Sign-in failed')
 }
@@ -100,7 +103,8 @@ export function webauthnOutcome(e, flow, step) {
 async function signedIn(u, close) {
   const st = useStore.getState()
   const me = await api('/api/me').catch(() => null)
-  st.setUser(me ? userFromMe(me, u) : u, { adopt: true })
+  // Only an answered /api/me counts as this visit's terms check (setUserFromMe, ISO-1390).
+  if (me) st.setUserFromMe(me, u, { adopt: true }); else st.setUser(u, { adopt: true })
   close()
   await st.adoptProfile(askAddDeviceData)
   toast(t('Welcome back, {0}', u.name))
@@ -205,7 +209,9 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     try {
       const u = await passwordRegister(n, pw, code.trim(), mail, LEGAL_VERSION)
       const st = useStore.getState()
-      st.setUser(u); close()
+      // The server recorded this acceptance in the same request (ISO-1390): Settings shows its
+      // date from here on, not only after the next /api/me.
+      st.setUser({ ...u, termsVersion: LEGAL_VERSION, termsAcceptedAt: new Date().toISOString(), needsTerms: false }); close()
       if (hasData(useStore.getState().S)) { await st.pushState(); toast(t('Profile created — data from this device moved into it')) }
       else { await st.pullState(); toast(t('Welcome, {0}', u.name)) }
     } catch (e) { setErr(passwordError(e)) }

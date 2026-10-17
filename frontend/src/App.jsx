@@ -134,8 +134,12 @@ function Shell() {
   // only online: accepting is a server call, and offline use of the app is never blocked, so the
   // sheet waits for the network and opens the moment it comes back. Once per account per visit;
   // still unaccepted, the next load (boot's fresh /api/me) asks again. The sheets below wait
-  // behind it rather than stacking over a locked one.
-  const needsTerms = !!user?.needsTerms && !isGuest
+  // behind it rather than stacking over a locked one. And only on this visit's own /api/me answer
+  // (`termsChecked`): the user kept in storage carries the `needsTerms` of an earlier visit, and a
+  // boot whose /api/me failed (a 5xx, a proxy, a network that is "online" but reaches nothing)
+  // would otherwise lock the app behind an Accept that can only fail.
+  const termsChecked = useStore(s => s.termsChecked)
+  const needsTerms = !!user?.needsTerms && !isGuest && termsChecked
   const online = useOnline()
   const termsOffered = useRef(null)
   useEffect(() => {

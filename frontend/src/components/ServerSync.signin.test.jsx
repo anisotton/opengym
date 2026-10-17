@@ -2,10 +2,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // A passkey sign-in after a session ended (ISO-1390): the sign-in answer is bare, so the user
-// handed to setUser is built from GET /api/me — it is the only place `needsTerms` comes from.
-const mocks = vi.hoisted(() => ({ setUser: null, api: null, passkeyLogin: null }))
+// handed to the store is built from GET /api/me — it is the only place `needsTerms` comes from —
+// through setUserFromMe, which also marks this visit's terms check (termsChecked); a failed
+// refetch keeps the bare answer through plain setUser and marks nothing.
+const mocks = vi.hoisted(() => ({ setUser: null, setUserFromMe: null, api: null, passkeyLogin: null }))
 vi.mock('../store/useStore.js', () => {
-  const snap = () => ({ setUser: mocks.setUser, adoptProfile: vi.fn(async () => ({})) })
+  const snap = () => ({ setUser: mocks.setUser, setUserFromMe: mocks.setUserFromMe, adoptProfile: vi.fn(async () => ({})) })
   const useStore = selector => (selector ? selector(snap()) : snap())
   useStore.getState = snap
   return { useStore }
@@ -29,20 +31,24 @@ const { passkeySignIn } = await import('./ServerSync.jsx')
 const u = { id: 'u1', name: 'Ana', admin: false }
 beforeEach(() => {
   mocks.setUser = vi.fn()
+  mocks.setUserFromMe = vi.fn()
   mocks.passkeyLogin = vi.fn(async () => u)
 })
 
 describe('passkeySignIn → /api/me', () => {
-  it('hands setUser the user /api/me describes, needsTerms included', async () => {
-    mocks.api = vi.fn(async () => ({ user: u, needsTerms: true, termsVersion: '2026-10-17', termsAcceptedAt: null }))
+  it('hands setUserFromMe the /api/me answer, needsTerms included', async () => {
+    const me = { user: u, needsTerms: true, termsVersion: '2026-10-17', termsAcceptedAt: null }
+    mocks.api = vi.fn(async () => me)
     await passkeySignIn()
     expect(mocks.api).toHaveBeenCalledWith('/api/me')
-    expect(mocks.setUser).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1', needsTerms: true }), { adopt: true })
+    expect(mocks.setUserFromMe).toHaveBeenCalledWith(me, u, { adopt: true })
+    expect(mocks.setUser).not.toHaveBeenCalled()
   })
 
   it('falls back to the bare sign-in answer when /api/me fails', async () => {
     mocks.api = vi.fn(() => Promise.reject(new Error('offline')))
     await passkeySignIn()
     expect(mocks.setUser).toHaveBeenCalledWith(u, { adopt: true })
+    expect(mocks.setUserFromMe).not.toHaveBeenCalled()
   })
 })

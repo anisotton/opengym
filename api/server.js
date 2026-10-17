@@ -1085,13 +1085,15 @@ const EMAIL_ERRORS = {
 // to the text the person could actually read — the copy bundled with the app, whose version the
 // app sends as `termsVersion`. The server records the version, so it has to be the one in force:
 // anything else is refused rather than stored as an acceptance of a text nobody showed. Two codes,
-// because the two cases want different words from the app: nothing at all means the box was not
-// ticked (`terms-required`), a different version means an app built before the texts changed,
-// which only an update fixes (`terms-version-stale`).
+// because the two cases want different words from the app: nothing at all (`terms-required`), a
+// different version an app built before the texts changed (`terms-version-stale`). A current app
+// never sends nothing — its forms will not submit unticked — so `terms-required` here only reaches
+// a bundle from before ISO-1390, which shows the message as it stands: an update is its way
+// forward too, and the words say so rather than ask it to tick a box it does not have.
 function termsVersionProblem(body) {
   const v = body.termsVersion;
   if (v === LEGAL_VERSION) return null;
-  if (typeof v !== 'string' || !v.trim()) return { status: 400, error: 'accept the terms to continue', code: 'terms-required' };
+  if (typeof v !== 'string' || !v.trim()) return { status: 400, error: 'update the app to accept the terms', code: 'terms-required' };
   return { status: 400, error: 'these terms are not the current ones — update the app', code: 'terms-version-stale' };
 }
 // A birth date as the signup form sends it: plain YYYY-MM-DD, not in the future, not absurdly old

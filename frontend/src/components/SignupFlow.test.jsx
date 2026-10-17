@@ -34,13 +34,13 @@ function type(el, value) {
 }
 const button = (host, text) => [...host.querySelectorAll('button')].find(b => b.textContent === text)
 
-function Harness() {
+function Harness({ onCreated = async () => {} }) {
   const [name, setName] = React.useState('Ana')
   const [code, setCode] = React.useState('')
-  return <SignupFlow name={name} setName={setName} code={code} setCode={setCode} inviteOnly={false} close={() => {}} onCreated={async () => {}} />
+  return <SignupFlow name={name} setName={setName} code={code} setCode={setCode} inviteOnly={false} close={() => {}} onCreated={onCreated} />
 }
-function filled() {
-  const host = mount(<Harness />)
+function filled(props) {
+  const host = mount(<Harness {...props} />)
   type(host.querySelector('input[type="email"]'), 'ana@example.com')
   type(host.querySelector('input[type="date"]'), '1990-05-05')
   return host
@@ -62,12 +62,28 @@ describe('SignupFlow terms checkbox', () => {
     expect(button(host, 'Create passkey').disabled).toBe(false)
   })
 
-  it('sends the bundle LEGAL_VERSION as the fifth argument', async () => {
-    const host = filled()
+  it('sends the bundle LEGAL_VERSION as the fifth argument, and hands on the acceptance it recorded', async () => {
+    const onCreated = vi.fn(async () => {})
+    const host = filled({ onCreated })
     act(() => host.querySelector('input[name="terms"]').click())
     act(() => button(host, 'Create passkey').click())
     await settle()
     expect(mocks.passkeyRegister).toHaveBeenCalledWith('Ana', '', 'ana@example.com', '1990-05-05', '2026-10-17')
+    // Settings shows the acceptance date straight away, not only after the next /api/me.
+    const u = onCreated.mock.calls[0][0]
+    expect(u).toMatchObject({ id: 'u1', termsVersion: '2026-10-17', needsTerms: false })
+    expect(Number.isNaN(Date.parse(u.termsAcceptedAt))).toBe(false)
+  })
+
+  // A server on newer terms than this bundle refuses the signup: the form says to update the app,
+  // in the UI language, not the server's raw English.
+  it('a stale terms version from the server asks for an app update', async () => {
+    mocks.passkeyRegister.mockRejectedValueOnce(Object.assign(new Error('terms version is stale'), { status: 400, data: { code: 'terms-version-stale' } }))
+    const host = filled()
+    act(() => host.querySelector('input[name="terms"]').click())
+    act(() => button(host, 'Create passkey').click())
+    await settle()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('Update the app to accept the new terms.')
   })
 
   it('go() refuses to register when the box is unticked, even if the button is clicked', async () => {
