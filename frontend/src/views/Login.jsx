@@ -2,6 +2,7 @@ import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { api, webauthnOK, passkeyLogin } from '../lib/api.js'
 import { hasData } from '../store/useStore.js'
+import { userFromMe } from '../lib/session-user.js'
 import { t } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { guestAllowed } from '../lib/guest.js'
@@ -68,12 +69,12 @@ export default function Login() {
     try {
       const u = await passkeyLogin()
       // login/verify answers only {id,name,admin} — unlike boot()'s GET /api/me, which also
-      // carries email/emailVerified/needsEmail (ISO-1397, PASSWORD_LOGIN off only). Asked for
-      // here too, so the reminder banner and Settings' row are right from this sign-in on,
-      // not only after the next full reload. A failure here still leaves a signed-in user;
-      // the fields just catch up on the next boot.
+      // carries email/emailVerified/needsEmail (ISO-1397, PASSWORD_LOGIN off only) and the terms
+      // fields (ISO-1390). Asked for here too, so the reminder banner, Settings' row and the
+      // terms sheet are right from this sign-in on, not only after the next full reload. A
+      // failure here still leaves a signed-in user; the fields just catch up on the next boot.
       const me = await api('/api/me').catch(() => null)
-      setUser(me && 'needsEmail' in me ? { ...u, email: me.email, emailVerified: !!me.emailVerified, needsEmail: !!me.needsEmail } : u, { adopt: true })
+      setUser(me ? userFromMe(me, u) : u, { adopt: true })
       await adoptProfile(askAddDeviceData)
       useUI.getState().toast(t('Welcome back, {0}', u.name))
     }

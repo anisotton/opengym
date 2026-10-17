@@ -16,6 +16,9 @@ import { api, webauthnOK, passkeyAssertion, passwordLogin, passwordRegister, pas
 import { classifyWebauthnFailure, webauthnFailureText } from '../lib/webauthn-error.js'
 import { askAddDeviceData } from '../sheets.jsx'
 import { Row, Button } from './ui.jsx'
+import TermsCheckbox from './TermsCheckbox.jsx'
+import { LEGAL_VERSION } from '../legal/version.js'
+import { userFromMe } from '../lib/session-user.js'
 
 // The server's floor (api/password.js MIN_LENGTH), checked here first so the common mistake is
 // answered without a round trip. The server still decides.
@@ -90,10 +93,14 @@ export function webauthnOutcome(e, flow, step) {
 }
 
 // Signed in: the same steps as a passkey sign-in (Login.jsx) — and the same account coming back
-// merges what this device kept for it (adoptProfile).
+// merges what this device kept for it (adoptProfile). That includes asking /api/me for what the
+// sign-in answer leaves out (e-mail state, ISO-1397; terms, ISO-1390): without it a password
+// sign-in would skip the "we updated our terms" sheet until the next reload. A failure still
+// signs in; the fields catch up on the next boot.
 async function signedIn(u, close) {
   const st = useStore.getState()
-  st.setUser(u, { adopt: true })
+  const me = await api('/api/me').catch(() => null)
+  st.setUser(me ? userFromMe(me, u) : u, { adopt: true })
   close()
   await st.adoptProfile(askAddDeviceData)
   toast(t('Welcome back, {0}', u.name))
@@ -178,6 +185,7 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
   const [email, setEmail] = useState('')
   const [pw, setPw] = useState('')
   const [again, setAgain] = useState('')
+  const [terms, setTerms] = useState(false)   // never pre-ticked: acceptance is the user's own act
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const submit = async ev => {
@@ -192,9 +200,10 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
       : pw !== again ? t('The two passwords are not the same.')
       : null
     if (bad) { setErr(bad); return }
+    if (!terms) return   // the button is disabled too, but an implicit submit must not get past this
     setBusy(true); setErr(null)
     try {
-      const u = await passwordRegister(n, pw, code.trim(), mail)
+      const u = await passwordRegister(n, pw, code.trim(), mail, LEGAL_VERSION)
       const st = useStore.getState()
       st.setUser(u); close()
       if (hasData(useStore.getState().S)) { await st.pushState(); toast(t('Profile created — data from this device moved into it')) }
@@ -222,9 +231,10 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     <input className="input" type="password" name="new-password-again" autoComplete="new-password" placeholder={t('Repeat the password')}
       value={again} onChange={e => setAgain(e.target.value)} />
     <div className="dim small" style={{ marginTop: 6 }}>{t('At least {0} characters. A few unrelated words make a good one.', MIN_PASSWORD)}</div>
+    <TermsCheckbox checked={terms} onChange={setTerms} />
     {err && <div className="small" role="alert" style={errStyle}>{err}</div>}
     <div style={{ height: 12 }} />
-    <Button type="submit" variant="primary" disabled={busy}>{t('Create profile')}</Button>
+    <Button type="submit" variant="primary" disabled={busy || !terms}>{t('Create profile')}</Button>
   </form>
 }
 

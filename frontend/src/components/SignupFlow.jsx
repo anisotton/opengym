@@ -1,7 +1,8 @@
-// The passkey half of sign-up (ISO-1397/1398): name, e-mail, birth date, then the passkey
-// ceremony, then "check your e-mail". Shared by Login.jsx's RegisterSheet and Settings.jsx's
-// RegisterInline — the only two places a passkey profile is created from. The password half
-// (PasswordRegisterForm, PasswordAuth.jsx) is untouched: PASSWORD_LOGIN is off on Brilhart
+// The passkey half of sign-up (ISO-1397/1398): name, e-mail, birth date, the terms box
+// (ISO-1390), then the passkey ceremony, then "check your e-mail". Shared by Login.jsx's
+// RegisterSheet and Settings.jsx's RegisterInline — the only two places a passkey profile is
+// created from. The password half (PasswordRegisterForm, PasswordAuth.jsx) shares the terms box
+// (TermsCheckbox) but is otherwise separate: PASSWORD_LOGIN is off on Brilhart
 // Fitness, and its own e-mail field is the older, optional, never-sent-to sign-in address (#118),
 // unrelated to this one.
 import { useEffect, useRef, useState } from 'react'
@@ -11,6 +12,8 @@ import { passkeyRegister, bio } from '../lib/api.js'
 import { looksLikeEmail, foldEmail, passwordError, webauthnOutcome } from './PasswordAuth.jsx'
 import { useMinorNotice, ResendEmailButton } from './AccountEmail.jsx'
 import { Button } from './ui.jsx'
+import TermsCheckbox from './TermsCheckbox.jsx'
+import { LEGAL_VERSION } from '../legal/version.js'
 
 const errStyle = { color: 'var(--red)', marginTop: 10 }
 // Below this the birth date is treated the same as a malformed field (a typo, a wrong-century
@@ -27,6 +30,7 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
   const [email, setEmail] = useState('')
   const [birthDate, setBirthDate] = useState('')
   const [step, setStep] = useState('data')   // 'data' | 'sent'
+  const [terms, setTerms] = useState(false)   // never pre-ticked: acceptance is the user's own act
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const ref = useRef(null)
@@ -35,7 +39,7 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
 
   const age = ageFromBirthDate(birthDate)
   const dateOK = !!birthDate && age != null && age >= MIN_PLAUSIBLE_AGE
-  const canSubmit = !!name.trim() && looksLikeEmail(email) && dateOK && (!inviteOnly || !!code.trim())
+  const canSubmit = !!name.trim() && looksLikeEmail(email) && dateOK && (!inviteOnly || !!code.trim()) && terms
 
   const go = async () => {
     if (busy) return
@@ -46,9 +50,10 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
       : inviteOnly && !code.trim() ? t('An invite code is required')
       : null
     if (bad) { setErr(bad); return }
+    if (!terms) return   // the button is disabled too, but a programmatic call must not get past this
     setBusy(true); setErr(null)
     try {
-      const u = await passkeyRegister(n, code.trim(), foldEmail(email), birthDate)
+      const u = await passkeyRegister(n, code.trim(), foldEmail(email), birthDate, LEGAL_VERSION)
       await onCreated({ ...u, email: foldEmail(email), emailVerified: false, needsEmail: false })
       setStep('sent')
     } catch (e) {
@@ -88,6 +93,7 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
         onChange={e => setCode(e.target.value.toUpperCase())} style={{ letterSpacing: '.14em', fontWeight: 600, textAlign: 'center' }} />
       <div className="dim small" style={{ marginTop: 6 }}>{t('This app is invite-only — enter the code you were given.')}</div>
     </>}
+    <TermsCheckbox checked={terms} onChange={setTerms} />
     {err && <div className="small" role="alert" style={errStyle}>{err}</div>}
     <div style={{ height: 12 }} />
     <Button variant="primary" disabled={busy || !canSubmit} onClick={go}>{t('Create passkey')}</Button>

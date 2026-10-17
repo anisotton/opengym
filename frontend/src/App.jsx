@@ -25,8 +25,11 @@ import RestTimer from './components/RestTimer.jsx'
 import TimerFlash from './components/TimerFlash.jsx'
 import { openDeviceLinkRedeem } from './components/Passkeys.jsx'
 import { needsEmailPromptDue, openNeedsEmailPrompt } from './components/AccountEmail.jsx'
+import { openTermsSheet } from './components/TermsSheet.jsx'
+import { useOnline } from './components/ServerSync.jsx'
 import Login from './views/Login.jsx'
 import EmailVerify from './views/EmailVerify.jsx'
+import Legal from './views/Legal.jsx'
 import RecoverAccess from './views/RecoverAccess.jsx'
 import MobileOnboarding from './views/MobileOnboarding.jsx'
 import Home from './views/Home.jsx'
@@ -126,6 +129,20 @@ function Shell() {
     if (MOBILE || !user || !ready) return
     syncPushSubscription().catch(() => {})
   }, [user?.id, ready])
+  // An account behind on the Terms of Use / Privacy Policy (ISO-1390) gets the locked "we updated
+  // our terms" sheet — signed in only (a guest or the demo has no account to record it on), and
+  // only online: accepting is a server call, and offline use of the app is never blocked, so the
+  // sheet waits for the network and opens the moment it comes back. Once per account per visit;
+  // still unaccepted, the next load (boot's fresh /api/me) asks again. The sheets below wait
+  // behind it rather than stacking over a locked one.
+  const needsTerms = !!user?.needsTerms && !isGuest
+  const online = useOnline()
+  const termsOffered = useRef(null)
+  useEffect(() => {
+    if (!ready || !needsTerms || !online || termsOffered.current === user.id) return
+    termsOffered.current = user.id
+    openTermsSheet()
+  }, [ready, needsTerms, online, user?.id])
   // Opened from a device-link QR code (#95): once boot knows who is here, the sheet that redeems
   // it opens by itself — over the sign-in screen, or over the app for a guest or a signed-in
   // browser. Once per visit; closed, the code stays for the sign-in screen's own button.
@@ -133,23 +150,25 @@ function Shell() {
   const linkOffered = useRef(false)
   useEffect(() => {
     if (!ready || !linkCode || linkOffered.current) return
+    if (needsTerms) return   // behind the terms sheet (ISO-1390), its turn not spent
     linkOffered.current = true
     openDeviceLinkRedeem()
-  }, [ready, linkCode])
+  }, [ready, linkCode, needsTerms])
   // Account from before ISO-1397 that still has no e-mail (ISO-1398): once per sign-in, at most
   // once every 7 days while it stays unset (needsEmailPromptDue, its own local deferral) — never
   // blocks the app either way. Held off on /recuperar and /verificar-email (their own sheets own
   // the screen) and while a device-link redeem is pending (ISO-1415, stacked-sheets follow-up to
-  // ISO-1398) — not consumed in those cases, so it still fires once the route or the pending code
-  // clears, rather than being skipped for the rest of the visit.
+  // ISO-1398) or the terms sheet is owed (ISO-1390) — not consumed in those cases, so it still
+  // fires once the route, the pending code or the terms clear, rather than being skipped for the
+  // rest of the visit.
   const needsEmailOffered = useRef(false)
-  const emailSheetRoute = loc.pathname === '/recuperar' || loc.pathname === '/verificar-email'
+  const emailSheetRoute = loc.pathname === '/recuperar' || loc.pathname === '/verificar-email' || loc.pathname === '/termos' || loc.pathname === '/privacidade'
   useEffect(() => {
     if (!ready || !user?.needsEmail || needsEmailOffered.current || !needsEmailPromptDue()) return
-    if (emailSheetRoute || linkCode) return
+    if (emailSheetRoute || linkCode || needsTerms) return
     needsEmailOffered.current = true
     openNeedsEmailPrompt()
-  }, [ready, user?.id, user?.needsEmail, emailSheetRoute, linkCode])
+  }, [ready, user?.id, user?.needsEmail, emailSheetRoute, linkCode, needsTerms])
   useEffect(() => {
     const onScroll = () => {
       // Modals pins the body while a sheet is open; scrollY is 0 then, not a position.
@@ -185,6 +204,9 @@ function Shell() {
   // App.jsx's own `linkCode` effect opens below (it needs somewhere to render into), and its
   // "Passkey added" toast lands the same way a device-link QR redeem's does.
   if (loc.pathname === '/verificar-email') return <><div id="app" className="vfade"><EmailVerify /></div><Modals /><Toast /></>
+  // Terms and privacy text: public, same reasoning (views/Legal.jsx, ISO-1390).
+  if (loc.pathname === '/termos') return <><div id="app" className="vfade"><Legal id="termos" /></div><Modals /><Toast /></>
+  if (loc.pathname === '/privacidade') return <><div id="app" className="vfade"><Legal id="privacidade" /></div><Modals /><Toast /></>
   if (loc.pathname === '/recuperar') return <><div id="app" className="vfade"><RecoverAccess /></div><Modals /><Toast /></>
 
   const authed = user || isGuest
