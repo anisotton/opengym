@@ -44,6 +44,7 @@ import {
 } from './store.js';
 import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
 import { sendMail } from './mail.js';
+import { LEGAL_VERSION } from './legal.js';
 import { renderVerifyEmail } from './mail-templates/verify-email.js';
 import { renderRecoverEmail } from './mail-templates/recover-access.js';
 import { renderPreChargeNotice } from './mail-templates/pre-charge-notice.js';
@@ -1078,6 +1079,19 @@ const EMAIL_ERRORS = {
   invalid: { error: 'that is not an e-mail address', code: 'email-invalid' },
   taken: { error: 'another profile already uses this e-mail address', code: 'email-taken' }
 };
+// ISO-1390: a signup accepts the Terms of Use and the Privacy Policy, and the acceptance is bound
+// to the text the person could actually read — the copy bundled with the app, whose version the
+// app sends as `termsVersion`. The server records the version, so it has to be the one in force:
+// anything else is refused rather than stored as an acceptance of a text nobody showed. Two codes,
+// because the two cases want different words from the app: nothing at all means the box was not
+// ticked (`terms-required`), a different version means an app built before the texts changed,
+// which only an update fixes (`terms-version-stale`).
+function termsVersionProblem(body) {
+  const v = body.termsVersion;
+  if (v === LEGAL_VERSION) return null;
+  if (typeof v !== 'string' || !v.trim()) return { status: 400, error: 'accept the terms to continue', code: 'terms-required' };
+  return { status: 400, error: 'these terms are not the current ones — update the app', code: 'terms-version-stale' };
+}
 // A birth date as the signup form sends it: plain YYYY-MM-DD, not in the future, not absurdly old
 // (130 years catches a fat-fingered year without hard-coding an age policy this route has no
 // business enforcing — see ISO-1398 for the under-18 notice this value feeds, which never blocks
@@ -1313,6 +1327,10 @@ const passwordRoutes = {
     const body = await readBody(req);
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required', code: 'missing' });
+    // ISO-1390: same rule and same place as /api/register/options — before the invite check and
+    // the hash, so an outdated app is told so without spending either.
+    const termsProblem = termsVersionProblem(body);
+    if (termsProblem) return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
     const code = text(body.code).trim().toUpperCase();
     if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
     if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
@@ -1347,7 +1365,11 @@ const passwordRoutes = {
     if (await nameTaken(name)) return taken();
     if (email && await emailTaken(email)) return emailRefused();
     const created = new Date().toISOString();
-    const user = { id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}) };
+    const user = {
+      id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}),
+      // ISO-1390: termsVersionProblem() above already pinned body.termsVersion to LEGAL_VERSION.
+      termsAcceptedVersion: LEGAL_VERSION, termsAcceptedAt: created
+    };
     if (INVITE_ONLY) user.invitedBy = code;
     // createUser and consumeInvite commit or fail together: an invite consumed by a request whose
     // user row then never landed (the unique-name/e-mail race below) would be burned for nothing,
@@ -2172,6 +2194,10 @@ const routes = {
     // that has no Coach. The key's absence is that answer.
     json(res, 200, {
       invite_only: INVITE_ONLY, allow_guest: ALLOW_GUEST,
+      // ISO-1390: public like the two flags above — the signup screen links the texts of this
+      // version before anyone is signed in, and an app whose bundle carries another one knows to
+      // ask for an update instead of collecting an acceptance the server would refuse.
+      legal_version: LEGAL_VERSION,
       // Only when on, so an instance without passwords answers exactly as it did before (#118).
       ...(PASSWORD_LOGIN ? { password_login: true } : {}),
       // Public: the sign-in screen is the first thing that reads it.
@@ -2219,6 +2245,13 @@ const routes = {
       // address (#118), which SELF_HOSTING.md promises is never part of this response — exposing
       // it here, even unverified, would break that promise for an instance that opted into it.
       ...(PASSWORD_LOGIN ? {} : { email: user.email || null, emailVerified: !!user.emailVerifiedAt, needsEmail: !user.email }),
+      // ISO-1390: what the app needs to put the "we updated our terms" sheet in front of an
+      // account — one imported from before this phase has accepted nothing, one that accepted an
+      // older version has to accept again. Always present, PASSWORD_LOGIN or not: unlike `email`
+      // above, nothing here collides with an older field.
+      termsVersion: user.termsAcceptedVersion || null,
+      termsAcceptedAt: user.termsAcceptedAt || null,
+      needsTerms: user.termsAcceptedVersion !== LEGAL_VERSION,
       ...(renew ? { token: await makeSession(user, req.headers['user-agent']) } : {})
     });
   },
@@ -2227,6 +2260,15 @@ const routes = {
     const body = await readBody(req);
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required' });
+    // ISO-1390: checked before the e-mail, so an outdated app or an unticked box never spends the
+    // caller's e-mail-guess budget (addressPaused/strikeAddress below) on a signup that could not
+    // have gone through anyway. The version travels in the challenge to /verify, which records it.
+    const termsProblem = termsVersionProblem(body);
+    if (termsProblem) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: termsProblem.code === 'terms-required' ? 'terms-required' : 'terms-stale' });
+      return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    }
+    const termsVersion = body.termsVersion;
     // ISO-1397: every signup from here on needs a valid, unique e-mail — checked here, before the
     // WebAuthn ceremony, so a taken or malformed address fails fast rather than after a Face ID/
     // fingerprint prompt. "Taken" is a guess worth throttling the same way it already is at
@@ -2259,7 +2301,7 @@ const routes = {
       authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
       excludeCredentials: []
     });
-    const cid = putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code, email, birthDate });
+    const cid = putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code, email, birthDate, termsVersion });
     json(res, 200, { cid, options });
   },
 
@@ -2305,6 +2347,9 @@ const routes = {
       return json(res, 409, EMAIL_ERRORS.taken);
     }
     const user = { id: c.uid, name: c.name, created: new Date().toISOString(), email: c.email, birthDate: c.birthDate };
+    // ISO-1390: the version /options checked, accepted at the moment the account comes to exist.
+    user.termsAcceptedVersion = c.termsVersion;
+    user.termsAcceptedAt = user.created;
     if (INVITE_ONLY) user.invitedBy = c.code;
     const cred = {
       id: credential.id,
