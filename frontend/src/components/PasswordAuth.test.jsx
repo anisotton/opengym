@@ -109,6 +109,8 @@ describe('passwordError', () => {
 describe('PasswordSignInSheet', () => {
   it('signs in with the name and password, then carries on like a passkey sign-in', async () => {
     mocks.passwordLogin.mockResolvedValue({ id: 'u1', name: 'Ana' })
+    // ISO-1390: like a passkey sign-in, it asks /api/me for what the sign-in answer leaves out.
+    mocks.answers['GET /api/me'] = { user: { id: 'u1', name: 'Ana' }, termsVersion: null, termsAcceptedAt: null, needsTerms: true }
     const close = vi.fn()
     const host = mount(<PasswordSignInSheet close={close} />)
     const name = byPlaceholder(host, 'Name or e-mail')
@@ -120,7 +122,8 @@ describe('PasswordSignInSheet', () => {
     type(name, '  Ana '); type(pw, 'correct horse battery')
     await submit(host)
     expect(mocks.passwordLogin).toHaveBeenCalledWith('Ana', 'correct horse battery')
-    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana' }, { adopt: true })   // nothing syncs until the question is answered
+    expect(mocks.calls.some(c => c.path === '/api/me' && c.method === 'GET')).toBe(true)
+    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana', termsVersion: null, termsAcceptedAt: null, needsTerms: true }, { adopt: true })   // nothing syncs until the question is answered
     expect(close).toHaveBeenCalled()
     expect(mocks.adoptProfile).toHaveBeenCalled()
     expect(mocks.toast).toHaveBeenCalledWith('Welcome back, Ana')
@@ -174,6 +177,8 @@ describe('PasswordSignInSheet', () => {
     await submit(host)
     expect(alertText(host)).toBe('Enter your name or e-mail.')
     expect(mocks.passwordLogin).not.toHaveBeenCalled()
+    // /api/me failing after the sign-in still signs in, with the user the sign-in answered (ISO-1390).
+    mocks.answers['GET /api/me'] = fail(0)
     type(field, ' Ana@Example.com '); type(byPlaceholder(host, 'Password'), 'correct horse battery')
     await submit(host)
     expect(mocks.passwordLogin).toHaveBeenCalledWith('Ana@Example.com', 'correct horse battery')

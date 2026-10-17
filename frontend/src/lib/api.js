@@ -334,6 +334,12 @@ export async function passwordResetRedeem(name, code, next) {
   return (await post('/api/login/password-reset', { name, code, next })).user
 }
 
+// Accept the current Terms of Use and Privacy Policy (ISO-1390). `version` is the bundle's own
+// LEGAL_VERSION; the server answers 400 `terms-version-stale` when it has moved past it.
+export async function termsAccept(version) {
+  return post('/api/account/terms/accept', { version })
+}
+
 /* ---------------------------------------- verified e-mail + recovery (ISO-1397/1398) --------
    The account's own e-mail: confirmed by link after signup, re-sendable, and — on an account
    from before this phase — set for the first time. Distinct from PasswordAuth.jsx's EmailRow,

@@ -18,6 +18,7 @@ import { askAddDeviceData } from '../sheets.jsx'
 import { Row, Button } from './ui.jsx'
 import TermsCheckbox from './TermsCheckbox.jsx'
 import { LEGAL_VERSION } from '../legal/version.js'
+import { userFromMe } from '../lib/session-user.js'
 
 // The server's floor (api/password.js MIN_LENGTH), checked here first so the common mistake is
 // answered without a round trip. The server still decides.
@@ -92,10 +93,14 @@ export function webauthnOutcome(e, flow, step) {
 }
 
 // Signed in: the same steps as a passkey sign-in (Login.jsx) — and the same account coming back
-// merges what this device kept for it (adoptProfile).
+// merges what this device kept for it (adoptProfile). That includes asking /api/me for what the
+// sign-in answer leaves out (e-mail state, ISO-1397; terms, ISO-1390): without it a password
+// sign-in would skip the "we updated our terms" sheet until the next reload. A failure still
+// signs in; the fields catch up on the next boot.
 async function signedIn(u, close) {
   const st = useStore.getState()
-  st.setUser(u, { adopt: true })
+  const me = await api('/api/me').catch(() => null)
+  st.setUser(me ? userFromMe(me, u) : u, { adopt: true })
   close()
   await st.adoptProfile(askAddDeviceData)
   toast(t('Welcome back, {0}', u.name))

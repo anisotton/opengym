@@ -7,6 +7,12 @@ export default {
   "I have read and accept the Terms of Use and the Privacy Policy.": "Li e aceito os Termos de Uso e a Política de Privacidade.",
   "Read the Terms of Use": "Ler os Termos de Uso",
   "Read the Privacy Policy": "Ler a Política de Privacidade",
+  "We updated our terms": "Atualizámos os nossos termos",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Para continuar a usar o Brilhart Fitness, leia e aceite os Termos de Uso e a Política de Privacidade atuais.",
+  "Accept and continue": "Aceitar e continuar",
+  "Update the app to accept the new terms.": "Atualize a aplicação para aceitar os novos termos.",
+  "Reload": "Recarregar",
+  "Could not save your acceptance — are you online?": "Não foi possível registar a sua aceitação — está online?",
   // --- billing / subscription (ISO-1392/ISO-1395) ---
   "Read-only account": "Conta em modo de leitura",
   "Subscribe to log workouts again. Your history is still here.": "Subscreva para voltar a registar treinos. O seu histórico continua disponível.",
