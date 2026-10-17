@@ -1832,12 +1832,12 @@ const recoverLink = token => `${APP_URL}/#/recuperar?token=${encodeURIComponent(
 // missing e-mail, not a 500 on an action (a signup, a profile finally getting one) that already
 // succeeded on its own.
 async function mailVerification(user, token) {
-  const { subject, text: body, html } = renderVerifyEmail({ name: user.name, link: verifyLink(token) });
+  const { subject, text: body, html } = renderVerifyEmail({ name: user.name, link: verifyLink(token), appUrl: APP_URL });
   try { await sendMail({ to: user.email, subject, text: body, html }); }
   catch (e) { console.error('mail: could not send verification e-mail', e.message); }
 }
 async function mailRecovery(user, token) {
-  const { subject, text: body, html } = renderRecoverEmail({ name: user.name, link: recoverLink(token) });
+  const { subject, text: body, html } = renderRecoverEmail({ name: user.name, link: recoverLink(token), appUrl: APP_URL });
   try { await sendMail({ to: user.email, subject, text: body, html }); }
   catch (e) { console.error('mail: could not send recovery e-mail', e.message); }
 }
@@ -2987,7 +2987,7 @@ setFirstPeriodNoticeHook(async (uid, sub) => {
   const billingDate = d
     ? `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`
     : 'em breve';
-  const { subject, text: body, html } = renderPreChargeNotice({ name: user.name, amount, billingDate });
+  const { subject, text: body, html } = renderPreChargeNotice({ name: user.name, amount, billingDate, appUrl: APP_URL });
   try { await sendMail({ to: user.email, subject, text: body, html }); }
   catch (e) { console.error('mail: could not send pre-charge notice e-mail', e.message); }
 });
