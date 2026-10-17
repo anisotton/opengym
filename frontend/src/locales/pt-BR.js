@@ -13,6 +13,7 @@ export const PT_BR_OVERRIDES = {
   "Read the Privacy Policy": "Ler a Política de Privacidade",
   "We updated our terms": "Atualizamos nossos termos",
   "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Para continuar usando o Brilhart Fitness, leia e aceite os Termos de Uso e a Política de Privacidade atuais.",
+  "You accepted version {0} on {1}.": "Você aceitou a versão {0} em {1}.",
   "Accept and continue": "Aceitar e continuar",
   "Update the app to accept the new terms.": "Atualize o app para aceitar os novos termos.",
   "Reload": "Recarregar",

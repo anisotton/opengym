@@ -381,6 +381,7 @@ describe('the other device: redeeming a code', () => {
     mocks.store = { user: null, linkCode: 'K7WQ-2MZP-4HXA' }
     mocks.answers['POST /api/device-link/options'] = OPTIONS
     mocks.answers['POST /api/device-link/verify'] = { user: { id: 'u1', name: 'Ana', admin: false } }
+    mocks.answers['GET /api/me'] = fail(500, {})
     const close = vi.fn()
     const host = mount(<DeviceLinkRedeemSheet close={close} />)
     await settle()
@@ -394,14 +395,32 @@ describe('the other device: redeeming a code', () => {
     // The options already here are used as they are: the prompt opens straight from the tap.
     expect(mocks.calls.filter(c => c.path === '/api/device-link/options')).toHaveLength(1)
     expect(mocks.createPasskey).toHaveBeenCalledWith({ challenge: 'xyz' })
-    expect(mocks.calls.at(-1).path).toBe('/api/device-link/verify')
-    expect(mocks.calls.at(-1).body).toMatchObject({ code: 'K7WQ-2MZP-4HXA', cid: 'link-cid', credential: { id: 'new-key' } })
+    const verify = mocks.calls.find(c => c.path === '/api/device-link/verify')
+    expect(verify.body).toMatchObject({ code: 'K7WQ-2MZP-4HXA', cid: 'link-cid', credential: { id: 'new-key' } })
     expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana', admin: false }, { adopt: { alwaysAsk: true } })
     // What this device logged goes into that profile only when asked, even into an empty one.
     expect(mocks.adoptProfile).toHaveBeenCalledWith(mocks.askAddDeviceData, { alwaysAsk: true })
     expect(mocks.store.linkCode).toBeNull()
     expect(close).toHaveBeenCalled()
     expect(mocks.toast).toHaveBeenCalledWith('Signed in as Ana')
+  })
+
+  it('signs in with the user /api/me describes, and falls back to the sign-in answer when it fails', async () => {
+    const run = async () => {
+      mocks.setUser.mockClear()
+      mocks.store = { user: null, linkCode: 'K7WQ-2MZP-4HXA' }
+      mocks.answers['POST /api/device-link/options'] = OPTIONS
+      mocks.answers['POST /api/device-link/verify'] = { user: { id: 'u1', name: 'Ana', admin: false } }
+      const host = mount(<DeviceLinkRedeemSheet close={() => {}} />)
+      await settle()
+      await submit(host)
+    }
+    mocks.answers['GET /api/me'] = { user: { id: 'u1', name: 'Ana' }, needsTerms: true, termsVersion: '2026-10-17', termsAcceptedAt: null }
+    await run()
+    expect(mocks.setUser).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1', needsTerms: true }), { adopt: { alwaysAsk: true } })
+    mocks.answers['GET /api/me'] = fail(500, {})
+    await run()
+    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana', admin: false }, { adopt: { alwaysAsk: true } })
   })
 
   it('a typed code is checked on the tap; a wrong one stays on the sheet and says so', async () => {

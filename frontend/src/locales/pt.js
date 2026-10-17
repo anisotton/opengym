@@ -9,6 +9,7 @@ export default {
   "Read the Privacy Policy": "Ler a Política de Privacidade",
   "We updated our terms": "Atualizámos os nossos termos",
   "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Para continuar a usar o Brilhart Fitness, leia e aceite os Termos de Uso e a Política de Privacidade atuais.",
+  "You accepted version {0} on {1}.": "Aceitou a versão {0} em {1}.",
   "Accept and continue": "Aceitar e continuar",
   "Update the app to accept the new terms.": "Atualize a aplicação para aceitar os novos termos.",
   "Reload": "Recarregar",

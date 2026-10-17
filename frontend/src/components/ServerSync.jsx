@@ -7,7 +7,8 @@ import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { fmtAgo, changeCount } from '../lib/format.js'
-import { passkeyLogin, webauthnOK } from '../lib/api.js'
+import { api, passkeyLogin, webauthnOK } from '../lib/api.js'
+import { userFromMe } from '../lib/session-user.js'
 import { MOBILE } from '../lib/mobile.js'
 import { syncMedia } from '../lib/media-sync.js'
 import { DEMO } from '../lib/demo.js'
@@ -145,7 +146,9 @@ export async function passkeySignIn() {
   const st = useStore.getState()
   try {
     const u = await passkeyLogin()
-    st.setUser(u, { adopt: true })
+    // The sign-in answer is bare; /api/me is where `needsTerms` comes from (ISO-1390).
+    const me = await api('/api/me').catch(() => null)
+    st.setUser(me ? userFromMe(me, u) : u, { adopt: true })
     await st.adoptProfile(askAddDeviceData)
     toast(t('Welcome back, {0}', u.name))
   } catch (e) {
