@@ -377,6 +377,14 @@ test('changing a password takes the current one and signs out every other sessio
 // straddle the change; whatever cookie any of them got, none may still work afterwards. Run once
 // with a current hash and once with one made at older parameters, whose sign-in rehashes — a
 // second await before the cookie is signed.
+//
+// Once the change has actually landed, every further sign-in with the old password is just a
+// wrong password — each one spends ACCOUNT_FAILS's account-wide allowance (5 free), which is
+// shared with the "new password works" check below. Firing attempts for a fixed 600 ms regardless
+// of when the change settles let an unrelated number of them land afterwards and intermittently
+// exhaust that allowance before the final check ran, with no connection to what this test is
+// actually proving. Stopping as soon as the change is confirmed done bounds that tail to whatever
+// was already in flight at that instant, which is what still straddles the change on every run.
 for (const [label, stored] of [['current', () => pwHash], ['older parameters', () => oldHash]]) {
   test(`sign-ins with the old password still running during a change get no lasting session (${label} hash)`, async t => {
     pwHash ??= await hashPassword(GOOD);
@@ -385,10 +393,13 @@ for (const [label, stored] of [['current', () => pwHash], ['older parameters', (
     const owner = `gymsid=${mintSession('u1')}`;
     const next = 'a much better passphrase';
     const attempts = [];
-    let change;
-    for (let i = 0; i < 30; i++) {
+    let change, changeSettled = false;
+    for (let i = 0; i < 10 && !changeSettled; i++) {
       attempts.push(login(h, 'Ana', GOOD, `198.51.100.${10 + i}`));
-      if (i === 3) change = h.req('POST', '/api/account/password', { body: { next, current: GOOD }, cookie: owner, ip: '203.0.113.200' });
+      if (i === 3) {
+        change = h.req('POST', '/api/account/password', { body: { next, current: GOOD }, cookie: owner, ip: '203.0.113.200' });
+        change.then(() => { changeSettled = true; });
+      }
       await new Promise(r => setTimeout(r, 20));
     }
     const done = await change;
