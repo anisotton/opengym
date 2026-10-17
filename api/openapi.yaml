@@ -1262,6 +1262,51 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/account/terms/accept:
+    post:
+      tags: [auth]
+      operationId: acceptTerms
+      summary: Accept the current Terms of Use and Privacy Policy
+      description: |
+        For a signed-in account whose `GET /api/me` says `needsTerms: true` — one imported from
+        before acceptance was recorded, or one that accepted an older text (ISO-1390). `version`
+        must be the server's current `legal_version` (see `GET /api/config`): missing is
+        `terms-required`, any other value is `terms-version-stale` (the app shows an outdated
+        text and needs an update). Idempotent: when the account already accepted this version,
+        answers 200 with the stored acceptance and records nothing new.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string, description: 'The LEGAL_VERSION of the text the app showed.' }
+            example: { version: "2026-10-17" }
+      responses:
+        '200':
+          description: The account has accepted the current version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  termsVersion: { type: string }
+                  termsAcceptedAt: { type: string, format: date-time }
+              example: { ok: true, termsVersion: "2026-10-17", termsAcceptedAt: "2026-10-17T12:00:00.000Z" }
+        '400':
+          description: '`version` is missing (`terms-required`) or not the current one (`terms-version-stale`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                required: { value: { error: "accept the terms to continue", code: "terms-required" } }
+                stale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /api/recover/request:
     post:
       tags: [email]
@@ -1887,9 +1932,11 @@ paths:
       operationId: createBillingCheckout
       summary: Start a Stripe Checkout Session for one of the three plans
       description: |
-        Requires a verified e-mail (Phase 2) — refused with 403 otherwise, since the renewal and
-        first-period notices this phase sends have nowhere to go without one. Creates the account's
-        Stripe customer on first use.
+        Requires the current terms accepted (ISO-1390) — refused with 403 `terms-required`
+        otherwise, checked first, so when both are missing the client shows the terms before the
+        e-mail. Then requires a verified e-mail (Phase 2) — refused with 403 `email-unverified`
+        otherwise, since the renewal and first-period notices this phase sends have nowhere to go
+        without one. Creates the account's Stripe customer on first use.
 
         There is no free trial and no Stripe `trialing` status (ISO-1392): an account's first-ever
         Checkout Session sells one cycle of `STRIPE_PRICE_INTRO` alone (R$1,99), so the subscription
@@ -1926,11 +1973,16 @@ paths:
               example: { error: "invalid plan", code: "invalid-plan" }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: The account's e-mail is not verified yet.
+          description: |
+            The account has not accepted the current terms (`terms-required`, checked first —
+            accept them with `POST /api/account/terms/accept`), or its e-mail is not verified yet
+            (`email-unverified`).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: "e-mail not verified", code: "email-unverified" }
+              examples:
+                termsRequired: { value: { error: "accept the current terms first", code: "terms-required" } }
+                emailUnverified: { value: { error: "e-mail not verified", code: "email-unverified" } }
         '404': { $ref: '#/components/responses/BillingOff' }
 
   /api/billing/portal:

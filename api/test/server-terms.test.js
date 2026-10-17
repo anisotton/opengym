@@ -116,7 +116,7 @@ test('register/options: no termsVersion → 400 terms-required; wrong type too; 
   assert.equal(await h.userCount(), 0, 'none of these created a user');
   const denied = h.audit().filter(e => e.ev === 'auth.register.denied').map(e => e.msg);
   assert.ok(denied.includes('terms-required'));
-  assert.ok(denied.includes('terms-stale'));
+  assert.ok(denied.includes('terms-version-stale'));
 });
 
 test('a passkey signup with the current version lands with both columns set', async t => {
@@ -149,6 +149,8 @@ test('register/password (PASSWORD_LOGIN=1) follows the same rule', async t => {
   assert.equal(stale.status, 400);
   assert.equal(stale.body.code, 'terms-version-stale');
   assert.equal(await h.userCount(), 0);
+  const denied = h.audit().filter(e => e.ev === 'auth.register.denied').map(e => e.msg);
+  assert.deepEqual(denied, ['terms-required', 'terms-version-stale'], 'audited like register/options');
 
   const ok = await h.req('POST', '/api/register/password', { body: { name: 'Bea', password, termsVersion: VERSION }, ip });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
@@ -172,4 +174,72 @@ test('an account imported from db.json at boot needs the terms', async t => {
   assert.equal(me.body.needsTerms, true);
   assert.equal(me.body.termsVersion, null);
   assert.equal(me.body.termsAcceptedAt, null);
+});
+
+test('account/terms/accept: session required, current version only, idempotent', async t => {
+  const h = await startServer(t, { users: [{ id: 'u_old', name: 'Old', created: new Date().toISOString() }] });
+  const ip = '198.51.100.44';
+  const cookie = mintSession('u_old');
+  const anon = await h.req('POST', '/api/account/terms/accept', { body: { version: VERSION }, ip });
+  assert.equal(anon.status, 401);
+
+  const stale = await h.req('POST', '/api/account/terms/accept', { body: { version: '2020-01-01' }, cookie, ip });
+  assert.equal(stale.status, 400);
+  assert.equal(stale.body.code, 'terms-version-stale');
+  const missing = await h.req('POST', '/api/account/terms/accept', { body: {}, cookie, ip });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.body.code, 'terms-required');
+  assert.equal((await h.user('u_old')).terms_accepted_at, null, 'a refusal records nothing');
+
+  const first = await h.req('POST', '/api/account/terms/accept', { body: { version: VERSION }, cookie, ip });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.ok, true);
+  assert.equal(first.body.termsVersion, VERSION);
+  assert.ok(isIso(first.body.termsAcceptedAt), first.body.termsAcceptedAt);
+  const row = await h.user('u_old');
+  assert.equal(row.terms_accepted_version, VERSION);
+  assert.equal(row.terms_accepted_at.toISOString(), first.body.termsAcceptedAt);
+
+  const again = await h.req('POST', '/api/account/terms/accept', { body: { version: VERSION }, cookie, ip });
+  assert.equal(again.status, 200);
+  assert.deepEqual(again.body, first.body, 'a second call answers the same acceptance');
+  assert.equal((await h.user('u_old')).terms_accepted_at.toISOString(), first.body.termsAcceptedAt, 'not rewritten');
+
+  const me = await h.req('GET', '/api/me', { cookie, ip });
+  assert.equal(me.status, 200);
+  assert.equal(me.body.needsTerms, false);
+
+  const accepted = h.audit().filter(e => e.ev === 'account.terms.accept');
+  assert.equal(accepted.length, 1, 'the second call does not audit again');
+  assert.equal(accepted[0].uid, 'u_old');
+  assert.equal(accepted[0].msg, VERSION);
+});
+
+test('billing/checkout refuses 403 terms-required before it looks at the e-mail', async t => {
+  const created = new Date().toISOString();
+  const h = await startServer(t, {
+    // BILLING_ON needs both; no step below gets as far as createCheckoutSession, so Stripe is
+    // never contacted with these dummies.
+    env: { STRIPE_API_KEY: 'sk_test_x', STRIPE_WEBHOOK_SECRET: 'whsec_x' },
+    users: [{ id: 'u_a', name: 'A', created }, { id: 'u_b', name: 'B', created }]
+  });
+  const ip = '198.51.100.45';
+  const pool = h.pool();
+  try { await pool.query('UPDATE users SET email_verified_at = now() WHERE id = $1', ['u_a']); }
+  finally { await pool.end(); }
+
+  const a = await h.req('POST', '/api/billing/checkout', { body: { plan: 'monthly' }, cookie: mintSession('u_a'), ip });
+  assert.equal(a.status, 403);
+  assert.equal(a.body.code, 'terms-required');
+
+  const cookieB = mintSession('u_b');
+  const b = await h.req('POST', '/api/billing/checkout', { body: { plan: 'monthly' }, cookie: cookieB, ip });
+  assert.equal(b.status, 403);
+  assert.equal(b.body.code, 'terms-required', 'the terms come before the e-mail');
+
+  const accept = await h.req('POST', '/api/account/terms/accept', { body: { version: VERSION }, cookie: cookieB, ip });
+  assert.equal(accept.status, 200, JSON.stringify(accept.body));
+  const after = await h.req('POST', '/api/billing/checkout', { body: { plan: 'monthly' }, cookie: cookieB, ip });
+  assert.equal(after.status, 403);
+  assert.equal(after.body.code, 'email-unverified', 'past the terms gate, the e-mail one still holds before Stripe');
 });

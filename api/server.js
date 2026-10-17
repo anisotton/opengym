@@ -33,7 +33,7 @@ import {
   getUserState, getUserStateRev, putUserState,
   getUserById, getAllUsers, createUser, setPassword, removePassword, rehashPassword,
   setPasswordReset, bumpSessionVersion, setEmail, markEmailVerified, setDisabled, touchLastPull,
-  setLastReminder, deleteUser, upsertUser, backfillPasswordResetBy,
+  setLastReminder, deleteUser, upsertUser, backfillPasswordResetBy, setTermsAccepted,
   createSession, getSession, revokeSession,
   createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
   upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
@@ -961,7 +961,9 @@ const THROTTLED = {
   'POST /api/recover/redeem': 'recover',
   // Only the shared burst budget (ISO-1480): there is no secret here for a `kind` to guard, just
   // an audit-log beacon a misbehaving or hostile page could otherwise spam without limit.
-  'POST /api/client-event': null
+  'POST /api/client-event': null,
+  // Accepting the current terms (ISO-1390): nothing to guess, so only the shared burst budget.
+  'POST /api/account/terms/accept': null
 };
 
 // Which address the throttle counts against. Unlike clientIp() above, which only labels a log
@@ -1330,7 +1332,10 @@ const passwordRoutes = {
     // ISO-1390: same rule and same place as /api/register/options — before the invite check and
     // the hash, so an outdated app is told so without spending either.
     const termsProblem = termsVersionProblem(body);
-    if (termsProblem) return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    if (termsProblem) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: termsProblem.code });
+      return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    }
     const code = text(body.code).trim().toUpperCase();
     if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
     if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
@@ -1907,6 +1912,27 @@ const emailRoutes = {
     json(res, 200, { ok: true });
   },
 
+  // An account that never accepted the current terms (imported from db.json, or signed up before
+  // the texts changed) accepts them here, signed in (ISO-1390). Same version rule as signup: only
+  // the server's LEGAL_VERSION, so an app showing an older text cannot record it as accepted.
+  // Idempotent — a second call (a double tap, a retry after a lost response) answers the stored
+  // acceptance without rewriting its date or auditing again, so terms_accepted_at stays the moment
+  // the person first agreed.
+  'POST /api/account/terms/accept': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return notSignedIn(res);
+    const body = await readBody(req);
+    const termsProblem = termsVersionProblem({ termsVersion: body.version });
+    if (termsProblem) return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    if (user.termsAcceptedVersion !== LEGAL_VERSION) {
+      await setTermsAccepted(pool, user.id, LEGAL_VERSION, new Date().toISOString());
+      audit(req, 'account.terms.accept', { user, msg: LEGAL_VERSION });
+    }
+    // Read back rather than echo our own timestamp: the answer is what the row actually holds.
+    const fresh = await getUserById(pool, user.id);
+    json(res, 200, { ok: true, termsVersion: fresh.termsAcceptedVersion, termsAcceptedAt: fresh.termsAcceptedAt });
+  },
+
   // The neutral half of recovery: always 200, with the same body, whether or not `email` names a
   // real account — the one guarantee the issue asks for ("não revela se a conta existe"). Unlike
   // every other guarded route here, a paused address is not told so with a 429 (that would itself
@@ -2265,7 +2291,7 @@ const routes = {
     // have gone through anyway. The version travels in the challenge to /verify, which records it.
     const termsProblem = termsVersionProblem(body);
     if (termsProblem) {
-      audit(req, 'auth.register.denied', { ok: false, name, msg: termsProblem.code === 'terms-required' ? 'terms-required' : 'terms-stale' });
+      audit(req, 'auth.register.denied', { ok: false, name, msg: termsProblem.code });
       return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
     }
     const termsVersion = body.termsVersion;
@@ -2935,6 +2961,12 @@ const routes = {
     if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
+    // ISO-1390: no subscription for an account that has not accepted the current terms — they are
+    // the contract the payment is made under. Checked before the e-mail on purpose: when both are
+    // missing, the terms sheet is the blocking one the app should show first.
+    if (user.termsAcceptedVersion !== LEGAL_VERSION) {
+      return json(res, 403, { error: 'accept the current terms first', code: 'terms-required' });
+    }
     // Issue rule: checkout requires a verified e-mail (Phase 2) — the trial_will_end and renewal
     // notices this phase sends have nowhere to go otherwise.
     if (!user.emailVerifiedAt) return json(res, 403, { error: 'e-mail not verified', code: 'email-unverified' });
