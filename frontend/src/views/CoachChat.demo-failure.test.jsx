@@ -58,13 +58,37 @@ function installDom() {
 }
 
 const chip = re => [...container.querySelectorAll('.qchip')].find(b => re.test(b.textContent || ''))
+// `ask()` in CoachChat.jsx awaits requestDebrief() — which, the first time, dynamically imports
+// lib/coach-demo.js — before it appends the user's line to the chat. That import rides on the
+// same real I/O (module transform/compile) Node uses for a disk read, not on microtasks alone,
+// so no fixed count of ticks — microtask or macrotask — reliably outlasts it: it was sized to
+// whatever that chain looked like, and however generous, is still a guess at how long real I/O
+// takes under whatever load happens to be on the machine the suite runs on. Waiting on the actual
+// condition (the line landed) removes the guess: it returns the moment the real work is done,
+// and only fails after a generous, genuine wall-clock budget — not a tick count — is exhausted.
+// `performance.now()` is real time even under the fake timers below (they only fake
+// setTimeout/clearTimeout/Date); `setImmediate` is a real macrotask, so every round gives pending
+// I/O an actual turn on the event loop.
+async function waitUntil(test, { timeoutMs = 5000 } = {}) {
+  const start = performance.now()
+  while (!test()) {
+    if (performance.now() - start > timeoutMs) throw new Error(`condition never became true within ${timeoutMs}ms`)
+    await new Promise(resolve => setImmediate(resolve))
+  }
+}
 async function click(el) {
   expect(el).toBeTruthy()
-  await act(async () => { el.dispatchEvent(new dom.Event('click', { bubbles: true })); await flush() })
+  const before = mocks.S.coach.chat.length
+  await act(async () => {
+    el.dispatchEvent(new dom.Event('click', { bubbles: true }))
+    await waitUntil(() => mocks.S.coach.chat.length > before || mocks.toast.mock.calls.length > 0)
+  })
 }
-// Microtasks only: the dynamic import of coach-demo.js and the status refresh both settle here.
-const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
-const settle = async () => { await act(async () => { await flush() }) }
+// Microtasks only: the status refresh after a fake-timer advance settles here — coach-demo.js is
+// already loaded by the time either elapse() call below runs, so there is no cold import to wait
+// out and a fixed drain is enough.
+const flush = async () => { for (let i = 0; i < 200; i++) await Promise.resolve() }
+const settle = async () => { await act(async () => { await waitUntil(() => !!chip(/Last workout/)) }) }
 const elapse = async ms => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); await flush() }) }
 
 // A workout the chat can list (it reads `d` and `name` only) but the debrief builder cannot
