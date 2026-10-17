@@ -195,6 +195,7 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
       : pw !== again ? t('The two passwords are not the same.')
       : null
     if (bad) { setErr(bad); return }
+    if (!terms) return   // the button is disabled too, but an implicit submit must not get past this
     setBusy(true); setErr(null)
     try {
       const u = await passwordRegister(n, pw, code.trim(), mail, LEGAL_VERSION)

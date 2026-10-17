@@ -1,7 +1,8 @@
-// The passkey half of sign-up (ISO-1397/1398): name, e-mail, birth date, then the passkey
-// ceremony, then "check your e-mail". Shared by Login.jsx's RegisterSheet and Settings.jsx's
-// RegisterInline — the only two places a passkey profile is created from. The password half
-// (PasswordRegisterForm, PasswordAuth.jsx) is untouched: PASSWORD_LOGIN is off on Brilhart
+// The passkey half of sign-up (ISO-1397/1398): name, e-mail, birth date, the terms box
+// (ISO-1390), then the passkey ceremony, then "check your e-mail". Shared by Login.jsx's
+// RegisterSheet and Settings.jsx's RegisterInline — the only two places a passkey profile is
+// created from. The password half (PasswordRegisterForm, PasswordAuth.jsx) shares the terms box
+// (TermsCheckbox) but is otherwise separate: PASSWORD_LOGIN is off on Brilhart
 // Fitness, and its own e-mail field is the older, optional, never-sent-to sign-in address (#118),
 // unrelated to this one.
 import { useEffect, useRef, useState } from 'react'
@@ -49,6 +50,7 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
       : inviteOnly && !code.trim() ? t('An invite code is required')
       : null
     if (bad) { setErr(bad); return }
+    if (!terms) return   // the button is disabled too, but a programmatic call must not get past this
     setBusy(true); setErr(null)
     try {
       const u = await passkeyRegister(n, code.trim(), foldEmail(email), birthDate, LEGAL_VERSION)

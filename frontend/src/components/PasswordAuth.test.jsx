@@ -271,6 +271,15 @@ describe('PasswordRegisterForm', () => {
     expect(mocks.passwordRegister.mock.calls[0][4]).toBe('2026-10-17')
   })
 
+  it('a submit with the terms box unticked never reaches passwordRegister', async () => {
+    const host = mount(<Harness />)
+    type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(byPlaceholder(host, 'Password'), 'correct horse battery')
+    type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    await submit(host)
+    expect(mocks.passwordRegister).not.toHaveBeenCalled()
+  })
+
   it('a name already taken by a password profile is said in words', async () => {
     mocks.passwordRegister.mockRejectedValue(fail(409, { code: 'name-taken' }))
     const host = mount(<Harness />)

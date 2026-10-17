@@ -70,6 +70,15 @@ describe('SignupFlow terms checkbox', () => {
     expect(mocks.passkeyRegister).toHaveBeenCalledWith('Ana', '', 'ana@example.com', '1990-05-05', '2026-10-17')
   })
 
+  it('go() refuses to register when the box is unticked, even if the button is clicked', async () => {
+    const host = filled()
+    const btn = button(host, 'Create passkey')
+    btn.disabled = false   // a programmatic call that bypasses the disabled attribute
+    act(() => btn.click())
+    await settle()
+    expect(mocks.passkeyRegister).not.toHaveBeenCalled()
+  })
+
   it('opens the documents from the links without ticking the box', () => {
     const host = filled()
     act(() => button(host, 'Read the Terms of Use').click())
