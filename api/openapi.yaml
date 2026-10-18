@@ -2816,6 +2816,397 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "no such code" }
 
+  /api/admin/programs:
+    get:
+      tags: [admin]
+      operationId: adminPrograms
+      summary: 'Admin: list training programs'
+      description: >-
+        The active catalog by default (`trash=0`); `trash=1` lists the trash instead, ordered by
+        when each was trashed, and ignores `status`. `q` matches title or description
+        (case-insensitive; its own `%`/`_`/`\` are escaped, never treated as wildcards).
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string, enum: [strength, hypertrophy, conditioning, mobility, general] } }
+        - { name: difficulty, in: query, schema: { type: string, enum: [beginner, intermediate, advanced] } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, published] } }
+        - { name: trash, in: query, schema: { type: string, enum: ['0', '1'] } }
+      responses:
+        '200':
+          description: The matching programs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  programs: { type: array, items: { $ref: '#/components/schemas/Program' } }
+                  trashCount: { type: integer, description: 'How many programs are in the trash right now, regardless of `trash`.' }
+        '400':
+          description: An unknown category/difficulty/status filter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/programs/meta:
+    get:
+      tags: [admin]
+      operationId: adminProgramsMeta
+      summary: 'Admin: program catalog enums and limits'
+      description: Category/difficulty values with display labels, field limits, and the two configurable knobs (PROGRAM_TRASH_DAYS, PROGRAM_COVER_MAX_MB) — everything the form needs before it ever submits.
+      responses:
+        '200':
+          description: Catalog metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories: { type: array, items: { type: object, properties: { value: { type: string }, label: { type: string } } } }
+                  difficulties: { type: array, items: { type: object, properties: { value: { type: string }, label: { type: string } } } }
+                  limits: { type: object }
+                  trashDays: { type: integer }
+                  coverMaxMB: { type: number }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/program:
+    get:
+      tags: [admin]
+      operationId: adminProgram
+      summary: 'Admin: one program, with its history'
+      description: Works for a program in the trash too (§3.6 — an admin may always see it; only a future end-user route would answer 404 there).
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The program and its last 50 audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  program: { $ref: '#/components/schemas/Program' }
+                  history: { type: array, items: { $ref: '#/components/schemas/ProgramEvent' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/programs/new:
+    post:
+      tags: [admin]
+      operationId: adminProgramNew
+      summary: 'Admin: create a training program'
+      description: Always created with rev 1. Title must be unique (case-insensitive) among active programs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, category, difficulty, sessionMinutes]
+              properties:
+                title: { type: string, minLength: 3, maxLength: 120 }
+                description: { type: string, maxLength: 5000 }
+                category: { type: string, enum: [strength, hypertrophy, conditioning, mobility, general] }
+                difficulty: { type: string, enum: [beginner, intermediate, advanced] }
+                sessionMinutes: { type: integer, minimum: 1, maximum: 600 }
+                status: { type: string, enum: [draft, published], default: draft }
+      responses:
+        '200':
+          description: The new program.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '400':
+          description: A field failed validation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "title must be 3-120 characters", field: title }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Another active program already has this title.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "a program with this title already exists", code: title-taken }
+
+  /api/admin/program/update:
+    post:
+      tags: [admin]
+      operationId: adminProgramUpdate
+      summary: 'Admin: edit, publish or unpublish a program'
+      description: >-
+        Partial — only the fields present are validated and changed. `rev` must match the
+        program's current revision or this answers `409 {code: stale, current}` without writing
+        anything. A program in the trash answers `409 {code: in-trash}` — it is read-only until
+        restored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, rev]
+              properties:
+                id: { type: string }
+                rev: { type: integer }
+                title: { type: string }
+                description: { type: string }
+                category: { type: string, enum: [strength, hypertrophy, conditioning, mobility, general] }
+                difficulty: { type: string, enum: [beginner, intermediate, advanced] }
+                sessionMinutes: { type: integer }
+                status: { type: string, enum: [draft, published] }
+      responses:
+        '200':
+          description: The updated program.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '400':
+          description: A field failed validation, or id/rev are missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale rev, title taken, or the program is in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "changed since you loaded it", code: stale, current: {} }
+
+  /api/admin/program/trash:
+    post:
+      tags: [admin]
+      operationId: adminProgramTrash
+      summary: 'Admin: move a program to the trash'
+      description: Disappears from the active catalog at once. Restorable for PROGRAM_TRASH_DAYS, after which it is purged automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id, rev], properties: { id: { type: string }, rev: { type: integer } } }
+      responses:
+        '200':
+          description: Trashed.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale rev, or already in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/program/restore:
+    post:
+      tags: [admin]
+      operationId: adminProgramRestore
+      summary: 'Admin: restore a program out of the trash'
+      description: Always comes back as a draft — republishing is a separate, explicit step.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id], properties: { id: { type: string } } }
+      responses:
+        '200':
+          description: Restored, as a draft.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Not in the trash, or another active program already has this title.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/program/purge:
+    post:
+      tags: [admin]
+      operationId: adminProgramPurge
+      summary: 'Admin: permanently delete a program from the trash'
+      description: >-
+        Only works on a program already in the trash, and only with `confirmTitle` matching the
+        program's title exactly (the server re-checks this — the client's own "type the title"
+        gate is not trusted alone). There is no undo past this call; `program_events` keeps the
+        history, the row itself does not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, confirmTitle]
+              properties: { id: { type: string }, confirmTitle: { type: string } }
+      responses:
+        '200':
+          description: Purged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '400':
+          description: confirmTitle does not match.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "the typed title does not match", code: confirm-mismatch }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The program is not in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/program/cover:
+    put:
+      tags: [admin]
+      operationId: adminProgramCoverSet
+      summary: 'Admin: set or replace a program''s cover image'
+      description: >-
+        The body is the raw, already-cropped (16:9) image — `w`/`h`/`alt` ride the query string
+        since the body is the file itself. Validated by magic number (jpg/png/webp only — SVG,
+        GIF and video are refused); `PROGRAM_COVER_MAX_MB` caps the size (default 5, itself
+        capped by the server's overall body limit). `alt` is required and must describe the
+        image, not restate the title or the filename.
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+        - { name: rev, in: query, required: true, schema: { type: integer } }
+        - { name: w, in: query, required: true, schema: { type: integer }, description: Width of the already-cropped image. }
+        - { name: h, in: query, required: true, schema: { type: integer }, description: Height of the already-cropped image. }
+        - { name: alt, in: query, required: true, schema: { type: string, minLength: 3, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+      responses:
+        '200':
+          description: The program, with its new cover.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '400':
+          description: id/rev missing, or the dimensions/alt text failed validation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale rev, or the program is in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: The file is larger than PROGRAM_COVER_MAX_MB.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Not a JPEG, PNG or WebP image by magic number.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "cover must be a JPEG, PNG or WebP image" }
+    get:
+      tags: [admin]
+      operationId: adminProgramCoverGet
+      summary: 'Admin: the program''s cover image bytes'
+      description: >-
+        Works for a program in the trash too — same admin-only visibility as GET /api/admin/program.
+        The response is cacheable forever (`immutable`): the filename is the content's own hash,
+        so a changed cover is always a new URL.
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+        - { name: v, in: query, schema: { type: string }, description: Cache-busting hint for the client; ignored by the server. }
+      responses:
+        '200':
+          description: The image bytes.
+          content: { image/jpeg: {}, image/png: {}, image/webp: {} }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program, or it has no cover.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/program/cover/remove:
+    post:
+      tags: [admin]
+      operationId: adminProgramCoverRemove
+      summary: 'Admin: remove a program''s cover image'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id, rev], properties: { id: { type: string }, rev: { type: integer } } }
+      responses:
+        '200':
+          description: The program, without a cover.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '400':
+          description: id/rev missing, or there is no cover to remove.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no cover to remove", code: no-cover }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale rev, or the program is in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/admin/audit:
     get:
       tags: [admin]
@@ -4063,6 +4454,61 @@ components:
           oneOf: [{ type: string }, { type: 'null' }]
           description: Resolved display name (only in GET /api/admin/invites).
       additionalProperties: true
+
+    Program:
+      type: object
+      description: >-
+        An admin-curated training program — instance-wide catalog content, not a user's own
+        training data (see docs/ADMIN_PROGRAMS.md). `rev` is optimistic concurrency: pass the
+        value you last read back on every update/trash/cover call, or get `409 stale`.
+      required: [id, title, description, category, difficulty, sessionMinutes, status, rev, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, maxLength: 5000 }
+        category: { type: string, enum: [strength, hypertrophy, conditioning, mobility, general] }
+        difficulty: { type: string, enum: [beginner, intermediate, advanced] }
+        sessionMinutes: { type: integer, minimum: 1, maximum: 600, description: 'Estimated duration of one session, in minutes.' }
+        status: { type: string, enum: [draft, published] }
+        rev: { type: integer }
+        coverFile: { type: string, description: '<sha256>.<ext> — present only once a cover is set.' }
+        coverMime: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        coverWidth: { type: integer }
+        coverHeight: { type: integer }
+        coverBytes: { type: integer }
+        coverAlt: { type: string, description: Required whenever a cover is present. }
+        coverUpdatedAt: { type: string }
+        coverUpdatedBy: { type: string, description: Admin user id (absent once that account is deleted). }
+        createdAt: { type: string }
+        createdBy: { type: string }
+        createdByName: { type: string, description: Resolved display name (list/detail routes only). }
+        updatedAt: { type: string }
+        updatedBy: { type: string }
+        updatedByName: { type: string }
+        publishedAt: { type: string }
+        deletedAt: { type: string, description: Present only for a program in the trash. }
+        deletedBy: { type: string }
+        deletedByName: { type: string }
+      additionalProperties: false
+
+    ProgramEvent:
+      type: object
+      description: One append-only row of a program's own audit trail (program_events).
+      required: [id, programId, programTitle, action, actorName, at, changes]
+      properties:
+        id: { type: integer }
+        programId: { type: string }
+        programTitle: { type: string, description: Snapshot at the time of the event. }
+        action:
+          type: string
+          enum: [create, update, publish, unpublish, cover_set, cover_remove, trash, restore, purge, purge_auto]
+        actorId: { type: string, description: Absent once that admin account is deleted. }
+        actorName: { type: string, description: 'Snapshot of the actor''s name at the time — or "system" for purge_auto.' }
+        at: { type: string }
+        changes:
+          type: object
+          description: '{field: [before, after]} for whatever moved; description collapses to the string "changed".'
+      additionalProperties: false
 
     AuditEvent:
       type: object

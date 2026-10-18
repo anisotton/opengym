@@ -153,3 +153,25 @@
 
 /* a finished step's summary reads as a receipt, not a control */
 .adm-step.done>summary .adm-step-t span{color:var(--acc)}
+
+/* ---------- training program catalog (ISO-1485) ---------- */
+/* 16:9 everywhere a cover appears, so the placeholder and the real image occupy the exact same
+   box and nothing jumps when one replaces the other. */
+.pg-thumb{
+  width:96px;height:54px;border-radius:10px;flex:none;object-fit:cover;background:var(--surface-2)
+}
+.pg-thumb-ph{
+  display:flex;align-items:center;justify-content:center;text-align:center;padding:4px;
+  font-size:10.5px;font-weight:600;letter-spacing:.01em;color:#fff;line-height:1.2
+}
+.pg-thumb-ph.cat-strength{background:linear-gradient(135deg,#b45309,#78350f)}
+.pg-thumb-ph.cat-hypertrophy{background:linear-gradient(135deg,#b91c1c,#7f1d1d)}
+.pg-thumb-ph.cat-conditioning{background:linear-gradient(135deg,#0e7490,#164e63)}
+.pg-thumb-ph.cat-mobility{background:linear-gradient(135deg,#15803d,#14532d)}
+.pg-thumb-ph.cat-general{background:linear-gradient(135deg,#4338ca,#312e81)}
+.pg-row{gap:10px}
+.pg-cover-row{display:flex;gap:12px;align-items:flex-start}
+@media (max-width:640px){
+  .pg-row{flex-wrap:wrap}
+  .pg-thumb{width:100%;height:auto;aspect-ratio:16/9}
+}
