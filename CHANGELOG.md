@@ -16,6 +16,12 @@
 - 🌍 The new strings are translated in all sixteen languages.
 - ⚠️ The texts still carry `[CONFIRMAR]` placeholders and need legal review before launch.
 
+**Minimum age (ISO-1521)**
+
+- 🔒 **Signup now refuses anyone under 18** instead of only showing a notice: the birth date is
+  required on both the passkey and password forms, and a minor's date disables the button with an
+  explanation, in every language.
+
 ## v1.3.9 — 2026-09-28
 
 The milestone was "edit your history", and it is in: fix a saved workout after the fact, move it to

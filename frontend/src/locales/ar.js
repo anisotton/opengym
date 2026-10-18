@@ -1762,6 +1762,8 @@ export default {
   // ISO-1398: account e-mail, confirmation, recovery.
   'Add your e-mail': 'أضف بريدك الإلكتروني',
   'Almost there!': 'اقتربت من الانتهاء!',
+  // ISO-1521: minimum age to sign up.
+  'Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.': 'تطبيق Brilhart Fitness مخصص للأشخاص البالغين 18 عامًا فأكثر. لا يمكننا إكمال تسجيلك.',
   'Change e-mail': 'تغيير البريد الإلكتروني',
   'Check your birth date.': 'تحقق من تاريخ ميلادك.',
   'Confirmation link sent to {0}.': 'تم إرسال رابط التأكيد إلى {0}.',
@@ -1773,7 +1775,6 @@ export default {
   'Not confirmed yet.': 'لم يتم التأكيد بعد.',
   'Open Brilhart Fitness': 'فتح Brilhart Fitness',
   'Pending': 'قيد الانتظار',
-  'People under 18 should use this app with a guardian’s guidance.': 'يجب على من هم أقل من 18 عامًا استخدام هذا التطبيق بإرشاد من ولي أمر.',
   'Resend confirmation': 'إعادة إرسال التأكيد',
   'Resend e-mail': 'إعادة إرسال البريد الإلكتروني',
   'That is already your e-mail.': 'هذا هو بريدك الإلكتروني بالفعل.',

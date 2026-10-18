@@ -400,13 +400,17 @@ paths:
 
         `email` is required and checked for uniqueness here (case-insensitively; an
         address already in use pauses the caller's address the same way `POST
-        /api/account/email` does, tag `email`). `birthDate` is optional and never
-        blocks a signup; it is only asked for an under-18 notice the client shows.
+        /api/account/email` does, tag `email`).
+
+        `birthDate` is required (ISO-1521): missing is `400 birth-date-required`, not a date is
+        `400 birth-date-invalid`, and one that gives an age under 18 as of now is `400 underage`
+        — checked right after `termsVersion`, before the e-mail. Signup is refused outright for a
+        minor; existing accounts are unaffected.
 
         `termsVersion` is required and must equal `legal_version` from `GET /api/config`
         (ISO-1390): missing, not a string or blank is `400 terms-required`; any other version
         is `400 terms-version-stale` (the app's bundled texts are out of date). It is checked
-        before the e-mail and recorded on the account by `/api/register/verify`.
+        before the birth date and the e-mail, and recorded on the account by `/api/register/verify`.
 
         CSRF-exempt (the challenge is the credential). No session required.
       security: []
@@ -416,7 +420,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, email, termsVersion]
+              required: [name, email, birthDate, termsVersion]
               properties:
                 name:
                   type: string
@@ -431,13 +435,13 @@ paths:
                   description: Required. The Terms/Privacy version the person accepted; must be the one in force.
                 birthDate:
                   type: string
-                  description: 'Optional, `YYYY-MM-DD`. Not in the future, not implausibly old.'
+                  description: 'Required, `YYYY-MM-DD`. Not in the future, not implausibly old, and 18+ as of now.'
                 code:
                   type: string
                   description: >-
                     Invite code — required (and validated) only when the instance
                     runs with INVITE_ONLY. Compared case-insensitively.
-            example: { name: "Ada", email: "ada@example.com", termsVersion: "2026-10-17", code: "3F9C21A07B54D688" }
+            example: { name: "Ada", email: "ada@example.com", birthDate: "1990-05-05", termsVersion: "2026-10-17", code: "3F9C21A07B54D688" }
       responses:
         '200':
           description: Ceremony options.
@@ -452,7 +456,7 @@ paths:
                   options:
                     $ref: '#/components/schemas/WebAuthnRegistrationOptions'
         '400':
-          description: '`name` missing/empty, `termsVersion` missing (`terms-required`) or not the current one (`terms-version-stale`), `email` missing/invalid, or `birthDate` not a date.'
+          description: '`name` missing/empty, `termsVersion` missing (`terms-required`) or not the current one (`terms-version-stale`), `birthDate` missing (`birth-date-required`), not a date (`birth-date-invalid`) or under 18 (`underage`), or `email` missing/invalid.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -460,8 +464,10 @@ paths:
                 name: { value: { error: "name required" } }
                 termsRequired: { value: { error: "update the app to accept the terms", code: "terms-required" } }
                 termsStale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
-                email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
+                birthDateRequired: { value: { error: "a birth date is required", code: "birth-date-required" } }
                 birthDate: { value: { error: "that is not a date", code: "birth-date-invalid" } }
+                underage: { value: { error: "Brilhart Fitness is for people 18 and older", code: "underage" } }
+                email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
         '403':
           description: Instance is invite-only and the code is missing, used, or revoked.
           content:
@@ -824,7 +830,10 @@ paths:
         which counts against the caller's address like a wrong invite code. `termsVersion`
         follows the same rule as in `POST /api/register/options` (`400 terms-required` /
         `400 terms-version-stale`, checked right after the name) and is recorded on the
-        account (ISO-1390). **Not** CSRF-exempt.
+        account (ISO-1390). `birthDate` is required (ISO-1521), checked right after
+        `termsVersion`, before the invite code: missing is `400 birth-date-required`, not a date
+        is `400 birth-date-invalid`, under 18 as of now is `400 underage` — the same three codes
+        and the same place in the flow as `POST /api/register/options`. **Not** CSRF-exempt.
       security: []
       requestBody:
         required: true
@@ -832,14 +841,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, password, termsVersion]
+              required: [name, password, birthDate, termsVersion]
               properties:
                 name: { type: string, maxLength: 40 }
                 termsVersion: { type: string, description: Required. The Terms/Privacy version accepted; must be the one in force. }
+                birthDate: { type: string, description: 'Required, `YYYY-MM-DD`. Not in the future, not implausibly old, and 18+ as of now.' }
                 password: { type: string, minLength: 10, maxLength: 256 }
                 code: { type: string, description: Invite code (INVITE_ONLY only). }
                 email: { type: string, maxLength: 254, description: Optional sign-in e-mail. }
-            example: { name: "Ada", password: "correct horse battery staple", termsVersion: "2026-10-17", code: "3F9C21A07B54D688" }
+            example: { name: "Ada", password: "correct horse battery staple", birthDate: "1990-05-05", termsVersion: "2026-10-17", code: "3F9C21A07B54D688" }
       responses:
         '200':
           description: Registered and signed in. The session cookie is set.
@@ -857,8 +867,9 @@ paths:
           description: >-
             The password breaks the policy — `too-short` (under 10 characters), `too-long`
             (over 256) or `too-common` — a field is `missing`, `email-invalid`: the
-            `email` given is not an e-mail address, `terms-required`: no `termsVersion`, or
-            `terms-version-stale`: not the version in force.
+            `email` given is not an e-mail address, `terms-required`: no `termsVersion`,
+            `terms-version-stale`: not the version in force, `birth-date-required`: no
+            `birthDate`, `birth-date-invalid`: not a date, or `underage`: under 18 as of now.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -867,6 +878,9 @@ paths:
                 email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
                 termsRequired: { value: { error: "update the app to accept the terms", code: "terms-required" } }
                 termsStale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
+                birthDateRequired: { value: { error: "a birth date is required", code: "birth-date-required" } }
+                birthDate: { value: { error: "that is not a date", code: "birth-date-invalid" } }
+                underage: { value: { error: "Brilhart Fitness is for people 18 and older", code: "underage" } }
         '403':
           description: Invite-only and the code is missing, used or revoked.
           content:

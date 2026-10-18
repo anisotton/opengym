@@ -1070,8 +1070,9 @@ export const PT_BR_OVERRIDES = {
   'Today’s strength is tomorrow’s lightness.': 'A força de hoje é a leveza de amanhã.',
   // ISO-1398: account e-mail, confirmation, recovery.
   'Add your e-mail': 'Adicionar seu e-mail',
+  // ISO-1521: minimum age to sign up — exact wording confirmed by Anderson, 18/10/2026.
+  'Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.': 'A Brilhart Fitness é destinada a maiores de 18 anos. Não é possível concluir seu cadastro.',
   'Check your birth date.': 'Confira sua data de nascimento.',
-  'People under 18 should use this app with a guardian’s guidance.': 'Menores de 18 anos devem usar o app com orientação de um responsável.',
   'That is already your e-mail.': 'Esse já é seu e-mail.',
   'We sent a confirmation link to {0}. It is valid for 24 hours — open it to confirm your account.': 'Enviamos um link de confirmação para {0}. Ele é válido por 24 horas — abra-o para confirmar sua conta.',
   'You can already use the app. Only a subscription needs the confirmed e-mail.': 'Você já pode usar o app. Só uma assinatura precisa do e-mail confirmado.',

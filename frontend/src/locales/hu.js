@@ -1712,6 +1712,8 @@ export default {
   // ISO-1398: account e-mail, confirmation, recovery.
   'Add your e-mail': 'E-mail cím hozzáadása',
   'Almost there!': 'Már majdnem kész!',
+  // ISO-1521: minimum age to sign up.
+  'Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.': 'A Brilhart Fitness 18 éven felülieknek készült. Nem tudjuk befejezni a regisztrációdat.',
   'Change e-mail': 'E-mail megváltoztatása',
   'Check your birth date.': 'Ellenőrizd a születési dátumodat.',
   'Confirmation link sent to {0}.': 'Megerősítő link elküldve ide: {0}.',
@@ -1723,7 +1725,6 @@ export default {
   'Not confirmed yet.': 'Még nincs megerősítve.',
   'Open Brilhart Fitness': 'Brilhart Fitness megnyitása',
   'Pending': 'Függőben',
-  'People under 18 should use this app with a guardian’s guidance.': '18 év alattiak csak gondviselő felügyelete mellett használják az alkalmazást.',
   'Resend confirmation': 'Megerősítés újraküldése',
   'Resend e-mail': 'E-mail újraküldése',
   'That is already your e-mail.': 'Ez már a te e-mail címed.',

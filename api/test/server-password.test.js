@@ -74,8 +74,10 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
   // Every request looks like the app talking to its own backend unless a test says otherwise.
   h.req = async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
     // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
-    // server-terms.test.js's subject, not this file's.
+    // server-terms.test.js's subject, not this file's. ISO-1521: same idea for the now-required
+    // birthDate — an adult one, since the under-18 refusal is server-age-gate.test.js's subject.
     if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-17' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}), ...headers },
