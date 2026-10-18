@@ -27,7 +27,7 @@ import {
 } from './password.js';
 import { createBackoff, createWindow } from './rate-limit.js';
 import { MAX_PASSKEYS } from './passkeys-store.js';
-import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
+import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE, sniffMedia } from './media.js';
 import { connectAndMigrate, withTransaction } from './db.js';
 import {
   getUserState, getUserStateRev, putUserState,
@@ -40,8 +40,18 @@ import {
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
   removePasskey, touchPasskeyUse, upsertPasskey,
-  createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup
+  createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup,
+  listPrograms, getProgram, listProgramEvents, createProgram, updateProgram, trashProgram,
+  restoreProgram, purgeProgram, purgeExpiredPrograms, setProgramCover, clearProgramCover,
+  coverStillReferenced, getAllCoverFiles
 } from './store.js';
+import {
+  CATEGORIES as PROGRAM_CATEGORIES, DIFFICULTIES as PROGRAM_DIFFICULTIES,
+  CATEGORY_LABELS as PROGRAM_CATEGORY_LABELS, DIFFICULTY_LABELS as PROGRAM_DIFFICULTY_LABELS,
+  TITLE_MIN as PROGRAM_TITLE_MIN, TITLE_MAX as PROGRAM_TITLE_MAX, DESCRIPTION_MAX as PROGRAM_DESCRIPTION_MAX,
+  SESSION_MINUTES_MIN, SESSION_MINUTES_MAX, COVER_ALT_MIN, COVER_ALT_MAX, COVER_WIDTH_MIN, COVER_HEIGHT_MIN, COVER_DIM_MAX,
+  validateProgram, validateCoverAlt, validateCoverDims, programConfig
+} from './programs.js';
 import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
 import { sendMail } from './mail.js';
 import { LEGAL_VERSION } from './legal.js';
@@ -2077,6 +2087,90 @@ if (MEDIA_ON) {
   setTimeout(mediaSweepAll, 5 * 60000).unref();
 }
 
+/* ---------- program covers (ISO-1485) ----------
+ * A flat namespace of its own, DATA_DIR/program-covers/<sha256>.<ext> — deliberately outside
+ * api/media.js's uploads/<uid>/ store, whose GC collects anything not referenced by that one
+ * profile's own state (a Program cover belongs to no profile at all, and would be collected the
+ * first time that GC ran). Magic-number validation (sniffMedia) and the size cap are reused from
+ * media.js; the streaming/quota/per-profile machinery is not — a cover is admin-only, small
+ * (PROGRAM_COVER_MAX_MB, default 5) and infrequent enough that reading the whole body into memory
+ * (readRawBody, already capped at MAX_BODY) is simpler and exactly as safe.
+ */
+const PROGRAM_CFG = programConfig(process.env);
+const PROGRAM_COVER_DIR = path.join(DATA, 'program-covers');
+try { fs.mkdirSync(PROGRAM_COVER_DIR, { recursive: true, mode: 0o700 }); fs.chmodSync(PROGRAM_COVER_DIR, 0o700); }
+catch (e) { console.error('program-covers: could not create directory', e.message); }
+const programCoverPath = file => path.join(PROGRAM_COVER_DIR, file);
+const PROGRAM_COVER_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+
+// store.js's programs.* functions answer `{ error, code, current? }` on a refusal rather than
+// throwing — this is every route's one place to turn that into the right HTTP status.
+const PROGRAM_ERROR_STATUS = {
+  'not-found': 404, 'in-trash': 409, stale: 409, 'title-taken': 409,
+  'not-in-trash': 409, 'confirm-mismatch': 400, 'no-cover': 400
+};
+function programError(res, result) {
+  const status = PROGRAM_ERROR_STATUS[result.code] || 400;
+  json(res, status, { error: result.error, code: result.code, ...(result.current ? { current: result.current } : {}) });
+}
+
+// Best-effort: a failed unlink leaves an orphan for the sweep below to collect later, never a
+// reason to fail the request that already committed the row change it followed.
+function unlinkProgramCover(file) {
+  if (!file) return;
+  try { fs.unlinkSync(programCoverPath(file)); }
+  catch (e) { if (e.code !== 'ENOENT') console.error('program-covers: could not remove', file, e.message); }
+}
+
+// Files on disk nothing in `programs` (active or trashed) references any more, and old enough
+// (ORPHAN_GRACE_MS) that a cover mid-upload when this runs is never caught mid-write — setProgramCover
+// only reaches the DB write after the bytes are already on disk, so a brand-new file with no row
+// yet is either about to get one (a save in flight) or already failed its own request and will be
+// swept on a later pass once it ages past the grace period.
+const PROGRAM_COVER_ORPHAN_GRACE_MS = 3600000;
+async function programCoverSweep() {
+  let files;
+  try { files = fs.readdirSync(PROGRAM_COVER_DIR); } catch { return; }
+  if (!files.length) return;
+  let referenced;
+  try { referenced = await getAllCoverFiles(pool); } catch (e) { return console.error('program-covers: sweep could not read references', e.message); }
+  const now = Date.now();
+  let removed = 0;
+  for (const file of files) {
+    if (referenced.has(file)) continue;
+    const full = programCoverPath(file);
+    let stat;
+    try { stat = fs.statSync(full); } catch { continue; }
+    if (now - stat.mtimeMs < PROGRAM_COVER_ORPHAN_GRACE_MS) continue;
+    try { fs.unlinkSync(full); removed++; } catch (e) { console.error('program-covers: sweep could not remove', file, e.message); }
+  }
+  if (removed) console.log(`program-covers: swept ${removed} orphaned file(s)`);
+}
+setInterval(programCoverSweep, 3600000).unref();
+setTimeout(programCoverSweep, 5 * 60000).unref();
+
+// The retention clock (plan §2.3): a program in the trash longer than PROGRAM_TRASH_DAYS is
+// deleted for good, same as a human doing it through POST /api/admin/program/purge, logged the
+// same way (`program_events.action = 'purge_auto'`) but with no admin behind it — `audit()`'s
+// `f.uid` is left unset, same convention as any other system-initiated event. 0 days means never
+// (checked inside purgeExpiredPrograms too; re-checked here isn't required but costs nothing).
+// audit(req, ...) only ever reads req.headers/req.socket — this tick has neither, so it passes a
+// minimal stand-in rather than widening audit()'s own signature for the one caller with no request.
+const NO_REQ = { headers: {}, socket: {} };
+async function programTrashSweep() {
+  if (!PROGRAM_CFG.trashDays) return;
+  let purged;
+  try { purged = await purgeExpiredPrograms(pool, PROGRAM_CFG.trashDays); }
+  catch (e) { return console.error('programs: auto-purge failed', e.message); }
+  for (const p of purged) {
+    if (p.coverFile && !p.coverStillReferenced) unlinkProgramCover(p.coverFile);
+    audit(NO_REQ, 'program.purge.auto', { msg: p.title });
+  }
+  if (purged.length) console.log(`programs: auto-purged ${purged.length} program(s) past ${PROGRAM_CFG.trashDays}-day retention`);
+}
+setInterval(programTrashSweep, 3600000).unref();
+setTimeout(programTrashSweep, 5 * 60000).unref();
+
 // A stored file, streamed. The headers are the point: the bytes were chosen by a user, so the
 // answer must never be something a browser would run. The Content-Type comes from the sniffed
 // extension (never text/* or SVG), nosniff stops a browser second-guessing it, the sandbox CSP
@@ -2903,6 +2997,211 @@ const routes = {
     // attempt and this read is exactly "already used": the response is still correct.
     const stillThere = await codeExists(pool, code);
     return json(res, stillThere ? 400 : 404, stillThere ? { error: 'already used — cannot revoke' } : { error: 'no such code' });
+  },
+
+  /* ---------- admin: training program catalog (ISO-1485) ----------
+   * Admin-only end to end — every route below starts with requireAdmin, same guard and same
+   * 403 + admin.denied as the rest of /api/admin/*. "Program" is the one name this entity goes
+   * by (docs/ADMIN_PROGRAMS.md §1): never "training", which collides with Workout/Routine
+   * already meaning something else in this codebase.
+   */
+  'GET /api/admin/programs': async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    const q = new URL(req.url, 'http://x').searchParams;
+    const trash = /^(1|true)$/i.test(q.get('trash') || '');
+    const category = q.get('category') || '';
+    const difficulty = q.get('difficulty') || '';
+    const status = q.get('status') || '';
+    if (category && !PROGRAM_CATEGORIES.includes(category)) return json(res, 400, { error: 'invalid category filter', field: 'category' });
+    if (difficulty && !PROGRAM_DIFFICULTIES.includes(difficulty)) return json(res, 400, { error: 'invalid difficulty filter', field: 'difficulty' });
+    if (status && !['draft', 'published'].includes(status)) return json(res, 400, { error: 'invalid status filter', field: 'status' });
+    const [rows, users, trashCountRow] = await Promise.all([
+      listPrograms(pool, { q: q.get('q') || '', category, difficulty, status, trash }),
+      getAllUsers(pool),
+      pool.query('SELECT count(*)::int AS n FROM programs WHERE deleted_at IS NOT NULL')
+    ]);
+    const nameOf = id => id ? (users.find(u => u.id === id) || {}).name || null : null;
+    const programs = rows.map(p => ({
+      ...p,
+      ...(p.createdBy ? { createdByName: nameOf(p.createdBy) } : {}),
+      ...(p.updatedBy ? { updatedByName: nameOf(p.updatedBy) } : {}),
+      ...(p.deletedBy ? { deletedByName: nameOf(p.deletedBy) } : {})
+    }));
+    json(res, 200, { programs, trashCount: trashCountRow.rows[0].n });
+  },
+
+  // Enum values + labels, field limits and the two configurable knobs — everything the form needs
+  // to validate client-side before it ever POSTs, and everything the lists need to render chips.
+  'GET /api/admin/programs/meta': async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    json(res, 200, {
+      categories: PROGRAM_CATEGORIES.map(value => ({ value, label: PROGRAM_CATEGORY_LABELS[value] })),
+      difficulties: PROGRAM_DIFFICULTIES.map(value => ({ value, label: PROGRAM_DIFFICULTY_LABELS[value] })),
+      limits: {
+        title: { min: PROGRAM_TITLE_MIN, max: PROGRAM_TITLE_MAX },
+        description: { max: PROGRAM_DESCRIPTION_MAX },
+        sessionMinutes: { min: SESSION_MINUTES_MIN, max: SESSION_MINUTES_MAX },
+        coverAlt: { min: COVER_ALT_MIN, max: COVER_ALT_MAX },
+        coverDims: { minWidth: COVER_WIDTH_MIN, minHeight: COVER_HEIGHT_MIN, max: COVER_DIM_MAX }
+      },
+      trashDays: PROGRAM_CFG.trashDays,
+      coverMaxMB: PROGRAM_CFG.coverMaxMB
+    });
+  },
+
+  'GET /api/admin/program': async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const [program, events] = await Promise.all([getProgram(pool, id), listProgramEvents(pool, id, 50)]);
+    if (!program) return json(res, 404, { error: 'no such program' });
+    const users = await getAllUsers(pool);
+    const nameOf = uid => uid ? (users.find(u => u.id === uid) || {}).name || null : null;
+    json(res, 200, {
+      program: {
+        ...program,
+        ...(program.createdBy ? { createdByName: nameOf(program.createdBy) } : {}),
+        ...(program.updatedBy ? { updatedByName: nameOf(program.updatedBy) } : {}),
+        ...(program.deletedBy ? { deletedByName: nameOf(program.deletedBy) } : {})
+      },
+      history: events
+    });
+  },
+
+  'POST /api/admin/programs/new': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const v = validateProgram(body, { partial: false });
+    if (!v.ok) return json(res, 400, { error: v.error, field: v.field });
+    const result = await createProgram(pool, v.value, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    audit(req, 'admin.program.create', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  'POST /api/admin/program/update': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    const rev = Number(body.rev);
+    if (!id || !Number.isInteger(rev)) return json(res, 400, { error: 'id and rev are required' });
+    const v = validateProgram(body, { partial: true });
+    if (!v.ok) return json(res, 400, { error: v.error, field: v.field });
+    const result = await updateProgram(pool, id, rev, v.value, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    // Explicit literals, not string concatenation: frontend/src/lib/audit.test.js statically
+    // scans this file for audit() calls whose event name is a plain quoted string, to make sure
+    // every event the server can emit has a human sentence — a name built up at runtime is
+    // invisible to that scan.
+    const action = { update: 'admin.program.update', publish: 'admin.program.publish', unpublish: 'admin.program.unpublish' }[result.action];
+    if (action) audit(req, action, { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  'POST /api/admin/program/trash': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    const rev = Number(body.rev);
+    if (!id || !Number.isInteger(rev)) return json(res, 400, { error: 'id and rev are required' });
+    const result = await trashProgram(pool, id, rev, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    audit(req, 'admin.program.trash', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  'POST /api/admin/program/restore': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    if (!id) return json(res, 400, { error: 'id is required' });
+    const result = await restoreProgram(pool, id, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    audit(req, 'admin.program.restore', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  // Only from the trash, and only with the title typed back exactly — purgeProgram re-checks the
+  // match itself (never trusting the client's own gate), and the row is gone before this answers.
+  'POST /api/admin/program/purge': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    if (!id) return json(res, 400, { error: 'id is required' });
+    const result = await purgeProgram(pool, id, text(body.confirmTitle), { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    if (result.coverFile && !result.coverStillReferenced) unlinkProgramCover(result.coverFile);
+    audit(req, 'admin.program.purge', { user: admin, msg: result.title });
+    json(res, 200, { ok: true });
+  },
+
+  // Raw image bytes in the body, like PUT /api/media/{hash} — but admin-only, capped much smaller
+  // (PROGRAM_COVER_MAX_MB) and read whole into memory rather than streamed: a personal catalog's
+  // cover art is rare and small enough that the simplicity is worth more than media.js's incremental
+  // hashing. `w`/`h`/`alt` ride the query string since the body is the file itself.
+  'PUT /api/admin/program/cover': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const q = new URL(req.url, 'http://x').searchParams;
+    const id = q.get('id') || '';
+    const rev = Number(q.get('rev'));
+    if (!id || !Number.isInteger(rev)) { await readRawBody(req); return json(res, 400, { error: 'id and rev are required' }); }
+    const dims = validateCoverDims(Number(q.get('w')), Number(q.get('h')));
+    if (!dims.ok) { await readRawBody(req); return json(res, 400, { error: dims.error, field: dims.field }); }
+    const program = await getProgram(pool, id);
+    const alt = validateCoverAlt(q.get('alt') || '', program?.title);
+    if (!alt.ok) { await readRawBody(req); return json(res, 400, { error: alt.error, field: alt.field }); }
+    const buf = await readRawBody(req);
+    const maxBytes = Math.round(PROGRAM_CFG.coverMaxMB * 1024 * 1024);
+    if (buf.length > maxBytes) return json(res, 413, { error: 'that file is too large', maxMB: PROGRAM_CFG.coverMaxMB });
+    const sniffed = sniffMedia(buf.subarray(0, 64));
+    const ext = sniffed && PROGRAM_COVER_EXT[sniffed.mime];
+    if (!ext) return json(res, 415, { error: 'cover must be a JPEG, PNG or WebP image' });
+    const sha = crypto.createHash('sha256').update(buf).digest('hex');
+    const file = `${sha}.${ext}`;
+    try { fs.writeFileSync(programCoverPath(file), buf, { mode: 0o600 }); }
+    catch (e) { console.error('program-covers: could not write', file, e.message); return json(res, 500, { error: 'server error' }); }
+    const result = await setProgramCover(pool, id, rev, {
+      file, mime: sniffed.mime, width: dims.value.width, height: dims.value.height, bytes: buf.length, alt: alt.value
+    }, { id: admin.id, name: admin.name });
+    if (result.error) { unlinkProgramCover(file); return programError(res, result); }
+    if (result.oldFile && !result.oldStillReferenced) unlinkProgramCover(result.oldFile);
+    audit(req, 'admin.program.cover.set', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  'POST /api/admin/program/cover/remove': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    const rev = Number(body.rev);
+    if (!id || !Number.isInteger(rev)) return json(res, 400, { error: 'id and rev are required' });
+    const result = await clearProgramCover(pool, id, rev, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    if (result.oldFile && !result.oldStillReferenced) unlinkProgramCover(result.oldFile);
+    audit(req, 'admin.program.cover.remove', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  // Streamed like sendMediaFile, minus the per-profile access check (the directory check there
+  // has no equivalent here — a Program has no owner — requireAdmin is the whole access check).
+  // Immutable cache: the filename is the content's own hash, so a changed cover is always a new
+  // URL, never a cache invalidation problem.
+  'GET /api/admin/program/cover': async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const program = await getProgram(pool, id);
+    if (!program || !program.coverFile) return json(res, 404, { error: 'no such cover' });
+    let fd;
+    try { fd = fs.openSync(programCoverPath(program.coverFile), 'r'); }
+    catch { return json(res, 404, { error: 'no such cover' }); }
+    const size = fs.fstatSync(fd).size;
+    res.writeHead(200, {
+      'Content-Type': program.coverMime,
+      'Content-Length': String(size),
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff'
+    });
+    try { await pipeline(fs.createReadStream(null, { fd }), res); }
+    catch { res.destroy(); }
   },
 
   /* ---------- activity log ---------- */

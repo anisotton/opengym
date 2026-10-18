@@ -139,9 +139,23 @@ exec db psql -U opengym -c "SELECT id, name FROM users"`) and put it in `ADMIN_U
 is how anyone on your instance tells you which account is theirs when
 they need help. You'll get an **Admin dashboard** link in Settings: who's training
 right now, each user's workout history and body weight, the ability to disable an account (signed
-out and locked out everywhere until you re-enable it), and — with `INVITE_ONLY=1` — generating and
+out and locked out everywhere until you re-enable it), a curated catalog of **training programs**
+(below), and — with `INVITE_ONLY=1` — generating and
 revoking invite codes. Existing accounts keep working when you switch invite-only on. Admin access
 is gated by your passkey and enforced server-side, so it needs no separate login.
+
+### Training program catalog
+
+Any admin can curate a catalog of training programs from the dashboard — title, category,
+difficulty, an estimated session length and a cover image. This is instance-wide content the
+admin writes, not a user's own routines or workouts (see
+[`docs/ADMIN_PROGRAMS.md`](ADMIN_PROGRAMS.md) for the full picture, including the trash/restore/
+delete flow and what the audit trail records). Two settings are optional:
+
+```bash
+PROGRAM_TRASH_DAYS=30      # a deleted program is purged automatically after this many days; 0 = never
+PROGRAM_COVER_MAX_MB=5     # cover image size cap (also bounded by the server's own request-body limit)
+```
 
 ### Default language
 

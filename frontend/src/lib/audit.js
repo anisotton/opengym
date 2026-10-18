@@ -80,6 +80,20 @@ const LABELS = {
   'admin.invite.revoke': 'Revoked an invite code',
   'admin.audit.clear': 'Cleared the activity log',
   'admin.denied': 'Blocked from the admin dashboard',
+  // ISO-1485: the training program catalog. `msg`/`target` name the program; `publish`/
+  // `unpublish` are their own events (not folded into `update`) since they're the one change
+  // that affects whether it's visible to anyone outside the admin dashboard.
+  'admin.program.create': 'Created a training program',
+  'admin.program.update': 'Edited a training program',
+  'admin.program.publish': 'Published a training program',
+  'admin.program.unpublish': 'Unpublished a training program',
+  'admin.program.trash': 'Moved a training program to the trash',
+  'admin.program.restore': 'Restored a training program from the trash',
+  'admin.program.purge': 'Permanently deleted a training program',
+  'admin.program.cover.set': "Set a training program's cover image",
+  'admin.program.cover.remove': "Removed a training program's cover image",
+  // The retention sweep, not an admin — no `uid` on this one (see server.js's audit() call).
+  'program.purge.auto': 'A training program past its retention was deleted automatically',
   // Photos and videos of custom exercises: "Reset everything" clearing a profile's files, and the
   // upload or clean-up throttle pausing a profile (`msg` says which).
   'media.sweep': 'Cleared unused photos and videos',
