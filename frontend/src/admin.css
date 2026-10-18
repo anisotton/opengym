@@ -169,8 +169,17 @@
 .pg-thumb-ph.cat-conditioning{background:linear-gradient(135deg,#0e7490,#164e63)}
 .pg-thumb-ph.cat-mobility{background:linear-gradient(135deg,#15803d,#14532d)}
 .pg-thumb-ph.cat-general{background:linear-gradient(135deg,#4338ca,#312e81)}
+/* A cover that's on record but failed to load (gone from disk) — distinct from the normal
+   category placeholder, which has no cover to begin with. */
+.pg-thumb-ph.pg-thumb-missing{background:linear-gradient(135deg,var(--red),#7f1d1d)}
 .pg-row{gap:10px}
 .pg-cover-row{display:flex;gap:12px;align-items:flex-start}
+/* The 8s "moved to trash" undo banner, above the list. */
+.pg-undo{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  margin-bottom:10px;padding:10px 12px;border-radius:var(--r);font-size:13.5px;
+  background:var(--surface-2);color:var(--label)
+}
 @media (max-width:640px){
   .pg-row{flex-wrap:wrap}
   .pg-thumb{width:100%;height:auto;aspect-ratio:16/9}

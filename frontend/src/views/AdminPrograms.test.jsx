@@ -6,7 +6,10 @@ import AdminPrograms from './AdminPrograms.jsx'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-const mocks = vi.hoisted(() => ({ answers: {}, sheets: [], calls: [] }))
+const mocks = vi.hoisted(() => ({
+  answers: {}, sheets: [], calls: [],
+  confirmSheet: Object.assign((opts) => { mocks.confirmSheet.calls.push(opts); return opts.onConfirm && opts.onConfirm() }, { calls: [] })
+}))
 vi.mock('../lib/api.js', () => ({
   api: (path, opts = {}) => {
     mocks.calls.push({ path, opts })
@@ -27,7 +30,7 @@ vi.mock('../store/useUI.js', () => {
   useUI.getState = snap
   return { useUI }
 })
-vi.mock('../sheets.jsx', () => ({ confirmSheet: opts => opts.onConfirm && opts.onConfirm() }))
+vi.mock('../sheets.jsx', () => ({ confirmSheet: (...a) => mocks.confirmSheet(...a) }))
 
 const mounted = []
 function render(el) {
@@ -53,6 +56,7 @@ beforeEach(() => {
   document.body.innerHTML = ''
   mocks.sheets.length = 0
   mocks.calls.length = 0
+  mocks.confirmSheet.calls.length = 0
   mocks.answers = {
     'GET /api/admin/programs': { programs: [PROGRAM], trashCount: 0 },
     'GET /api/admin/programs/meta': {
@@ -143,5 +147,105 @@ describe('AdminPrograms: trash row actions', () => {
     act(() => restoreBtn.click())
     await settle()
     expect(mocks.calls.some(c => c.path === '/api/admin/program/restore')).toBe(true)
+  })
+})
+
+// Atena's review (ISO-1485): four required fixes — a broken cover falls back visibly instead of
+// a blank gap, trashing offers an immediate Undo, Cancel on a dirty form confirms first, and an
+// invalid submit is wired for assistive tech and moves focus to the first bad field.
+describe('AdminPrograms: cover fallback on a broken file', () => {
+  const WITH_COVER = { ...PROGRAM, coverFile: 'abc123.jpg', coverMime: 'image/jpeg', coverAlt: 'a gym floor' }
+
+  it('the list falls back to the category placeholder, badged "Cover missing", not a blank gap', async () => {
+    mocks.answers['GET /api/admin/programs'] = { programs: [WITH_COVER], trashCount: 0 }
+    const page = render(<AdminPrograms />)
+    await settle()
+    const img = page.querySelector('img.pg-thumb')
+    expect(img).toBeTruthy()
+    act(() => img.dispatchEvent(new Event('error')))
+    await settle()
+    expect(page.querySelector('img.pg-thumb')).toBeNull()
+    expect(page.textContent).toContain('Cover missing')
+  })
+
+  it('the form shows a plain reupload/remove hint when the preview fails to load', async () => {
+    mocks.answers['GET /api/admin/programs'] = { programs: [WITH_COVER], trashCount: 0 }
+    mocks.answers['GET /api/admin/program'] = { program: WITH_COVER, history: [] }
+    const page = render(<AdminPrograms />)
+    await settle()
+    act(() => page.querySelector('.item.pg-row').click())
+    const sheet = render(mocks.sheets[0](() => {}))
+    await settle()
+    const img = sheet.querySelector('img.pg-thumb')
+    act(() => img.dispatchEvent(new Event('error')))
+    await settle()
+    expect(sheet.textContent).toContain('The cover file could not be loaded — upload it again or remove it.')
+  })
+})
+
+describe('AdminPrograms: trash gives an immediate Undo', () => {
+  it('trashing from the form opens an 8s banner whose Undo restores the program', async () => {
+    mocks.answers['POST /api/admin/program/trash'] = { program: { ...PROGRAM, deletedAt: '2026-01-02T00:00:00Z', rev: 2 } }
+    mocks.answers['POST /api/admin/program/restore'] = { program: PROGRAM }
+    const page = render(<AdminPrograms />)
+    await settle()
+    act(() => page.querySelector('.item.pg-row').click())
+    const sheet = render(mocks.sheets[0](() => {}))
+    await settle()
+    const trashBtn = [...sheet.querySelectorAll('button')].find(b => b.textContent === 'Move to trash')
+    act(() => trashBtn.click())
+    await settle()
+    expect(page.textContent).toContain('Moved "Full Body Starter" to trash.')
+    const undoBtn = [...page.querySelectorAll('button')].find(b => b.textContent === 'Undo')
+    expect(undoBtn).toBeTruthy()
+    act(() => undoBtn.click())
+    await settle()
+    expect(mocks.calls.some(c => c.path === '/api/admin/program/restore')).toBe(true)
+  })
+})
+
+describe('AdminPrograms: Cancel asks before discarding unsaved edits', () => {
+  it('closes immediately when nothing changed', async () => {
+    const page = render(<AdminPrograms />)
+    await settle()
+    const newBtn = [...page.querySelectorAll('button')].find(b => b.textContent.includes('New program'))
+    act(() => newBtn.click())
+    const sheet = render(mocks.sheets[0](() => {}))
+    await settle()
+    const cancelBtn = [...sheet.querySelectorAll('button')].find(b => b.textContent === 'Cancel')
+    act(() => cancelBtn.click())
+    expect(mocks.confirmSheet.calls.length).toBe(0)
+  })
+
+  it('confirms "Discard changes?" once a field was edited', async () => {
+    const page = render(<AdminPrograms />)
+    await settle()
+    const newBtn = [...page.querySelectorAll('button')].find(b => b.textContent.includes('New program'))
+    act(() => newBtn.click())
+    const sheet = render(mocks.sheets[0](() => {}))
+    await settle()
+    type(sheet.querySelector('#pg-f-title'), 'Something typed')
+    const cancelBtn = [...sheet.querySelectorAll('button')].find(b => b.textContent === 'Cancel')
+    act(() => cancelBtn.click())
+    expect(mocks.confirmSheet.calls.length).toBe(1)
+    expect(mocks.confirmSheet.calls[0].title).toBe('Discard changes?')
+  })
+})
+
+describe('AdminPrograms: an invalid submit is accessible', () => {
+  it('wires aria-invalid/aria-describedby on the bad field and moves focus to it', async () => {
+    const page = render(<AdminPrograms />)
+    await settle()
+    const newBtn = [...page.querySelectorAll('button')].find(b => b.textContent.includes('New program'))
+    act(() => newBtn.click())
+    const sheet = render(mocks.sheets[0](() => {}))
+    await settle()
+    const titleInput = sheet.querySelector('#pg-f-title')   // emptyDraft's title is '' — too short
+    const save = [...sheet.querySelectorAll('button')].find(b => b.textContent === 'Save')
+    await act(async () => { save.click(); await settle() })
+    expect(titleInput.getAttribute('aria-invalid')).toBe('true')
+    expect(titleInput.getAttribute('aria-describedby')).toBe('pg-f-title-err')
+    expect(sheet.querySelector('#pg-f-title-err')).toBeTruthy()
+    expect(document.activeElement).toBe(titleInput)
   })
 })

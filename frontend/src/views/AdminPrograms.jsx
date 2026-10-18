@@ -18,11 +18,20 @@ const categoryLabel = v => (CATEGORIES.find(c => c.value === v) || {}).label || 
 const difficultyLabel = v => (DIFFICULTIES.find(d => d.value === v) || {}).label || v
 const coverUrl = (id, rev) => appBase().replace(/\/$/, '') + '/api/admin/program/cover?id=' + encodeURIComponent(id) + '&v=' + rev
 
-function Thumb({ program }) {
-  if (!program.coverFile) {
-    return <div className={'pg-thumb pg-thumb-ph cat-' + program.category} aria-hidden="true">{categoryLabel(program.category)}</div>
+// `badge`: show "Cover missing" instead of the category label when a cover is on record but its
+// file failed to load (gone from disk, a decode error) — distinct from simply having no cover,
+// which is the same placeholder with no badge. `onBroken` lets a caller (CoverField) show its own
+// explanatory text alongside the same placeholder.
+function Thumb({ program, badge, onBroken }) {
+  const [broken, setBroken] = useState(false)
+  if (!program.coverFile || broken) {
+    const missing = badge && program.coverFile && broken
+    return <div className={'pg-thumb pg-thumb-ph cat-' + program.category + (missing ? ' pg-thumb-missing' : '')} aria-hidden="true">
+      {missing ? 'Cover missing' : categoryLabel(program.category)}
+    </div>
   }
-  return <img className="pg-thumb" src={coverUrl(program.id, program.rev)} alt="" onError={e => { e.target.style.display = 'none' }} />
+  return <img className="pg-thumb" src={coverUrl(program.id, program.rev)} alt=""
+    onError={() => { setBroken(true); onBroken?.() }} />
 }
 
 function StatusPill({ program }) {
@@ -38,6 +47,10 @@ function CoverField({ program, onSaved, disabled }) {
   const [busy, setBusy] = useState(false)
   const [pendingAlt, setPendingAlt] = useState(program.coverAlt || '')
   const [altTouched, setAltTouched] = useState(false)
+  const [coverBroken, setCoverBroken] = useState(false)
+  // A fresh upload or a removal is a new cover_file identity (or none) — whatever failed to load
+  // before no longer applies.
+  useEffect(() => { setCoverBroken(false) }, [program.coverFile])
   const altErr = program.coverFile || pendingAlt ? coverAltError(pendingAlt, program.title) : null
 
   const pick = () => fileRef.current?.click()
@@ -81,13 +94,14 @@ function CoverField({ program, onSaved, disabled }) {
   return <div className="adm-field">
     <label>Cover image</label>
     <div className="pg-cover-row">
-      <Thumb program={program} />
+      <Thumb program={program} badge onBroken={() => setCoverBroken(true)} />
       <div className="col" style={{ gap: 6 }}>
         <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/avif" style={{ display: 'none' }} onChange={onFile} />
         <Button size="sm" disabled={disabled || busy} onClick={pick}>{busy ? 'Processing…' : program.coverFile ? 'Replace' : 'Add cover'}</Button>
         {program.coverFile && <button className="iconbtn adm-iconbtn" aria-label="Remove cover image" style={{ color: 'var(--red)' }} disabled={disabled || busy} onClick={remove}><Icon name="trash" /></button>}
       </div>
     </div>
+    {coverBroken && <div className="adm-hint" style={{ color: 'var(--red)' }}>The cover file could not be loaded — upload it again or remove it.</div>}
     <div className="adm-hint">16:9, cropped automatically. JPEG, PNG or WebP.</div>
     <label style={{ marginTop: 8 }}>Alt text{!program.coverFile && ' (set when you add a cover)'}</label>
     <TextField value={pendingAlt} placeholder="Describe what the image shows (not the title)" disabled={disabled}
@@ -101,8 +115,15 @@ function CoverField({ program, onSaved, disabled }) {
 function emptyDraft() {
   return { title: '', description: '', category: 'general', difficulty: 'beginner', sessionMinutes: 45, status: 'draft' }
 }
+const draftOf = p => ({
+  title: p.title, description: p.description, category: p.category,
+  difficulty: p.difficulty, sessionMinutes: p.sessionMinutes, status: p.status
+})
+// One field per entry, in the order the form shows them — the order a submit's focus-to-first-
+// invalid walks, and the ids aria-describedby/aria-invalid below hang off.
+const FIELDS = ['title', 'category', 'difficulty', 'sessionMinutes', 'description']
 
-function ProgramFormSheet({ id, onDone, close }) {
+function ProgramFormSheet({ id, onDone, onTrashed, close }) {
   const toast = useUI(s => s.toast)
   const [program, setProgram] = useState(null)   // the loaded row, once it exists server-side
   const [draft, setDraft] = useState(emptyDraft())
@@ -110,25 +131,28 @@ function ProgramFormSheet({ id, onDone, close }) {
   const [saving, setSaving] = useState(false)
   const [staleBanner, setStaleBanner] = useState(null)
   const isNew = !id
+  const fieldRefs = useRef({})
 
   useEffect(() => {
     if (!id) return
     api('/api/admin/program?id=' + encodeURIComponent(id)).then(d => {
       setProgram(d.program)
-      setDraft({
-        title: d.program.title, description: d.program.description, category: d.program.category,
-        difficulty: d.program.difficulty, sessionMinutes: d.program.sessionMinutes, status: d.program.status
-      })
+      setDraft(draftOf(d.program))
     }).catch(e => toast(e.message))
   }, [id])
 
   const inTrash = !!program?.deletedAt
+  const dirty = JSON.stringify(draft) !== JSON.stringify(isNew ? emptyDraft() : (program ? draftOf(program) : draft))
   const set = (k, v) => setDraft(d => ({ ...d, [k]: v }))
 
+  // Focuses the first field with an error, in form order (FIELDS) — a screen-reader user who
+  // submits an invalid form lands straight on the one thing to fix, not at the top of the sheet.
   const validateAll = () => {
     const next = {}
     for (const f of ['title', 'description', 'sessionMinutes']) { const m = fieldError(f, draft[f]); if (m) next[f] = m }
     setErrors(next)
+    const firstBad = FIELDS.find(f => next[f])
+    if (firstBad) fieldRefs.current[firstBad]?.focus()
     return Object.keys(next).length === 0
   }
 
@@ -163,11 +187,18 @@ function ProgramFormSheet({ id, onDone, close }) {
 
   const reload = () => api('/api/admin/program?id=' + encodeURIComponent(program.id)).then(d => {
     setProgram(d.program); setStaleBanner(null)
-    setDraft({
-      title: d.program.title, description: d.program.description, category: d.program.category,
-      difficulty: d.program.difficulty, sessionMinutes: d.program.sessionMinutes, status: d.program.status
-    })
+    setDraft(draftOf(d.program))
   })
+
+  // §2.6: a form with unsaved edits asks before it throws them away — Cancel on a form nobody
+  // touched (or already in the read-only trash view) just closes, same as before.
+  const cancel = () => {
+    if (!dirty) return close()
+    confirmSheet({
+      title: 'Discard changes?', message: 'Your edits have not been saved.',
+      confirmText: 'Discard', danger: true, onConfirm: close
+    })
+  }
 
   const trash = () => confirmSheet({
     title: `Move "${program.title}" to trash?`,
@@ -175,7 +206,7 @@ function ProgramFormSheet({ id, onDone, close }) {
       ' You can restore it for a while; after that it is deleted permanently.',
     confirmText: 'Move to trash', danger: true,
     onConfirm: () => api('/api/admin/program/trash', { method: 'POST', body: JSON.stringify({ id: program.id, rev: program.rev }) })
-      .then(() => { toast('Moved to trash'); onDone(); close() })
+      .then(() => { onDone(); onTrashed?.({ id: program.id, title: program.title }); close() })
       .catch(e => toast(e.message))
   })
 
@@ -187,38 +218,43 @@ function ProgramFormSheet({ id, onDone, close }) {
       Changed by someone else since you opened this. <button className="btn" style={{ marginInlineStart: 8 }} onClick={reload}>Reload</button>
     </div>}
     <div className="adm-field">
-      <label>Title</label>
-      <TextField value={draft.title} maxLength={TITLE_MAX} disabled={inTrash} onChange={e => set('title', e.target.value)} />
-      {errors.title && <div className="adm-hint" style={{ color: 'var(--red)' }}>{errors.title}</div>}
+      <label htmlFor="pg-f-title">Title</label>
+      <TextField id="pg-f-title" ref={el => { fieldRefs.current.title = el }} value={draft.title} maxLength={TITLE_MAX} disabled={inTrash}
+        aria-invalid={errors.title ? 'true' : undefined} aria-describedby={errors.title ? 'pg-f-title-err' : undefined}
+        onChange={e => set('title', e.target.value)} />
+      {errors.title && <div id="pg-f-title-err" className="adm-hint" style={{ color: 'var(--red)' }}>{errors.title}</div>}
     </div>
     <div className="row" style={{ gap: 10 }}>
       <div className="adm-field" style={{ flex: 1 }}>
-        <label>Category</label>
-        <select className="adm-select" value={draft.category} disabled={inTrash} onChange={e => set('category', e.target.value)}>
+        <label htmlFor="pg-f-category">Category</label>
+        <select id="pg-f-category" ref={el => { fieldRefs.current.category = el }} className="adm-select" value={draft.category} disabled={inTrash} onChange={e => set('category', e.target.value)}>
           {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
       </div>
       <div className="adm-field" style={{ flex: 1 }}>
-        <label>Difficulty</label>
-        <select className="adm-select" value={draft.difficulty} disabled={inTrash} onChange={e => set('difficulty', e.target.value)}>
+        <label htmlFor="pg-f-difficulty">Difficulty</label>
+        <select id="pg-f-difficulty" ref={el => { fieldRefs.current.difficulty = el }} className="adm-select" value={draft.difficulty} disabled={inTrash} onChange={e => set('difficulty', e.target.value)}>
           {DIFFICULTIES.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
         </select>
       </div>
     </div>
     <div className="adm-field">
-      <label>Session length (minutes)</label>
-      <input className="num" type="number" min="1" max="600" value={draft.sessionMinutes} disabled={inTrash}
+      <label htmlFor="pg-f-minutes">Session length (minutes)</label>
+      <input id="pg-f-minutes" ref={el => { fieldRefs.current.sessionMinutes = el }} className="num" type="number" min="1" max="600" value={draft.sessionMinutes} disabled={inTrash}
+        aria-invalid={errors.sessionMinutes ? 'true' : undefined} aria-describedby={errors.sessionMinutes ? 'pg-f-minutes-err' : undefined}
         onChange={e => set('sessionMinutes', parseInt(e.target.value, 10) || 0)} />
-      {errors.sessionMinutes && <div className="adm-hint" style={{ color: 'var(--red)' }}>{errors.sessionMinutes}</div>}
+      {errors.sessionMinutes && <div id="pg-f-minutes-err" className="adm-hint" style={{ color: 'var(--red)' }}>{errors.sessionMinutes}</div>}
     </div>
     <div className="adm-field">
-      <label>Description</label>
-      <TextArea value={draft.description} maxLength={DESCRIPTION_MAX} rows={4} disabled={inTrash} onChange={e => set('description', e.target.value)} />
-      {errors.description && <div className="adm-hint" style={{ color: 'var(--red)' }}>{errors.description}</div>}
+      <label htmlFor="pg-f-description">Description</label>
+      <TextArea id="pg-f-description" ref={el => { fieldRefs.current.description = el }} value={draft.description} maxLength={DESCRIPTION_MAX} rows={4} disabled={inTrash}
+        aria-invalid={errors.description ? 'true' : undefined} aria-describedby={errors.description ? 'pg-f-description-err' : undefined}
+        onChange={e => set('description', e.target.value)} />
+      {errors.description && <div id="pg-f-description-err" className="adm-hint" style={{ color: 'var(--red)' }}>{errors.description}</div>}
     </div>
     <div className="adm-field">
-      <label>Status</label>
-      <select className="adm-select" value={draft.status} disabled={inTrash} onChange={e => set('status', e.target.value)}>
+      <label htmlFor="pg-f-status">Status</label>
+      <select id="pg-f-status" className="adm-select" value={draft.status} disabled={inTrash} onChange={e => set('status', e.target.value)}>
         <option value="draft">Draft</option>
         <option value="published">Published</option>
       </select>
@@ -226,7 +262,7 @@ function ProgramFormSheet({ id, onDone, close }) {
     {!isNew && program && <CoverField program={program} disabled={inTrash} onSaved={p => setProgram(p)} />}
     <div className="adm-actions">
       <Button variant="primary" disabled={saving || inTrash} onClick={save}>{saving ? 'Saving…' : 'Save'}</Button>
-      <Button onClick={close}>Cancel</Button>
+      <Button onClick={cancel}>Cancel</Button>
       {!isNew && !inTrash && <button className="btn danger" style={{ marginInlineStart: 'auto' }} onClick={trash}>Move to trash</button>}
     </div>
     {!isNew && program && <>
@@ -308,6 +344,8 @@ export default function AdminPrograms() {
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState(null)
   const [trashCount, setTrashCount] = useState(0)
+  const [justTrashed, setJustTrashed] = useState(null)   // { id, title } — the 8s undo banner
+  const undoTm = useRef(null)
 
   const load = () => {
     const trash = tab === 'trash'
@@ -324,7 +362,25 @@ export default function AdminPrograms() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, q])
 
-  const openForm = id => openSheet(close => <ProgramFormSheet id={id} onDone={load} close={close} />)
+  // §2.6: moving to trash isn't destructive on its own (restorable for a while), so the most
+  // likely slip — trashing the wrong program, or one that was published — gets an immediate way
+  // back, right where the action happened, not just a "go find it in the Trash tab" message.
+  const onTrashed = ({ id, title }) => {
+    clearTimeout(undoTm.current)
+    setJustTrashed({ id, title })
+    undoTm.current = setTimeout(() => setJustTrashed(null), 8000)
+  }
+  const undoTrash = () => {
+    if (!justTrashed) return
+    const { id } = justTrashed
+    clearTimeout(undoTm.current)
+    setJustTrashed(null)
+    api('/api/admin/program/restore', { method: 'POST', body: JSON.stringify({ id }) })
+      .then(() => { toast('Restored as draft'); load() })
+      .catch(e => toast(e.message))
+  }
+
+  const openForm = id => openSheet(close => <ProgramFormSheet id={id} onDone={load} onTrashed={onTrashed} close={close} />)
 
   return <div className="card">
     <div className="row between"><h2 style={{ margin: 0 }}>Training programs</h2>
@@ -337,6 +393,11 @@ export default function AdminPrograms() {
     </div>
     <input className="field" style={{ marginBottom: 10 }} placeholder="Search title or description…" value={q} onChange={e => setQ(e.target.value)} />
 
+    {justTrashed && <div className="pg-undo" role="status">
+      <span>Moved "{justTrashed.title}" to trash.</span>
+      <Button size="sm" onClick={undoTrash}>Undo</Button>
+    </div>}
+
     {err && <div className="adm-result bad" style={{ marginBottom: 10 }}>
       {err} <button className="btn" style={{ marginInlineStart: 8 }} onClick={load}>Retry</button>
     </div>}
@@ -346,7 +407,7 @@ export default function AdminPrograms() {
 
     <div className="list">
       {(rows || []).map(p => <div key={p.id} className="item pg-row" onClick={() => tab !== 'trash' && openForm(p.id)}>
-        <Thumb program={p} />
+        <Thumb program={p} badge />
         <div className="grow">
           <div className="tt">{p.title} <StatusPill program={p} /></div>
           <div className="ss">{categoryLabel(p.category)} · {difficultyLabel(p.difficulty)} · {formatMinutes(p.sessionMinutes)}</div>
