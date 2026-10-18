@@ -35,7 +35,7 @@ A Brilhart Fitness é destinada a maiores de 18 anos. Não aceitamos o cadastro 
 
 Se a data de nascimento informada no cadastro indicar menos de 18 anos, o cadastro não é concluído, e você verá o aviso: "A Brilhart Fitness é destinada a maiores de 18 anos. Não é possível concluir seu cadastro."
 
-Se, ainda assim, identificarmos uma conta de uma pessoa menor de 18 anos, ela é suspensa e excluída, sem aviso prévio.
+Se, ainda assim, identificarmos uma conta de pessoa menor de 18 anos, encerramos a conta e excluímos os dados associados; fale com a gente pelo canal de privacidade se isso acontecer.
 
 ## Assinatura, preços, primeiro mês e renovação
 

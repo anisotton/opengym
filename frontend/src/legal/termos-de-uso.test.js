@@ -22,6 +22,9 @@ describe('Termos de Uso', () => {
       'atendimento@brilhart.com.br', '(51) 2165-8600'])
       expect(text, fact).toContain(fact)
   })
+  it('has no leftover [CONFIRMAR] placeholder', () => {
+    expect(flat(termos)).not.toContain('CONFIRMAR')
+  })
   it('has no markup inside the strings', () => {
     expect(flat(termos)).not.toMatch(/<[a-z]|\*\*|^#/m)
   })

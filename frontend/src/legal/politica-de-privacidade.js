@@ -24,7 +24,7 @@ export default {
           list: [
             'Nome — identificar sua conta e falar com você — execução de contrato;',
             'E-mail — confirmar a conta pelo link que enviamos, recuperar seu acesso e enviar avisos de cobrança e de mudanças nos termos — execução de contrato;',
-            'Data de nascimento (opcional) — só para mostrar um aviso quando a pessoa tem menos de 18 anos — consentimento;',
+            'Data de nascimento (obrigatória no cadastro) — verificar que você tem 18 anos ou mais; o cadastro de menores de 18 anos não é concluído — execução de contrato;',
             'Passkeys — permitir seu login; guardamos apenas a chave pública, e a chave privada nunca sai do seu dispositivo — execução de contrato;',
             'Senha (só quando o login por senha estiver disponível) — permitir seu login; guardamos apenas um hash da senha, nunca a senha em si — execução de contrato;',
             'Treinos, cargas, rotinas e peso corporal — é o próprio serviço: registrar, mostrar sua evolução e calcular progressões — consentimento, por poderem ser dados de saúde (veja a próxima seção);',
@@ -51,7 +51,7 @@ export default {
       paragraphs: [
         'A Brilhart Fitness é destinada a maiores de 18 anos. Não tratamos dados de menores de 18 anos para fins de cadastro — nem com autorização do pai, da mãe ou de outro responsável legal.',
         'Se a data de nascimento informada no cadastro indicar menos de 18 anos, o cadastro não é concluído, com o aviso: "A Brilhart Fitness é destinada a maiores de 18 anos. Não é possível concluir seu cadastro."',
-        'Se, ainda assim, identificarmos dados de uma pessoa menor de 18 anos tratados, excluímos a conta e os dados associados; fale com a gente pelo canal de privacidade se isso acontecer.',
+        'Se, ainda assim, identificarmos uma conta de pessoa menor de 18 anos, encerramos a conta e excluímos os dados associados; fale com a gente pelo canal de privacidade se isso acontecer.',
       ],
     },
     {
