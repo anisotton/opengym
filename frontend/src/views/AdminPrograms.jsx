@@ -123,14 +123,24 @@ const draftOf = p => ({
 // invalid walks, and the ids aria-describedby/aria-invalid below hang off.
 const FIELDS = ['title', 'category', 'difficulty', 'sessionMinutes', 'description']
 
-function ProgramFormSheet({ id, onDone, onTrashed, close }) {
+function ProgramFormSheet({ id, onDone, onTrashed, close, lockSheet }) {
   const toast = useUI(s => s.toast)
   const [program, setProgram] = useState(null)   // the loaded row, once it exists server-side
   const [draft, setDraft] = useState(emptyDraft())
+  // What "unedited" means right now — the untouched blank form for a new program, or whatever
+  // was last loaded/saved for an existing one. Moves every time `draft` stops being a pending
+  // edit (a load, a reload, a successful save), so a save doesn't leave the sheet looking dirty
+  // (and therefore locked, see below) against values that no longer exist anywhere but history.
+  const [baseline, setBaseline] = useState(emptyDraft())
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [staleBanner, setStaleBanner] = useState(null)
-  const isNew = !id
+  // Not `!id`: that stayed true forever for a sheet opened via "New program", even after save()
+  // below created the row — the cover field and the trash/history footer would never appear for
+  // the rest of that sheet's life, and a second Save would silently POST a duplicate instead of
+  // updating the one just created. `program` is what actually flips, right when the row starts
+  // existing server-side (on load for an existing id, or right after a successful create).
+  const isNew = !program
   const fieldRefs = useRef({})
 
   useEffect(() => {
@@ -138,11 +148,18 @@ function ProgramFormSheet({ id, onDone, onTrashed, close }) {
     api('/api/admin/program?id=' + encodeURIComponent(id)).then(d => {
       setProgram(d.program)
       setDraft(draftOf(d.program))
+      setBaseline(draftOf(d.program))
     }).catch(e => toast(e.message))
   }, [id])
 
   const inTrash = !!program?.deletedAt
-  const dirty = JSON.stringify(draft) !== JSON.stringify(isNew ? emptyDraft() : (program ? draftOf(program) : draft))
+  const dirty = JSON.stringify(draft) !== JSON.stringify(baseline)
+  // Backdrop tap, swipe-down, Esc and the Android back button all close a sheet straight away
+  // (components/Modals.jsx) unless it's locked — none of them go through this form's own
+  // Cancel/`cancel()` below, so a locked-while-dirty sheet is what keeps any of them from
+  // silently discarding an edit. Save/trash/a clean Cancel all unlock on their way out, since
+  // `dirty` itself goes false the moment the draft matches what's on the server again.
+  useEffect(() => { lockSheet?.(dirty) }, [dirty])
   const set = (k, v) => setDraft(d => ({ ...d, [k]: v }))
 
   // Focuses the first field with an error, in form order (FIELDS) — a screen-reader user who
@@ -164,11 +181,13 @@ function ProgramFormSheet({ id, onDone, onTrashed, close }) {
       if (isNew) {
         const r = await api('/api/admin/programs/new', { method: 'POST', body: JSON.stringify(draft) })
         setProgram(r.program)
+        setBaseline(draftOf(r.program))
         toast('Program created')
         onDone()
       } else {
         const r = await api('/api/admin/program/update', { method: 'POST', body: JSON.stringify({ id: program.id, rev: program.rev, ...draft }) })
         setProgram(r.program)
+        setBaseline(draftOf(r.program))
         toast('Saved')
         onDone()
       }
@@ -188,6 +207,7 @@ function ProgramFormSheet({ id, onDone, onTrashed, close }) {
   const reload = () => api('/api/admin/program?id=' + encodeURIComponent(program.id)).then(d => {
     setProgram(d.program); setStaleBanner(null)
     setDraft(draftOf(d.program))
+    setBaseline(draftOf(d.program))
   })
 
   // §2.6: a form with unsaved edits asks before it throws them away — Cancel on a form nobody
@@ -380,7 +400,10 @@ export default function AdminPrograms() {
       .catch(e => toast(e.message))
   }
 
-  const openForm = id => openSheet(close => <ProgramFormSheet id={id} onDone={load} onTrashed={onTrashed} close={close} />)
+  const openForm = id => {
+    let handle
+    handle = openSheet(close => <ProgramFormSheet id={id} onDone={load} onTrashed={onTrashed} close={close} lockSheet={v => handle.lock(v)} />)
+  }
 
   return <div className="card">
     <div className="row between"><h2 style={{ margin: 0 }}>Training programs</h2>

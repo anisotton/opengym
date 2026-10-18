@@ -7,7 +7,7 @@ import AdminPrograms from './AdminPrograms.jsx'
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 const mocks = vi.hoisted(() => ({
-  answers: {}, sheets: [], calls: [],
+  answers: {}, sheets: [], calls: [], lockCalls: [],
   confirmSheet: Object.assign((opts) => { mocks.confirmSheet.calls.push(opts); return opts.onConfirm && opts.onConfirm() }, { calls: [] })
 }))
 vi.mock('../lib/api.js', () => ({
@@ -25,7 +25,14 @@ vi.mock('../lib/api.js', () => ({
   appBase: () => 'http://localhost'
 }))
 vi.mock('../store/useUI.js', () => {
-  const snap = () => ({ toast: () => {}, openSheet: render => mocks.sheets.push(render) })
+  const snap = () => ({
+    toast: () => {},
+    openSheet: render => {
+      mocks.sheets.push(render)
+      const id = mocks.sheets.length - 1
+      return { id, close: () => {}, lock: v => mocks.lockCalls.push({ id, v }) }
+    }
+  })
   const useUI = selector => selector ? selector(snap()) : snap()
   useUI.getState = snap
   return { useUI }
@@ -57,6 +64,7 @@ beforeEach(() => {
   mocks.sheets.length = 0
   mocks.calls.length = 0
   mocks.confirmSheet.calls.length = 0
+  mocks.lockCalls.length = 0
   mocks.answers = {
     'GET /api/admin/programs': { programs: [PROGRAM], trashCount: 0 },
     'GET /api/admin/programs/meta': {
@@ -229,6 +237,49 @@ describe('AdminPrograms: Cancel asks before discarding unsaved edits', () => {
     act(() => cancelBtn.click())
     expect(mocks.confirmSheet.calls.length).toBe(1)
     expect(mocks.confirmSheet.calls[0].title).toBe('Discard changes?')
+  })
+})
+
+// Atena's second pass on ISO-1485: Cancel's own confirm only guards that one button — backdrop
+// tap, swipe-down, Esc and the Android back button all close a sheet directly through
+// components/Modals.jsx without ever calling this form's cancel(). Locking the sheet while dirty
+// (the sheet handle's own `lock`, read by every one of those gesture handlers — confirmed by
+// reading Modals.jsx: `if (!sheet.locked) close()` guards all four) is what keeps them from
+// slipping past the same "Discard changes?" the explicit Cancel asks for; Modals.jsx itself is
+// unmodified and already enforces it, so this test is only responsible for proving the sheet
+// asks to be locked and unlocked at the right moments.
+describe('AdminPrograms: the sheet locks itself while dirty, so ambient close gestures cannot bypass it', () => {
+  it('locks once a field is edited and unlocks once the edit is undone', async () => {
+    const page = render(<AdminPrograms />)
+    await settle()
+    const newBtn = [...page.querySelectorAll('button')].find(b => b.textContent.includes('New program'))
+    act(() => newBtn.click())
+    const sheet = render(mocks.sheets[0](() => {}))
+    await settle()
+    expect(mocks.lockCalls.some(c => c.v === true)).toBe(false)
+
+    const titleInput = sheet.querySelector('#pg-f-title')
+    type(titleInput, 'Something typed')
+    expect(mocks.lockCalls.at(-1)).toEqual({ id: 0, v: true })
+
+    type(titleInput, '')   // back to the untouched draft
+    expect(mocks.lockCalls.at(-1)).toEqual({ id: 0, v: false })
+  })
+
+  it('unlocks again once a dirty edit is saved', async () => {
+    mocks.answers['POST /api/admin/programs/new'] = { program: { ...PROGRAM, title: 'Renamed' } }
+    const page = render(<AdminPrograms />)
+    await settle()
+    const newBtn = [...page.querySelectorAll('button')].find(b => b.textContent.includes('New program'))
+    act(() => newBtn.click())
+    const sheet = render(mocks.sheets[0](() => {}))
+    await settle()
+    type(sheet.querySelector('#pg-f-title'), 'Renamed')
+    expect(mocks.lockCalls.at(-1)).toEqual({ id: 0, v: true })
+
+    const save = [...sheet.querySelectorAll('button')].find(b => b.textContent === 'Save')
+    await act(async () => { save.click(); await settle() })
+    expect(mocks.lockCalls.at(-1)).toEqual({ id: 0, v: false })
   })
 })
 
