@@ -16,10 +16,17 @@ export function ageFromBirthDate(birthDate, now = new Date()) {
   return age
 }
 
-// Decision 2 of ISO-1386: asked, never required. The notice this feeds (ISO-1398) never
-// blocks sign-up either way — `null` (no date yet, or one that doesn't parse) is simply "no
-// notice", the same as an adult.
+// ISO-1521 (Decision 18/10/2026, replacing ISO-1386's "ask, never block"): sign-up now refuses
+// anyone this returns true for. `null` (no date yet, or one that doesn't parse) is "not a minor"
+// here — callers gate submission on a parsed, plausible date separately (see
+// components/SignupFlow.jsx's `dateOK`), so this never has to tell "no date" apart from "adult".
 export const isMinor = (birthDate, now) => {
   const age = ageFromBirthDate(birthDate, now)
   return age != null && age >= 0 && age < 18
 }
+
+// Below this the birth date is treated the same as a malformed field (a typo, a wrong-century
+// slip), not a reason to show the under-18 refusal — ordinary input sanity, same category as "not
+// a valid e-mail", checked before isMinor rather than folded into it. Shared by SignupFlow.jsx and
+// PasswordAuth.jsx's PasswordRegisterForm, the two places a birth date is collected at sign-up.
+export const MIN_PLAUSIBLE_AGE = 5

@@ -123,7 +123,7 @@ test('a passkey signup with the current version lands with both columns set', as
   const h = await startServer(t);
   const ip = '198.51.100.41';
   const key = softPasskey();
-  const opt = await h.req('POST', '/api/register/options', { body: { name: 'Ada', email: 'ada@example.com', termsVersion: VERSION }, ip });
+  const opt = await h.req('POST', '/api/register/options', { body: { name: 'Ada', email: 'ada@example.com', birthDate: '1990-05-05', termsVersion: VERSION }, ip });
   assert.equal(opt.status, 200, JSON.stringify(opt.body));
   const r = await h.req('POST', '/api/register/verify', { body: { cid: opt.body.cid, credential: key.attestation(opt.body.options.challenge) }, ip });
   assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -152,7 +152,7 @@ test('register/password (PASSWORD_LOGIN=1) follows the same rule', async t => {
   const denied = h.audit().filter(e => e.ev === 'auth.register.denied').map(e => e.msg);
   assert.deepEqual(denied, ['terms-required', 'terms-version-stale'], 'audited like register/options');
 
-  const ok = await h.req('POST', '/api/register/password', { body: { name: 'Bea', password, termsVersion: VERSION }, ip });
+  const ok = await h.req('POST', '/api/register/password', { body: { name: 'Bea', password, birthDate: '1990-05-05', termsVersion: VERSION }, ip });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   const row = await h.user(ok.body.user.id);
   assert.equal(row.terms_accepted_version, VERSION);

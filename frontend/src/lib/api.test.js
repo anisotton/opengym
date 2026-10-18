@@ -205,7 +205,7 @@ describe('sign-up sends termsVersion', () => {
     const { passwordRegister } = await import('./api.js')
     const fetchMock = vi.fn(async () => json({ user: { id: 'u1' } }))
     vi.stubGlobal('fetch', fetchMock)
-    await passwordRegister('A', 'pw', '', '', '2026-10-17')
+    await passwordRegister('A', 'pw', '', '', '2000-01-01', '2026-10-17')
     expect(fetchMock.mock.calls[0][0]).toContain('/api/register/password')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).termsVersion).toBe('2026-10-17')
   })

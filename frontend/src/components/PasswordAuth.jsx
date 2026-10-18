@@ -12,6 +12,7 @@ import { useStore, hasData } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { dateLocale } from '../lib/i18n-core.js'
+import { ageFromBirthDate, isMinor, MIN_PLAUSIBLE_AGE } from '../lib/age.js'
 import { api, webauthnOK, passkeyAssertion, passwordLogin, passwordRegister, passwordResetRedeem, reportWebauthnFailure } from '../lib/api.js'
 import { classifyWebauthnFailure, webauthnFailureText } from '../lib/webauthn-error.js'
 import { askAddDeviceData } from '../sheets.jsx'
@@ -184,21 +185,28 @@ export function PasswordSignInSheet({ close, onPasskey }) {
 export const openPasswordSignIn = onPasskey => ui().openSheet(close => <PasswordSignInSheet close={close} onPasskey={onPasskey} />)
 
 /* The password half of creating a profile. Name and invite code are the caller's state, so
-   switching between passkey and password on the sign-up sheet keeps what was typed. */
+   switching between passkey and password on the sign-up sheet keeps what was typed. Birth date is
+   required and under-18 blocks it outright (ISO-1521), the same rule and wording as the passkey
+   half (SignupFlow.jsx). */
 export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, setCode }) {
   const [email, setEmail] = useState('')
+  const [birthDate, setBirthDate] = useState('')
   const [pw, setPw] = useState('')
   const [again, setAgain] = useState('')
   const [terms, setTerms] = useState(false)   // never pre-ticked: acceptance is the user's own act
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  const age = ageFromBirthDate(birthDate)
+  const dateOK = !!birthDate && age != null && age >= MIN_PLAUSIBLE_AGE
+  const minor = dateOK && isMinor(birthDate)
   const submit = async ev => {
     ev.preventDefault()
-    if (busy) return
+    if (busy || minor) return   // the button is disabled too, but an implicit submit must not get past this
     const n = name.trim()
     const mail = email.trim()
     const bad = !n ? t('Enter a name')
       : mail && !looksLikeEmail(mail) ? t('That is not an e-mail address.')
+      : !dateOK ? t('Check your birth date.')
       : inviteOnly && !code.trim() ? t('An invite code is required')
       : length(pw) < MIN_PASSWORD ? t('Use at least {0} characters.', MIN_PASSWORD)
       : pw !== again ? t('The two passwords are not the same.')
@@ -207,7 +215,7 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     if (!terms) return   // the button is disabled too, but an implicit submit must not get past this
     setBusy(true); setErr(null)
     try {
-      const u = await passwordRegister(n, pw, code.trim(), mail, LEGAL_VERSION)
+      const u = await passwordRegister(n, pw, code.trim(), mail, birthDate, LEGAL_VERSION)
       const st = useStore.getState()
       // The server recorded this acceptance in the same request (ISO-1390): Settings shows its
       // date from here on, not only after the next /api/me.
@@ -224,6 +232,12 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     <input className="input" type="email" name="email" autoComplete="email" inputMode="email" placeholder={t('E-mail (optional)')} maxLength={254}
       value={email} onChange={e => setEmail(e.target.value)} {...field} />
     <div className="dim small" style={{ marginTop: 6 }}>{t('Lets you sign in with it instead of your name. Nothing is ever sent to it.')}</div>
+    <div style={{ height: 10 }} />
+    <input className="input" type="date" name="bday" autoComplete="bday" aria-label={t('Date of birth')}
+      value={birthDate} onChange={e => setBirthDate(e.target.value)} />
+    {minor && <div className="small" role="alert" style={errStyle}>
+      {t('Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.')}
+    </div>}
     {inviteOnly && <>
       <div style={{ height: 10 }} />
       <input className="input" placeholder={t('Invite code')} maxLength={40} value={code}
@@ -240,7 +254,7 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     <TermsCheckbox checked={terms} onChange={setTerms} />
     {err && <div className="small" role="alert" style={errStyle}>{err}</div>}
     <div style={{ height: 12 }} />
-    <Button type="submit" variant="primary" disabled={busy || !terms}>{t('Create profile')}</Button>
+    <Button type="submit" variant="primary" disabled={busy || !terms || minor}>{t('Create profile')}</Button>
   </form>
 }
 

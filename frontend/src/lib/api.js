@@ -273,12 +273,14 @@ async function timedCeremony(run) {
   }
 }
 
-// ISO-1397: every signup now needs a unique e-mail (confirmed by mail after this ceremony);
-// `birthDate` (`YYYY-MM-DD`) is optional server-side and only ever feeds the under-18 notice
-// (ISO-1398) — it never blocks a signup either way. `termsVersion` is the LEGAL_VERSION of the
-// bundle that showed the acceptance box (ISO-1390), passed by the caller, never read from the server.
+// ISO-1397: every signup now needs a unique e-mail (confirmed by mail after this ceremony).
+// `birthDate` (`YYYY-MM-DD`) is required (ISO-1521): the caller (SignupFlow.jsx) never reaches
+// this with a missing or under-18 one — its own `canSubmit`/`minor` gating refuses before any
+// request is made — so the server's `birth-date-required`/`underage` refusals are a backstop,
+// not a path this function's callers are expected to hit. `termsVersion` is the LEGAL_VERSION of
+// the bundle that showed the acceptance box (ISO-1390), passed by the caller, never read from the server.
 export async function passkeyRegister(name, code, email, birthDate, termsVersion) {
-  const { cid, options } = await api('/api/register/options', { method: 'POST', body: JSON.stringify({ name, code: code || '', email, ...(birthDate ? { birthDate } : {}), termsVersion }) })
+  const { cid, options } = await api('/api/register/options', { method: 'POST', body: JSON.stringify({ name, code: code || '', email, birthDate, termsVersion }) })
   const cred = await timedCeremony(() => navigator.credentials.create({ publicKey: toCreationOptions(options) }))
   const res = await api('/api/register/verify', { method: 'POST', body: JSON.stringify({ cid, credential: credToJSON(cred) }) })
   return res.user
@@ -326,9 +328,10 @@ export async function passwordLogin(name, password) {
   return (await post('/api/login/password', { name, password })).user
 }
 // `email` is optional, and sent only when there is one: a server from before the field would
-// otherwise ignore it without a word, which is the same thing.
-export async function passwordRegister(name, password, code, email, termsVersion) {
-  return (await post('/api/register/password', { name, password, code: code || '', ...(email ? { email } : {}), termsVersion })).user
+// otherwise ignore it without a word, which is the same thing. `birthDate` is required (ISO-1521),
+// the same contract as passkeyRegister above.
+export async function passwordRegister(name, password, code, email, birthDate, termsVersion) {
+  return (await post('/api/register/password', { name, password, code: code || '', ...(email ? { email } : {}), birthDate, termsVersion })).user
 }
 export async function passwordResetRedeem(name, code, next) {
   return (await post('/api/login/password-reset', { name, code, next })).user

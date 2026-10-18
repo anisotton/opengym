@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock('../lib/api.js', () => ({ passkeyRegister: (...a) => mocks.passkeyRegister(...a), bio: () => 'x' }))
 vi.mock('./LegalText.jsx', () => ({ openLegalSheet: (...a) => mocks.openLegalSheet(...a) }))
-vi.mock('./AccountEmail.jsx', () => ({ useMinorNotice: () => {}, ResendEmailButton: () => null }))
+vi.mock('./AccountEmail.jsx', () => ({ ResendEmailButton: () => null }))
 
 const mounted = []
 function mount(el) {
@@ -102,5 +102,30 @@ describe('SignupFlow terms checkbox', () => {
     act(() => button(host, 'Read the Privacy Policy').click())
     expect(mocks.openLegalSheet).toHaveBeenCalledWith('privacidade')
     expect(host.querySelector('input[name="terms"]').checked).toBe(false)
+  })
+})
+
+// ISO-1521: a minor's birth date blocks sign-up outright, not just a dismissable notice.
+const UNDERAGE = 'Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.'
+describe('SignupFlow under-18 block', () => {
+  it('a minor birth date disables Create passkey, shows the exact message, and sends nothing', async () => {
+    const host = mount(<Harness />)
+    type(host.querySelector('input[type="email"]'), 'ana@example.com')
+    type(host.querySelector('input[type="date"]'), '2015-06-01')
+    act(() => host.querySelector('input[name="terms"]').click())
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(UNDERAGE)
+    const btn = button(host, 'Create passkey')
+    expect(btn.disabled).toBe(true)
+    btn.disabled = false   // a programmatic call that bypasses the disabled attribute
+    act(() => btn.click())
+    await settle()
+    expect(mocks.passkeyRegister).not.toHaveBeenCalled()
+  })
+
+  it('an 18-or-older birth date never shows the under-18 message', () => {
+    const host = filled()
+    act(() => host.querySelector('input[name="terms"]').click())
+    expect(host.querySelector('[role="alert"]')).toBe(null)
+    expect(button(host, 'Create passkey').disabled).toBe(false)
   })
 })

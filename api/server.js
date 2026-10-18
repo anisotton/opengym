@@ -1107,10 +1107,10 @@ function termsVersionProblem(body) {
   return { status: 400, error: 'these terms are not the current ones — update the app', code: 'terms-version-stale' };
 }
 // A birth date as the signup form sends it: plain YYYY-MM-DD, not in the future, not absurdly old
-// (130 years catches a fat-fingered year without hard-coding an age policy this route has no
-// business enforcing — see ISO-1398 for the under-18 notice this value feeds, which never blocks
-// a signup either way). Rejects anything the round trip through Date doesn't echo back exactly
-// (an out-of-range day like 2024-02-30), rather than letting JS's date math quietly roll it over.
+// (130 years catches a fat-fingered year without hard-coding the under-18 rule below, which is
+// its own, separate check). Rejects anything the round trip through Date doesn't echo back
+// exactly (an out-of-range day like 2024-02-30), rather than letting JS's date math quietly roll
+// it over.
 function parseBirthDate(raw) {
   const s = text(raw).trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
@@ -1118,6 +1118,33 @@ function parseBirthDate(raw) {
   if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return null;
   if (d.getTime() > Date.now() || Date.now() - d.getTime() > 130 * 365.25 * 86400000) return null;
   return s;
+}
+// Whole years as of right now, from a date parseBirthDate has already validated — same rule as
+// frontend/src/lib/age.js's ageFromBirthDate (UTC calendar dates, "already had the birthday this
+// year or not"), kept in parallel rather than imported since api/ and frontend/ are separate
+// packages (CLAUDE.md's dependency-light constraint; see that file's own header comment for the
+// other half of this cross-reference).
+function ageFromBirthDate(birthDate) {
+  const [y, mo, d] = birthDate.split('-').map(Number);
+  const now = new Date();
+  let age = now.getUTCFullYear() - y;
+  const hadBirthdayThisYear = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) >= Date.UTC(now.getUTCFullYear(), mo - 1, d);
+  if (!hadBirthdayThisYear) age--;
+  return age;
+}
+// ISO-1521 (Decision 18/10/2026, ISO-1390): replaces ISO-1386/1398's "ask, never block" — a birth
+// date is now required at signup, and under 18 is refused outright. Checked right after the terms
+// in both /api/register/options and /api/register/password, before anything that spends an
+// address- or invite-guess budget (addressPaused/strikeAddress, the invite check): a signup that
+// can never go through should not get to spend either, the same reasoning as termsVersionProblem
+// above. Existing accounts are untouched — this is signup-time only. Returns null on success.
+function birthDateProblem(body) {
+  const hasBirthDate = body.birthDate != null && text(body.birthDate).trim() !== '';
+  if (!hasBirthDate) return { status: 400, error: 'a birth date is required', code: 'birth-date-required' };
+  const birthDate = parseBirthDate(body.birthDate);
+  if (!birthDate) return { status: 400, error: 'that is not a date', code: 'birth-date-invalid' };
+  if (ageFromBirthDate(birthDate) < 18) return { status: 400, error: 'Brilhart Fitness is for people 18 and older', code: 'underage' };
+  return null;
 }
 // Who a sign-in body names: `identifier` (what the app sends), `name` (what it sent before, and
 // what older clients still send — an address typed there works too) or `email` (only an address).
@@ -1348,6 +1375,14 @@ const passwordRoutes = {
       audit(req, 'auth.register.denied', { ok: false, name, msg: termsProblem.code });
       return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
     }
+    // ISO-1521: same rule and same place as /api/register/options — right after the terms,
+    // before the invite-guess budget below gets spent on a signup that could never go through.
+    const birthProblem = birthDateProblem(body);
+    if (birthProblem) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: birthProblem.code });
+      return json(res, birthProblem.status, { error: birthProblem.error, code: birthProblem.code });
+    }
+    const birthDate = parseBirthDate(body.birthDate);
     const code = text(body.code).trim().toUpperCase();
     if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
     if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
@@ -1383,7 +1418,7 @@ const passwordRoutes = {
     if (email && await emailTaken(email)) return emailRefused();
     const created = new Date().toISOString();
     const user = {
-      id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}),
+      id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}), birthDate,
       // ISO-1390: termsVersionProblem() above already pinned body.termsVersion to LEGAL_VERSION.
       termsAcceptedVersion: LEGAL_VERSION, termsAcceptedAt: created
     };
@@ -2391,6 +2426,14 @@ const routes = {
       return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
     }
     const termsVersion = body.termsVersion;
+    // ISO-1521: right after the terms, before the e-mail-guess budget below gets spent on a
+    // signup that could never go through anyway.
+    const birthProblem = birthDateProblem(body);
+    if (birthProblem) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: birthProblem.code });
+      return json(res, birthProblem.status, { error: birthProblem.error, code: birthProblem.code });
+    }
+    const birthDate = parseBirthDate(body.birthDate);
     // ISO-1397: every signup from here on needs a valid, unique e-mail — checked here, before the
     // WebAuthn ceremony, so a taken or malformed address fails fast rather than after a Face ID/
     // fingerprint prompt. "Taken" is a guess worth throttling the same way it already is at
@@ -2404,11 +2447,6 @@ const routes = {
       audit(req, 'auth.register.denied', { ok: false, name, msg: 'email-taken' });
       return json(res, 409, EMAIL_ERRORS.taken);
     }
-    // Decision 2 of ISO-1386: asked, not required — the under-18 notice is ISO-1398's concern and
-    // never blocks a signup either way, so an absent birth date is simply left out.
-    const hasBirthDate = body.birthDate != null && text(body.birthDate).trim() !== '';
-    const birthDate = hasBirthDate ? parseBirthDate(body.birthDate) : null;
-    if (hasBirthDate && !birthDate) return json(res, 400, { error: 'that is not a date', code: 'birth-date-invalid' });
     const code = text(body.code).trim().toUpperCase();
     if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
       // The rejected code itself is never recorded — a near-miss guess in the log is a liability.

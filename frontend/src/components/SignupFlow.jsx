@@ -1,25 +1,21 @@
-// The passkey half of sign-up (ISO-1397/1398): name, e-mail, birth date, the terms box
+// The passkey half of sign-up (ISO-1397/1398/1521): name, e-mail, birth date, the terms box
 // (ISO-1390), then the passkey ceremony, then "check your e-mail". Shared by Login.jsx's
 // RegisterSheet and Settings.jsx's RegisterInline — the only two places a passkey profile is
 // created from. The password half (PasswordRegisterForm, PasswordAuth.jsx) shares the terms box
-// (TermsCheckbox) but is otherwise separate: PASSWORD_LOGIN is off on Brilhart
-// Fitness, and its own e-mail field is the older, optional, never-sent-to sign-in address (#118),
-// unrelated to this one.
+// (TermsCheckbox) and the under-18 block (ISO-1521) but is otherwise separate: PASSWORD_LOGIN is
+// off on Brilhart Fitness, and its own e-mail field is the older, optional, never-sent-to sign-in
+// address (#118), unrelated to this one.
 import { useEffect, useRef, useState } from 'react'
 import { t } from '../lib/i18n.js'
-import { ageFromBirthDate } from '../lib/age.js'
+import { ageFromBirthDate, isMinor, MIN_PLAUSIBLE_AGE } from '../lib/age.js'
 import { passkeyRegister, bio } from '../lib/api.js'
 import { looksLikeEmail, foldEmail, passwordError, webauthnOutcome } from './PasswordAuth.jsx'
-import { useMinorNotice, ResendEmailButton } from './AccountEmail.jsx'
+import { ResendEmailButton } from './AccountEmail.jsx'
 import { Button } from './ui.jsx'
 import TermsCheckbox from './TermsCheckbox.jsx'
 import { LEGAL_VERSION } from '../legal/version.js'
 
 const errStyle = { color: 'var(--red)', marginTop: 10 }
-// Below this the birth date is treated the same as a malformed field (a typo, a wrong-century
-// slip), not a reason to show the under-18 notice — ordinary input sanity, same category as "not
-// a valid e-mail", never itself a barrier the notice doesn't already clear.
-const MIN_PLAUSIBLE_AGE = 5
 
 /* name/code stay the caller's state (Login.jsx lifts them so the passkey/password Segmented
    switch keeps what was typed); email/birthDate/the two steps are this component's own. `header`
@@ -35,14 +31,14 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
   const [err, setErr] = useState(null)
   const ref = useRef(null)
   useEffect(() => { setTimeout(() => ref.current?.focus(), 250) }, [])
-  useMinorNotice(birthDate)
 
   const age = ageFromBirthDate(birthDate)
   const dateOK = !!birthDate && age != null && age >= MIN_PLAUSIBLE_AGE
-  const canSubmit = !!name.trim() && looksLikeEmail(email) && dateOK && (!inviteOnly || !!code.trim()) && terms
+  const minor = dateOK && isMinor(birthDate)
+  const canSubmit = !!name.trim() && looksLikeEmail(email) && dateOK && !minor && (!inviteOnly || !!code.trim()) && terms
 
   const go = async () => {
-    if (busy) return
+    if (busy || minor) return   // the button is disabled too, but a programmatic call must not get past this
     const n = name.trim()
     const bad = !n ? t('Enter a name')
       : !looksLikeEmail(email) ? t('That is not an e-mail address.')
@@ -89,6 +85,9 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
     <div style={{ height: 10 }} />
     <input className="input" type="date" name="bday" autoComplete="bday" aria-label={t('Date of birth')}
       value={birthDate} onChange={e => setBirthDate(e.target.value)} />
+    {minor && <div className="small" role="alert" style={errStyle}>
+      {t('Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.')}
+    </div>}
     {inviteOnly && <>
       <div style={{ height: 10 }} />
       <input className="input" placeholder={t('Invite code')} maxLength={40} value={code}
