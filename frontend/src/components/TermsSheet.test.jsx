@@ -69,12 +69,12 @@ describe('TermsSheet', () => {
   })
 
   it('accepting sends LEGAL_VERSION, clears needsTerms and closes', async () => {
-    mocks.termsAccept.mockResolvedValue({ ok: true, termsVersion: '2026-10-17', termsAcceptedAt: '2026-10-17T12:00:00.000Z' })
+    mocks.termsAccept.mockResolvedValue({ ok: true, termsVersion: '2026-10-18', termsAcceptedAt: '2026-10-17T12:00:00.000Z' })
     const close = vi.fn()
     const host = mount(<TermsSheet close={close} />)
     await click(host, 'Accept and continue')
-    expect(mocks.termsAccept).toHaveBeenCalledWith('2026-10-17')
-    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana', needsTerms: false, termsVersion: '2026-10-17', termsAcceptedAt: '2026-10-17T12:00:00.000Z' })
+    expect(mocks.termsAccept).toHaveBeenCalledWith('2026-10-18')
+    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana', needsTerms: false, termsVersion: '2026-10-18', termsAcceptedAt: '2026-10-17T12:00:00.000Z' })
     expect(close).toHaveBeenCalled()
   })
 

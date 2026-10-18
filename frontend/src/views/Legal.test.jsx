@@ -23,7 +23,7 @@ describe('Legal view', () => {
   it('shows the privacy policy: title, version and every heading', () => {
     const host = mount(<Legal id="privacidade" />)
     expect(host.querySelector('h1:not(.brand-logo)').textContent).toContain('Política de Privacidade')
-    expect(host.textContent).toContain('2026-10-17')
+    expect(host.textContent).toContain('2026-10-18')
     for (const s of LEGAL_DOCS.privacidade.sections) expect(host.textContent).toContain(s.heading)
   })
   it('shows the terms of use', () => {

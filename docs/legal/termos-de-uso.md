@@ -2,13 +2,13 @@
 
 # Termos de Uso
 
-Versão: 2026-10-17
+Versão: 2026-10-18
 
 ## Quem somos e o que é o serviço
 
 O Brilhart Fitness é um aplicativo para você registrar seus treinos, acompanhar as cargas que levanta, montar e seguir rotinas e anotar seu peso corporal ao longo do tempo. Ele funciona no navegador, pode ser instalado na tela inicial do celular e também tem uma versão para Android.
 
-Quem vende o serviço e responde por ele perante você é a Brilhart Escola — [CONFIRMAR razão social], CNPJ [CONFIRMAR], com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nestes termos, "nós" se refere à Brilhart Escola.
+Quem vende o serviço e responde por ele perante você é a Brilhart Escola — razão social GIOVANA NEGRINI ISOTTON - ME, CNPJ 32.600.786/0001-74, com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nestes termos, "nós" se refere à Brilhart Escola.
 
 O desenvolvimento e a operação técnica do aplicativo (servidores, atualizações e segurança) são feitos pela Isotton, que atua em nome da Brilhart Escola.
 
@@ -31,11 +31,11 @@ Se suspeitar de acesso indevido, fale com a gente pelos canais da última seçã
 
 ## Idade mínima e responsáveis
 
-O Brilhart Fitness é destinado a pessoas com 18 anos ou mais.
+A Brilhart Fitness é destinada a maiores de 18 anos. Não aceitamos o cadastro de menores de 18 anos — nem com autorização do pai, da mãe ou de outro responsável legal.
 
-Menores de 18 anos só podem usar o app com autorização do pai, da mãe ou do responsável legal. Nesse caso, quem contrata a assinatura, aceita estes termos e responde pelo uso é o responsável.
+Se a data de nascimento informada no cadastro indicar menos de 18 anos, o cadastro não é concluído, e você verá o aviso: "A Brilhart Fitness é destinada a maiores de 18 anos. Não é possível concluir seu cadastro."
 
-Para crianças menores de 12 anos, o uso e o tratamento dos dados exigem o consentimento específico e destacado do responsável, como determina a Lei Geral de Proteção de Dados (LGPD). Se descobrirmos uma conta de menor sem essa autorização, podemos suspendê-la até que o responsável entre em contato.
+Se, ainda assim, identificarmos uma conta de uma pessoa menor de 18 anos, ela é suspensa e excluída, sem aviso prévio.
 
 ## Assinatura, preços, primeiro mês e renovação
 
@@ -124,7 +124,7 @@ Recomendamos que você exporte seus dados de tempos em tempos e guarde uma cópi
 
 ## Alterações destes termos e versão
 
-Cada versão destes termos é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-17.
+Cada versão destes termos é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-18.
 
 Podemos atualizar estes termos para acompanhar mudanças no app ou na lei. Mudanças de preço seguem a regra da seção "Assinatura, preços, primeiro mês e renovação". Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app. Se você não aceitar, a versão anterior continua valendo até o fim do período já pago, e a assinatura não renova. Você também pode exportar e excluir seus dados a qualquer momento.
 

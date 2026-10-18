@@ -16,8 +16,10 @@ describe('Termos de Uso', () => {
   })
   it('states the decided facts', () => {
     const text = flat(termos)
-    for (const fact of ['Brilhart Escola', 'Isotton', 'R$ 89', 'R$ 237', 'R$ 768', 'R$ 1,99', '7 dias', 'art. 49',
-      '18 anos', 'AGPL', 'MIT', 'São Leopoldo', 'atendimento@brilhart.com.br', '(51) 2165-8600', '[CONFIRMAR]'])
+    for (const fact of ['Brilhart Escola', 'GIOVANA NEGRINI ISOTTON - ME', '32.600.786/0001-74', 'Isotton',
+      'R$ 89', 'R$ 237', 'R$ 768', 'R$ 1,99', '7 dias', 'art. 49', '18 anos',
+      'Não é possível concluir seu cadastro', 'AGPL', 'MIT', 'São Leopoldo',
+      'atendimento@brilhart.com.br', '(51) 2165-8600'])
       expect(text, fact).toContain(fact)
   })
   it('has no markup inside the strings', () => {

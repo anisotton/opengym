@@ -2,17 +2,17 @@
 
 # Política de Privacidade
 
-Versão: 2026-10-17
+Versão: 2026-10-18
 
 ## Controladora e contato
 
 Esta política explica quais dados pessoais o Brilhart Fitness trata, para quê, com quem eles são compartilhados e como você controla tudo isso, de acordo com a Lei Geral de Proteção de Dados (LGPD, Lei 13.709/2018).
 
-A controladora dos seus dados, ou seja, quem decide como eles são tratados e responde por isso, é a Brilhart Escola — [CONFIRMAR razão social], CNPJ [CONFIRMAR], com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nesta política, "nós" se refere à Brilhart Escola.
+A controladora dos seus dados, ou seja, quem decide como eles são tratados e responde por isso, é a Brilhart Escola — razão social GIOVANA NEGRINI ISOTTON - ME, CNPJ 32.600.786/0001-74, com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nesta política, "nós" se refere à Brilhart Escola.
 
 A Isotton faz o desenvolvimento e a operação técnica do aplicativo e trata os dados como operadora, só em nome da Brilhart Escola e seguindo as instruções dela.
 
-O encarregado pelo tratamento de dados é [CONFIRMAR nome ou "dispensado — Res. ANPD 2/2022"], pelo e-mail privacidade@brilhart.com.br [CONFIRMAR]. Use esse e-mail para qualquer assunto de privacidade.
+A Brilhart Escola é agente de tratamento de pequeno porte e está dispensada de indicar encarregado (Res. CD/ANPD nº 2/2022); as solicitações sobre seus dados são atendidas pelo canal de privacidade, o e-mail contato@brilhart.com.br.
 
 ## Dados que tratamos e por quê
 
@@ -42,23 +42,23 @@ A equipe não vê seu histórico de treinos no painel de administração do app.
 
 ## Menores de idade
 
-O Brilhart Fitness é destinado a pessoas com 18 anos ou mais.
+A Brilhart Fitness é destinada a maiores de 18 anos. Não tratamos dados de menores de 18 anos para fins de cadastro — nem com autorização do pai, da mãe ou de outro responsável legal.
 
-Menores de 18 anos só podem usar o app com autorização do pai, da mãe ou do responsável legal. Para crianças menores de 12 anos, o tratamento dos dados exige o consentimento específico e destacado do responsável, como determina a LGPD.
+Se a data de nascimento informada no cadastro indicar menos de 18 anos, o cadastro não é concluído, com o aviso: "A Brilhart Fitness é destinada a maiores de 18 anos. Não é possível concluir seu cadastro."
 
-Se descobrirmos dados de uma criança tratados sem esse consentimento, podemos suspender a conta até que o responsável entre em contato pelo canal de privacidade.
+Se, ainda assim, identificarmos dados de uma pessoa menor de 18 anos tratados, excluímos a conta e os dados associados; fale com a gente pelo canal de privacidade se isso acontecer.
 
 ## Com quem compartilhamos
 
 Não vendemos nem alugamos seus dados. Eles são compartilhados apenas com os operadores de que precisamos para prestar o serviço, cada um recebendo só o necessário para a sua parte:
 
 - Stripe — processa os pagamentos e guarda os dados do cartão e as faturas;
-- provedor de e-mail transacional [CONFIRMAR] — envia os e-mails de confirmação de conta, recuperação de acesso e avisos de cobrança;
-- hospedagem — os servidores do app, administrados com a plataforma Coolify, ficam em [CONFIRMAR local/provedor];
+- provedor de e-mail transacional — a HostGator, que envia os e-mails de confirmação de conta, recuperação de acesso e avisos de cobrança a partir do endereço contato@brilhart.com.br;
+- hospedagem — os servidores do app, administrados com a plataforma Coolify, ficam na Contabo, na Alemanha;
 - a Isotton, como operadora técnica, conforme a seção "Controladora e contato";
-- provedor de inteligência artificial [CONFIRMAR] — só quando o Coach estiver ativado e você tiver consentido, conforme a seção "Coach com inteligência artificial".
+- provedor de inteligência artificial — ainda não definido; o provedor será informado nesta Política antes de o recurso ser ativado — só quando o Coach estiver ativado e você tiver consentido, conforme a seção "Coach com inteligência artificial".
 
-Quando um desses operadores tratar dados fora do Brasil, essa transferência internacional só acontece com as garantias exigidas pela LGPD.
+A Stripe e a hospedagem (Contabo, na Alemanha) tratam dados fora do Brasil: essa transferência internacional segue as garantias exigidas pela LGPD (art. 33). Se um futuro provedor de inteligência artificial para o Coach também tratar dados no exterior, a mesma regra vale, e isso será detalhado nesta Política antes de o recurso ser ativado.
 
 Também podemos fornecer dados quando uma lei ou uma ordem judicial obrigar.
 
@@ -85,7 +85,7 @@ Guardamos os dados apenas pelo tempo necessário:
 - dados da conta, treinos, fotos e vídeos: enquanto sua conta existir;
 - log de segurança: os registros mais recentes, até 90 dias ou 5 mil eventos, o que vier primeiro; por padrão sem endereço IP;
 - registros fiscais e de pagamento: ficam com a Stripe pelo prazo exigido em lei;
-- cópias de segurança: são sobrescritas em até [CONFIRMAR] dias, então um dado apagado da conta some também das cópias dentro desse prazo.
+- cópias de segurança: são sobrescritas em até 30 dias, então um dado apagado da conta some também das cópias dentro desse prazo.
 
 Cancelar a assinatura não apaga sua conta nem seus dados; para isso, exclua a conta.
 
@@ -119,13 +119,13 @@ Nenhum sistema é totalmente imune a falhas. Se ocorrer um incidente de seguran�
 
 Quando o recurso estiver ativado nesta instância, o app pode oferecer um Coach que usa inteligência artificial para revisar seus treinos e sugerir ajustes.
 
-Para isso, um resumo dos seus treinos é enviado a um provedor de inteligência artificial [CONFIRMAR provedor]. Isso só acontece depois que você dá um consentimento próprio para o Coach, dentro do app, e você pode desligá-lo a qualquer momento. Se esse provedor estiver fora do Brasil, a transferência é internacional e segue as garantias descritas na seção "Com quem compartilhamos".
+Para isso, um resumo dos seus treinos é enviado a um provedor de inteligência artificial; o provedor será informado nesta Política antes de o recurso ser ativado. Isso só acontece depois que você dá um consentimento próprio para o Coach, dentro do app, e você pode desligá-lo a qualquer momento. Se esse provedor estiver fora do Brasil, a transferência é internacional e segue as garantias descritas na seção "Com quem compartilhamos".
 
 Se esta instância oferecer a comparação com outros usuários e você optar por participar, seus números entram apenas em medianas de pelo menos três pessoas, nunca individualmente nem com peso corporal ou datas; você pode sair dessa comparação a qualquer momento.
 
 ## Alterações e versão
 
-Cada versão desta política é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-17.
+Cada versão desta política é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-18.
 
 Podemos atualizar esta política para acompanhar mudanças no app ou na lei. Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app. Se você não aceitar, a versão anterior continua valendo até o fim do período já pago, e a assinatura não renova. Você também pode exportar e excluir seus dados a qualquer momento.
 
