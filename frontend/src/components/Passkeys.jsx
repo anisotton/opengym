@@ -295,7 +295,10 @@ export function DeviceLinkRedeemSheet({ close }) {
       const same = st.user?.id === r.user.id
       // Another profile: its question decides what becomes of this copy, and nothing syncs
       // before it is answered (adoptProfile).
-      st.setUser(r.user, same ? undefined : { adopt: { alwaysAsk: true } })
+      // The verify answer is bare; /api/me is where `needsTerms` comes from (ISO-1390).
+      const me = await api('/api/me').catch(() => null)
+      const opts = same ? undefined : { adopt: { alwaysAsk: true } }
+      if (me) st.setUserFromMe(me, r.user, opts); else st.setUser(r.user, opts)
       close()
       if (same) { toast(t('Passkey added')); return }
       // Signed in by now whatever happens next: a pull that fails is the sync banner's to say

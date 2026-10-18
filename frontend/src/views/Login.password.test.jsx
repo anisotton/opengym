@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => {
   const state = { webauthn: true, config: null, sheets: [] }
   state.snapshot = () => ({
     config: state.config, S: {},
-    setUser: vi.fn(), adoptProfile: vi.fn(), setGuest: vi.fn(), loadConfig: vi.fn(async () => state.config),
+    setUser: vi.fn(), setUserFromMe: vi.fn(), adoptProfile: vi.fn(), setGuest: vi.fn(), loadConfig: vi.fn(async () => state.config),
     pushState: vi.fn(), pullState: vi.fn(),
   })
   return state

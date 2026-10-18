@@ -14,13 +14,15 @@ const mocks = vi.hoisted(() => {
   const state = {
     ready: true, linkCode: null, needsEmail: true, promptDue: true,
     config: {}, S: {}, isGuest: false, needsMobileOnboarding: false,
+    needsTerms: false, online: true, signedIn: true, termsChecked: true,
   }
   state.snapshot = () => ({
     S: state.S, config: state.config, boot: vi.fn(), linkCode: state.linkCode,
     needsMobileOnboarding: state.needsMobileOnboarding,
     isGuest: () => state.isGuest,
-    user: state.ready ? { id: 'u1', needsEmail: state.needsEmail, admin: false } : null,
+    user: state.ready && state.signedIn ? { id: 'u1', needsEmail: state.needsEmail, needsTerms: state.needsTerms, admin: false } : null,
     ready: state.ready,
+    termsChecked: state.termsChecked,
   })
   return state
 })
@@ -40,6 +42,8 @@ vi.mock('./components/AccountEmail.jsx', () => ({
   openNeedsEmailPrompt: vi.fn(),
 }))
 vi.mock('./components/Passkeys.jsx', () => ({ openDeviceLinkRedeem: vi.fn() }))
+vi.mock('./components/TermsSheet.jsx', () => ({ openTermsSheet: vi.fn() }))
+vi.mock('./components/ServerSync.jsx', () => ({ useOnline: () => mocks.online, isOnline: () => mocks.online }))
 vi.mock('./lib/push.js', () => ({ syncPushSubscription: vi.fn(async () => {}) }))
 vi.mock('./sheets.jsx', () => ({ exitWorkoutEdit: vi.fn(), startFlow: vi.fn() }))
 
@@ -74,6 +78,7 @@ vi.mock('./components/TimerFlash.jsx', () => ({ default: () => null }))
 const { default: App } = await import('./App.jsx')
 const { openNeedsEmailPrompt } = await import('./components/AccountEmail.jsx')
 const { openDeviceLinkRedeem } = await import('./components/Passkeys.jsx')
+const { openTermsSheet } = await import('./components/TermsSheet.jsx')
 
 const mounted = []
 function mount(hash) {
@@ -85,14 +90,21 @@ function mount(hash) {
   act(() => root.render(<App />))
   return host
 }
+const rerender = () => act(() => mounted[mounted.length - 1].root.render(<App />))
 
 beforeEach(() => {
   mocks.ready = true
   mocks.linkCode = null
   mocks.needsEmail = true
   mocks.promptDue = true
+  mocks.needsTerms = false
+  mocks.online = true
+  mocks.signedIn = true
+  mocks.isGuest = false
+  mocks.termsChecked = true
   openNeedsEmailPrompt.mockClear()
   openDeviceLinkRedeem.mockClear()
+  openTermsSheet.mockClear()
 })
 afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { root.unmount(); host.remove() }) }) })
 
@@ -117,5 +129,70 @@ describe('App: stacked sheets (ISO-1415)', () => {
     mount('#/home')
     expect(openDeviceLinkRedeem).toHaveBeenCalledTimes(1)
     expect(openNeedsEmailPrompt).not.toHaveBeenCalled()
+  })
+})
+
+/* ISO-1390: a signed-in account behind on the terms gets the locked sheet — online only, once per
+   visit — and the e-mail prompt and device-link redeem wait behind it without spending their
+   own once-per-visit offer. */
+describe('App: terms sheet (ISO-1390)', () => {
+  it('opens the terms sheet once and holds back the needsEmail and device-link sheets', () => {
+    mocks.needsTerms = true
+    mocks.linkCode = 'ABC123'
+    mount('#/home')
+    rerender()
+    expect(openTermsSheet).toHaveBeenCalledTimes(1)
+    expect(openNeedsEmailPrompt).not.toHaveBeenCalled()
+    expect(openDeviceLinkRedeem).not.toHaveBeenCalled()
+  })
+
+  it('waits while offline and opens as soon as the device is back online', () => {
+    mocks.needsTerms = true
+    mocks.online = false
+    mount('#/home')
+    expect(openTermsSheet).not.toHaveBeenCalled()
+    mocks.online = true
+    rerender()
+    expect(openTermsSheet).toHaveBeenCalledTimes(1)
+  })
+
+  it('never opens for a guest', () => {
+    mocks.signedIn = false
+    mocks.isGuest = true
+    mocks.needsTerms = true
+    mount('#/home')
+    expect(openTermsSheet).not.toHaveBeenCalled()
+  })
+
+  it('stays shut when the terms are current, and the needsEmail prompt fires again', () => {
+    mount('#/home')
+    expect(openTermsSheet).not.toHaveBeenCalled()
+    expect(openNeedsEmailPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('once accepted, the held-back needsEmail and device-link sheets get their turn', () => {
+    mocks.needsTerms = true
+    mocks.linkCode = 'ABC123'
+    mount('#/home')
+    expect(openDeviceLinkRedeem).not.toHaveBeenCalled()
+    mocks.needsTerms = false
+    rerender()
+    expect(openDeviceLinkRedeem).toHaveBeenCalledTimes(1)
+  })
+
+  // A `needsTerms: true` read back from storage on a boot whose /api/me never answered (a 5xx, a
+  // proxy, a network that only looks online) must not lock the offline-first app: the sheet waits
+  // for this visit's own answer (termsChecked, set by setUserFromMe).
+  it('stays shut on a stored needsTerms until this visit\'s /api/me has answered', () => {
+    mocks.needsTerms = true
+    mocks.termsChecked = false
+    mocks.linkCode = 'ABC123'
+    mount('#/home')
+    expect(openTermsSheet).not.toHaveBeenCalled()
+    // Nothing waits behind a lock that is not there.
+    expect(openDeviceLinkRedeem).toHaveBeenCalledTimes(1)
+    mocks.termsChecked = true
+    rerender()
+    expect(openTermsSheet).toHaveBeenCalledTimes(1)
   })
 })

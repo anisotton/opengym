@@ -57,7 +57,7 @@ function RegisterSheet({ close }) {
 const errStyle = { color: 'var(--red)', marginTop: 10, textAlign: 'start' }
 
 export default function Login() {
-  const { setUser, adoptProfile, setGuest } = useStore()
+  const { setUser, setUserFromMe, adoptProfile, setGuest } = useStore()
   const config = useStore(s => s.config)
   const canGuest = guestAllowed(config)
   const pwOn = passwordOn(config)
@@ -68,12 +68,12 @@ export default function Login() {
     try {
       const u = await passkeyLogin()
       // login/verify answers only {id,name,admin} — unlike boot()'s GET /api/me, which also
-      // carries email/emailVerified/needsEmail (ISO-1397, PASSWORD_LOGIN off only). Asked for
-      // here too, so the reminder banner and Settings' row are right from this sign-in on,
-      // not only after the next full reload. A failure here still leaves a signed-in user;
-      // the fields just catch up on the next boot.
+      // carries email/emailVerified/needsEmail (ISO-1397, PASSWORD_LOGIN off only) and the terms
+      // fields (ISO-1390). Asked for here too, so the reminder banner, Settings' row and the
+      // terms sheet are right from this sign-in on, not only after the next full reload. A
+      // failure here still leaves a signed-in user; the fields just catch up on the next boot.
       const me = await api('/api/me').catch(() => null)
-      setUser(me && 'needsEmail' in me ? { ...u, email: me.email, emailVerified: !!me.emailVerified, needsEmail: !!me.needsEmail } : u, { adopt: true })
+      if (me) setUserFromMe(me, u, { adopt: true }); else setUser(u, { adopt: true })
       await adoptProfile(askAddDeviceData)
       useUI.getState().toast(t('Welcome back, {0}', u.name))
     }

@@ -40,7 +40,7 @@ vi.mock('../store/useUI.js', () => {
   useUI.getState = snap
   return { useUI }
 })
-vi.mock('react-router-dom', () => ({ useNavigate: () => to => mocks.navs.push(to) }))
+vi.mock('react-router-dom', () => ({ useNavigate: () => to => mocks.navs.push(to), Link: ({ children }) => <a>{children}</a> }))
 vi.mock('../lib/api.js', () => ({
   api: vi.fn(() => Promise.resolve({})), webauthnOK: () => true, passkeyLogin: vi.fn(), passkeyRegister: vi.fn(), IS_ANDROID: false,
 }))

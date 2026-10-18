@@ -22,6 +22,7 @@ import { RTL_LANGS } from '../lib/i18n-core.js'
 import { DEFAULT_TEMPLATE_ID } from '../lib/structuralBalanceTemplates.js'
 
 import { WC_DEFAULT } from '../lib/workout-controls.js'
+import { userFromMe } from '../lib/session-user.js'
 
 const KEY = 'gym_state_v1'
 // Where the saved copy stands with the server: the revision it descends from, and its own `_ts`
@@ -972,6 +973,12 @@ export const useStore = create((set, get) => {
     // A one-time device-link code this page was opened with (?link=, #95), until it is redeemed.
     // Never persisted: the code is good for minutes and belongs to this one visit.
     linkCode: null,
+    // Whether `user` came from an /api/me that answered during this visit (setUserFromMe), not
+    // from the copy kept in storage (ISO-1390). The terms lock (App.jsx) waits for it: a stored
+    // `needsTerms: true` read back on a boot whose /api/me failed — no network, a 5xx, a proxy —
+    // would lock the offline-first app behind a sheet whose Accept can only fail. Never persisted,
+    // and back to false on sign-out.
+    termsChecked: false,
     // Mobile build only: how the Coach runs on this phone — { mode: 'off'|'server'|'byok',
     // provider, model, baseUrl } from lib/coach-device.js. Never the key, never a proposal.
     coachLocal: null,
@@ -1198,8 +1205,33 @@ export const useStore = create((set, get) => {
         // session and is already the right answer, Coach or no Coach.
         if (get().config && !('coach' in get().config)) get().refreshConfig()
       } else { rejoined = false; adoptHold = false; localStorage.removeItem('gym_user') }
-      set({ user: u })
+      set(u ? { user: u } : { user: null, termsChecked: false })
       setSync({ held: adoptHold })
+    },
+
+    // An /api/me answer, mapped (lib/session-user.js) and set: the one way every sign-in and boot
+    // path hands the store a user the server has just vouched for, so the terms lock knows the
+    // account's `needsTerms` is this visit's answer, not a stored one (`termsChecked`, ISO-1390).
+    // A caller whose /api/me failed keeps calling setUser with what it had — that must not count.
+    setUserFromMe(me, base, opts) {
+      get().setUser(userFromMe(me, base), opts)
+      set({ termsChecked: true })
+    },
+
+    // The server refused this session outright (a 401) somewhere a sheet cannot carry on without
+    // it — the terms sheet's Accept (ISO-1390). The same handling boot gives the same answer: on
+    // the web, back to the sign-in screen with the copy kept for its owner and the banner saying
+    // why; a paired phone keeps its pairing and account, and its screens say the server refuses
+    // it (see boot's phone path). Either way /api/me's answer no longer holds.
+    sessionRefused(e) {
+      if (MOBILE) {
+        set({ termsChecked: false })
+        failed(e, { pending: owes() })
+        return
+      }
+      const kept = !!get().user || (!get().isGuest() && !!localStorage.getItem('gym_owner') && owes())
+      get().setUser(null)
+      if (kept) failed(e, { pending: owes() })
     },
 
     // One PUT at a time: a push asked for while one is in flight runs after it (once, however
@@ -1470,10 +1502,9 @@ export const useStore = create((set, get) => {
             // A token past half its life comes back renewed: kept, it never runs out on a phone
             // that is used at all.
             if (typeof me.token === 'string' && me.token) await renewToken(remote, me.token)
-            // ISO-1397: `email`/`emailVerified`/`needsEmail` ride alongside `user` in the same
-            // answer, present only while PASSWORD_LOGIN is off (`'needsEmail' in me` tells the
-            // two cases apart without guessing from a falsy value the server never sent).
-            get().setUser('needsEmail' in me ? { ...me.user, email: me.email, emailVerified: !!me.emailVerified, needsEmail: !!me.needsEmail } : me.user)
+            // ISO-1397's e-mail fields and ISO-1390's terms fields ride alongside `user` in the
+            // same answer; lib/session-user.js maps them (and says when each is present).
+            get().setUserFromMe(me)
             // The paired server's /api/config, the same one the web boot reads: without it the
             // phone never learned whether the server offers the Coach and told everyone "your
             // server has no Coach enabled" — with the admin looking at a green test.
@@ -1558,9 +1589,8 @@ export const useStore = create((set, get) => {
       try {
         const me = await api('/api/me')
         if (!me.user?.id) throw Object.assign(new Error('no user'), { status: 200, code: 'bad-response' })
-        // ISO-1397: see the mobile boot path above for why the `'needsEmail' in me` check, not a
-        // falsy one, tells a PASSWORD_LOGIN instance (fields absent) from an account with none yet.
-        get().setUser('needsEmail' in me ? { ...me.user, email: me.email, emailVerified: !!me.emailVerified, needsEmail: !!me.needsEmail } : me.user)
+        // E-mail (ISO-1397) and terms (ISO-1390) fields: lib/session-user.js, same as the phone path.
+        get().setUserFromMe(me)
         // Re-stamp the reminder's timezone on every load — keeps it correct if you're travelling,
         // without needing to revisit Settings.
         const restampTz = () => {
@@ -1585,11 +1615,7 @@ export const useStore = create((set, get) => {
         // same account merges it (adoptProfile). A later reload still says so while that copy
         // owes its account changes — the user is gone by then, the owner and the copy are not —
         // unless whoever is here chose to go on as a guest.
-        if (e.status === 401) {
-          const kept = !!get().user || (!get().isGuest() && !!localStorage.getItem('gym_owner') && owes())
-          get().setUser(null)
-          if (kept) failed(e, { pending: owes() })
-        }
+        if (e.status === 401) get().sessionRefused(e)
         // Started without a network (a home-screen app reopened in the gym's basement), or
         // behind a proxy answering for the server: keep the signed-in copy and say so from the
         // first screen, not only after the first failed push.

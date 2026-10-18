@@ -74,6 +74,7 @@ const LABELS = {
   // `admin.*`, since no admin acted — `msg` carries nothing beyond the uid proveOwner already
   // names in `act`, by design (no personal data in this one's audit row).
   'account.delete': 'Deleted their own account',
+  'account.terms.accept': 'Accepted the Terms of Use and Privacy Policy',
   'admin.password.reset': 'Issued a password reset code',
   'admin.invite.create': 'Created an invite code',
   'admin.invite.revoke': 'Revoked an invite code',

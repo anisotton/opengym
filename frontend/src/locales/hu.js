@@ -1764,4 +1764,18 @@ export default {
   'Delete my account': 'Fiókom törlése',
   'Could not delete — are you online?': 'Nem sikerült törölni — vagy online?',
   'Account deleted': 'Fiók törölve',
+  // ISO-1390 — terms & privacy acceptance
+  "Version {0}": "Verzió: {0}",
+  "Terms of Use": "Felhasználási feltételek",
+  "Privacy Policy": "Adatvédelmi irányelvek",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "Elolvastam és elfogadom a Felhasználási feltételeket és az Adatvédelmi irányelveket.",
+  "Read the Terms of Use": "Felhasználási feltételek elolvasása",
+  "Read the Privacy Policy": "Adatvédelmi irányelvek elolvasása",
+  "We updated our terms": "Frissítettük a feltételeinket",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "A Brilhart Fitness további használatához olvasd el és fogadd el az aktuális Felhasználási feltételeket és Adatvédelmi irányelveket.",
+  "You accepted version {0} on {1}.": "A(z) {0} verziót ekkor fogadtad el: {1}.",
+  "Accept and continue": "Elfogadom, tovább",
+  "Update the app to accept the new terms.": "Az új feltételek elfogadásához frissítsd az alkalmazást.",
+  "Reload": "Újratöltés",
+  "Could not save your acceptance — are you online?": "Nem sikerült menteni az elfogadást — online vagy?",
 }

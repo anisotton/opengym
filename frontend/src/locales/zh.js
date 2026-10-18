@@ -1761,4 +1761,18 @@ export default {
   'Delete my account': '删除我的账户',
   'Could not delete — are you online?': '删除失败 — 你在线吗？',
   'Account deleted': '账户已删除',
+  // ISO-1390 — terms & privacy acceptance
+  "Version {0}": "版本 {0}",
+  "Terms of Use": "使用条款",
+  "Privacy Policy": "隐私政策",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "我已阅读并接受《使用条款》和《隐私政策》。",
+  "Read the Terms of Use": "阅读《使用条款》",
+  "Read the Privacy Policy": "阅读《隐私政策》",
+  "We updated our terms": "我们更新了条款",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "要继续使用 Brilhart Fitness，请阅读并接受当前的《使用条款》和《隐私政策》。",
+  "You accepted version {0} on {1}.": "你已于 {1} 接受版本 {0}。",
+  "Accept and continue": "接受并继续",
+  "Update the app to accept the new terms.": "请更新应用以接受新条款。",
+  "Reload": "重新加载",
+  "Could not save your acceptance — are you online?": "无法保存你的确认 — 你在线吗？",
 }
