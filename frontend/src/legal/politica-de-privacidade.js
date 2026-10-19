@@ -1,5 +1,5 @@
 // Política de Privacidade of Brilhart Fitness. Plain strings only (no markup): the views render headings,
-// paragraphs and { list } items themselves. [CONFIRMAR] marks facts the business still has to supply.
+// paragraphs and { list } items themselves.
 import { LEGAL_VERSION } from './version.js'
 
 export default {
@@ -11,9 +11,9 @@ export default {
       heading: 'Controladora e contato',
       paragraphs: [
         'Esta política explica quais dados pessoais o Brilhart Fitness trata, para quê, com quem eles são compartilhados e como você controla tudo isso, de acordo com a Lei Geral de Proteção de Dados (LGPD, Lei 13.709/2018).',
-        'A controladora dos seus dados, ou seja, quem decide como eles são tratados e responde por isso, é a Brilhart Escola — [CONFIRMAR razão social], CNPJ [CONFIRMAR], com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nesta política, "nós" se refere à Brilhart Escola.',
+        'A controladora dos seus dados, ou seja, quem decide como eles são tratados e responde por isso, é a Brilhart Escola — razão social GIOVANA NEGRINI ISOTTON - ME, CNPJ 32.600.786/0001-74, com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nesta política, "nós" se refere à Brilhart Escola.',
         'A Isotton faz o desenvolvimento e a operação técnica do aplicativo e trata os dados como operadora, só em nome da Brilhart Escola e seguindo as instruções dela.',
-        'O encarregado pelo tratamento de dados é [CONFIRMAR nome ou "dispensado — Res. ANPD 2/2022"], pelo e-mail privacidade@brilhart.com.br [CONFIRMAR]. Use esse e-mail para qualquer assunto de privacidade.',
+        'A Brilhart Escola é agente de tratamento de pequeno porte e está dispensada de indicar encarregado (Res. CD/ANPD nº 2/2022); as solicitações sobre seus dados são atendidas pelo canal de privacidade, o e-mail contato@brilhart.com.br.',
       ],
     },
     {
@@ -24,7 +24,7 @@ export default {
           list: [
             'Nome — identificar sua conta e falar com você — execução de contrato;',
             'E-mail — confirmar a conta pelo link que enviamos, recuperar seu acesso e enviar avisos de cobrança e de mudanças nos termos — execução de contrato;',
-            'Data de nascimento (opcional) — só para mostrar um aviso quando a pessoa tem menos de 18 anos — consentimento;',
+            'Data de nascimento (obrigatória no cadastro) — verificar que você tem 18 anos ou mais; o cadastro de menores de 18 anos não é concluído — execução de contrato;',
             'Passkeys — permitir seu login; guardamos apenas a chave pública, e a chave privada nunca sai do seu dispositivo — execução de contrato;',
             'Senha (só quando o login por senha estiver disponível) — permitir seu login; guardamos apenas um hash da senha, nunca a senha em si — execução de contrato;',
             'Treinos, cargas, rotinas e peso corporal — é o próprio serviço: registrar, mostrar sua evolução e calcular progressões — consentimento, por poderem ser dados de saúde (veja a próxima seção);',
@@ -49,9 +49,9 @@ export default {
     {
       heading: 'Menores de idade',
       paragraphs: [
-        'O Brilhart Fitness é destinado a pessoas com 18 anos ou mais.',
-        'Menores de 18 anos só podem usar o app com autorização do pai, da mãe ou do responsável legal. Para crianças menores de 12 anos, o tratamento dos dados exige o consentimento específico e destacado do responsável, como determina a LGPD.',
-        'Se descobrirmos dados de uma criança tratados sem esse consentimento, podemos suspender a conta até que o responsável entre em contato pelo canal de privacidade.',
+        'A Brilhart Fitness é destinada a maiores de 18 anos. Não tratamos dados de menores de 18 anos para fins de cadastro — nem com autorização do pai, da mãe ou de outro responsável legal.',
+        'Se a data de nascimento informada no cadastro indicar menos de 18 anos, o cadastro não é concluído, com o aviso: "A Brilhart Fitness é destinada a maiores de 18 anos. Não é possível concluir seu cadastro."',
+        'Se, ainda assim, identificarmos uma conta de pessoa menor de 18 anos, encerramos a conta e excluímos os dados associados; fale com a gente pelo canal de privacidade se isso acontecer.',
       ],
     },
     {
@@ -61,13 +61,13 @@ export default {
         {
           list: [
             'Stripe — processa os pagamentos e guarda os dados do cartão e as faturas;',
-            'provedor de e-mail transacional [CONFIRMAR] — envia os e-mails de confirmação de conta, recuperação de acesso e avisos de cobrança;',
-            'hospedagem — os servidores do app, administrados com a plataforma Coolify, ficam em [CONFIRMAR local/provedor];',
+            'provedor de e-mail transacional — a HostGator, que envia os e-mails de confirmação de conta, recuperação de acesso e avisos de cobrança a partir do endereço contato@brilhart.com.br;',
+            'hospedagem — os servidores do app, administrados com a plataforma Coolify, ficam na Contabo, na Alemanha;',
             'a Isotton, como operadora técnica, conforme a seção "Controladora e contato";',
-            'provedor de inteligência artificial [CONFIRMAR] — só quando o Coach estiver ativado e você tiver consentido, conforme a seção "Coach com inteligência artificial".',
+            'provedor de inteligência artificial — ainda não definido; o provedor será informado nesta Política antes de o recurso ser ativado — só quando o Coach estiver ativado e você tiver consentido, conforme a seção "Coach com inteligência artificial".',
           ],
         },
-        'Quando um desses operadores tratar dados fora do Brasil, essa transferência internacional só acontece com as garantias exigidas pela LGPD.',
+        'A Stripe e a hospedagem (Contabo, na Alemanha) tratam dados fora do Brasil: essa transferência internacional segue as garantias exigidas pela LGPD (art. 33). Se um futuro provedor de inteligência artificial para o Coach também tratar dados no exterior, a mesma regra vale, e isso será detalhado nesta Política antes de o recurso ser ativado.',
         'Também podemos fornecer dados quando uma lei ou uma ordem judicial obrigar.',
       ],
     },
@@ -96,7 +96,7 @@ export default {
             'dados da conta, treinos, fotos e vídeos: enquanto sua conta existir;',
             'log de segurança: os registros mais recentes, até 90 dias ou 5 mil eventos, o que vier primeiro; por padrão sem endereço IP;',
             'registros fiscais e de pagamento: ficam com a Stripe pelo prazo exigido em lei;',
-            'cópias de segurança: são sobrescritas em até [CONFIRMAR] dias, então um dado apagado da conta some também das cópias dentro desse prazo.',
+            'cópias de segurança: são sobrescritas em até 30 dias, então um dado apagado da conta some também das cópias dentro desse prazo.',
           ],
         },
         'Cancelar a assinatura não apaga sua conta nem seus dados; para isso, exclua a conta.',
@@ -138,7 +138,7 @@ export default {
       heading: 'Coach com inteligência artificial',
       paragraphs: [
         'Quando o recurso estiver ativado nesta instância, o app pode oferecer um Coach que usa inteligência artificial para revisar seus treinos e sugerir ajustes.',
-        'Para isso, um resumo dos seus treinos é enviado a um provedor de inteligência artificial [CONFIRMAR provedor]. Isso só acontece depois que você dá um consentimento próprio para o Coach, dentro do app, e você pode desligá-lo a qualquer momento. Se esse provedor estiver fora do Brasil, a transferência é internacional e segue as garantias descritas na seção "Com quem compartilhamos".',
+        'Para isso, um resumo dos seus treinos é enviado a um provedor de inteligência artificial; o provedor será informado nesta Política antes de o recurso ser ativado. Isso só acontece depois que você dá um consentimento próprio para o Coach, dentro do app, e você pode desligá-lo a qualquer momento. Se esse provedor estiver fora do Brasil, a transferência é internacional e segue as garantias descritas na seção "Com quem compartilhamos".',
         'Se esta instância oferecer a comparação com outros usuários e você optar por participar, seus números entram apenas em medianas de pelo menos três pessoas, nunca individualmente nem com peso corporal ou datas; você pode sair dessa comparação a qualquer momento.',
       ],
     },

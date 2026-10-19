@@ -241,9 +241,9 @@ describe('PasswordRegisterForm', () => {
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
     accept(host)
     await submit(host)
-    expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', '', '1990-05-05', '2026-10-17')
+    expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', '', '1990-05-05', '2026-10-18')
     // The acceptance the server recorded in that request (ISO-1390), so Settings shows its date now.
-    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo', termsVersion: '2026-10-17', termsAcceptedAt: expect.any(String), needsTerms: false })
+    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo', termsVersion: '2026-10-18', termsAcceptedAt: expect.any(String), needsTerms: false })
     expect(Number.isNaN(Date.parse(mocks.setUser.mock.calls[0][0].termsAcceptedAt))).toBe(false)
     expect(mocks.pullState).toHaveBeenCalled()
     expect(mocks.toast).toHaveBeenCalledWith('Welcome, Cleo')
@@ -268,7 +268,7 @@ describe('PasswordRegisterForm', () => {
     type(mail, ' cleo@example.com ')
     accept(host)
     await submit(host)
-    expect(mocks.passwordRegister).toHaveBeenLastCalledWith('Cleo', 'correct horse battery', '', 'cleo@example.com', '1990-05-05', '2026-10-17')
+    expect(mocks.passwordRegister).toHaveBeenLastCalledWith('Cleo', 'correct horse battery', '', 'cleo@example.com', '1990-05-05', '2026-10-18')
     expect(alertText(host)).toBe('Another profile already uses this e-mail address.')
     await submit(host)
     expect(mocks.setUser).toHaveBeenCalledWith(expect.objectContaining({ id: 'u9', name: 'Cleo' }))
@@ -287,7 +287,7 @@ describe('PasswordRegisterForm', () => {
     accept(host)
     expect(button(host, 'Create profile').disabled).toBe(false)
     await submit(host)
-    expect(mocks.passwordRegister.mock.calls[0][5]).toBe('2026-10-17')
+    expect(mocks.passwordRegister.mock.calls[0][5]).toBe('2026-10-18')
   })
 
   it('a submit with the terms box unticked never reaches passwordRegister', async () => {

@@ -251,7 +251,7 @@ paths:
                       Guest mode is purely client-side and never calls this API.
                   legal_version:
                     type: string
-                    example: '2026-10-17'
+                    example: '2026-10-18'
                     description: >-
                       Always present, public. The Terms of Use / Privacy Policy version in
                       force; `termsVersion` at signup must equal it (ISO-1390).
@@ -292,16 +292,16 @@ paths:
                   media:
                     $ref: '#/components/schemas/MediaConfig'
               examples:
-                anonymous: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-17' } }
-                signedInNoCoach: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-17', coach: null } }
+                anonymous: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-18' } }
+                signedInNoCoach: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-18', coach: null } }
                 signedIn:
                   value:
                     invite_only: true
                     allow_guest: false
-                    legal_version: '2026-10-17'
+                    legal_version: '2026-10-18'
                     coach: { enabled: true, provider: compatible, providerLabel: "OpenAI-compatible endpoint", authMode: instance, community: false }
-                passwordLogin: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-17', password_login: true } }
-                media: { value: { invite_only: false, allow_guest: true, legal_version: '2026-10-17', media: { imageMB: 2, gifMB: 8, videoMB: 40, videoSec: 60, quotaMB: 200, workouts: true } } }
+                passwordLogin: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-18', password_login: true } }
+                media: { value: { invite_only: false, allow_guest: true, legal_version: '2026-10-18', media: { imageMB: 2, gifMB: 8, videoMB: 40, videoSec: 60, quotaMB: 200, workouts: true } } }
 
   /api/client-event:
     post:
@@ -441,7 +441,7 @@ paths:
                   description: >-
                     Invite code — required (and validated) only when the instance
                     runs with INVITE_ONLY. Compared case-insensitively.
-            example: { name: "Ada", email: "ada@example.com", birthDate: "1990-05-05", termsVersion: "2026-10-17", code: "3F9C21A07B54D688" }
+            example: { name: "Ada", email: "ada@example.com", birthDate: "1990-05-05", termsVersion: "2026-10-18", code: "3F9C21A07B54D688" }
       responses:
         '200':
           description: Ceremony options.
@@ -849,7 +849,7 @@ paths:
                 password: { type: string, minLength: 10, maxLength: 256 }
                 code: { type: string, description: Invite code (INVITE_ONLY only). }
                 email: { type: string, maxLength: 254, description: Optional sign-in e-mail. }
-            example: { name: "Ada", password: "correct horse battery staple", birthDate: "1990-05-05", termsVersion: "2026-10-17", code: "3F9C21A07B54D688" }
+            example: { name: "Ada", password: "correct horse battery staple", birthDate: "1990-05-05", termsVersion: "2026-10-18", code: "3F9C21A07B54D688" }
       responses:
         '200':
           description: Registered and signed in. The session cookie is set.
@@ -1297,7 +1297,7 @@ paths:
               required: [version]
               properties:
                 version: { type: string, description: 'The LEGAL_VERSION of the text the app showed.' }
-            example: { version: "2026-10-17" }
+            example: { version: "2026-10-18" }
       responses:
         '200':
           description: The account has accepted the current version.
@@ -1309,7 +1309,7 @@ paths:
                   ok: { type: boolean, const: true }
                   termsVersion: { type: string }
                   termsAcceptedAt: { type: string, format: date-time }
-              example: { ok: true, termsVersion: "2026-10-17", termsAcceptedAt: "2026-10-17T12:00:00.000Z" }
+              example: { ok: true, termsVersion: "2026-10-18", termsAcceptedAt: "2026-10-18T12:00:00.000Z" }
         '400':
           description: '`version` is missing (`terms-required`) or not the current one (`terms-version-stale`).'
           content:

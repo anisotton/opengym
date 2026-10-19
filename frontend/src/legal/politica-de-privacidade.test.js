@@ -15,11 +15,17 @@ describe('Política de Privacidade', () => {
   })
   it('states the decided facts', () => {
     const text = flat(privacidade)
-    for (const fact of ['Brilhart Escola', 'Isotton', 'LGPD', 'Stripe', 'Coolify', 'privacidade@brilhart.com.br',
-      '90 dias', '5 mil', 'ANPD', 'passkey', '12 anos', '18 anos', 'exportar', 'excluir', '[CONFIRMAR]',
-      'provedor de inteligência artificial [CONFIRMAR]', 'medianas de pelo menos três pessoas', 'Res. ANPD 2/2022',
+    for (const fact of ['Brilhart Escola', 'GIOVANA NEGRINI ISOTTON - ME', '32.600.786/0001-74', 'Isotton',
+      'LGPD', 'Stripe', 'HostGator', 'Coolify', 'Contabo', 'Alemanha', 'art. 33', 'contato@brilhart.com.br',
+      '90 dias', '5 mil', '30 dias', 'ANPD', 'passkey', '18 anos', 'Não é possível concluir seu cadastro',
+      'obrigatória no cadastro', 'exportar', 'excluir',
+      'o provedor será informado nesta Política antes de o recurso ser ativado',
+      'medianas de pelo menos três pessoas', 'Res. CD/ANPD nº 2/2022',
       'art. 9º, §3º', 'consentimento específico'])
       expect(text, fact).toContain(fact)
+  })
+  it('has no leftover [CONFIRMAR] placeholder', () => {
+    expect(flat(privacidade)).not.toContain('CONFIRMAR')
   })
   it('has no markup inside the strings', () => {
     expect(flat(privacidade)).not.toMatch(/<[a-z]|\*\*|^#/m)

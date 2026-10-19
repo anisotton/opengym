@@ -42,7 +42,7 @@ test('GET /api/config: the login flags are public, the Coach block needs a sessi
 
   // Nobody signed in — what the login screen and boot() actually read, and nothing else.
   const anon = await config();
-  assert.deepEqual(anon, { invite_only: true, allow_guest: false, legal_version: '2026-10-17' }, 'no coach block for a stranger');
+  assert.deepEqual(anon, { invite_only: true, allow_guest: false, legal_version: '2026-10-18' }, 'no coach block for a stranger');
 
   // A session cookie gets the block, provider and all.
   const signedIn = await config({ Cookie: `gymsid=${mint(UID)}` });
@@ -57,7 +57,7 @@ test('GET /api/config: the login flags are public, the Coach block needs a sessi
 
   // A signature that does not verify is a stranger, not a session.
   const forged = await config({ Cookie: 'gymsid=u_cfg_1:99999999999999:0.notarealmac' });
-  assert.deepEqual(forged, { invite_only: true, allow_guest: false, legal_version: '2026-10-17' });
+  assert.deepEqual(forged, { invite_only: true, allow_guest: false, legal_version: '2026-10-18' });
 });
 
 test('a session always gets the key, so the client can tell "no Coach" from "not signed in"', async t => {
@@ -66,14 +66,14 @@ test('a session always gets the key, so the client can tell "no Coach" from "not
 
   // The client caches this answer for the page load. Without the key it cannot tell an instance
   // with no Coach from an answer made for nobody, and re-asks on every sign-in forever.
-  assert.deepEqual(await config({ Cookie: `gymsid=${mint(UID)}` }), { invite_only: true, allow_guest: false, legal_version: '2026-10-17', coach: null },
+  assert.deepEqual(await config({ Cookie: `gymsid=${mint(UID)}` }), { invite_only: true, allow_guest: false, legal_version: '2026-10-18', coach: null },
     'signed in, no Coach configured: the key is there and it is null');
-  assert.deepEqual(await config(), { invite_only: true, allow_guest: false, legal_version: '2026-10-17' }, 'and a stranger gets no key at all');
+  assert.deepEqual(await config(), { invite_only: true, allow_guest: false, legal_version: '2026-10-18' }, 'and a stranger gets no key at all');
 });
 
 test('no Coach configured: no block for anyone, signed in or not', async t => {
   const h = await startServer(t, { COACH_DISABLED: '1' });
-  assert.deepEqual(await fetch(`${h.api}/api/config`).then(r => r.json()), { invite_only: true, allow_guest: false, legal_version: '2026-10-17' });
+  assert.deepEqual(await fetch(`${h.api}/api/config`).then(r => r.json()), { invite_only: true, allow_guest: false, legal_version: '2026-10-18' });
   const signedIn = await fetch(`${h.api}/api/config`, { headers: { Cookie: `gymsid=${mint(UID)}` } }).then(r => r.json());
   assert.equal(signedIn.coach, null, 'the key says "asked with a session"; null says "no Coach here"');
 });
@@ -81,7 +81,7 @@ test('no Coach configured: no block for anyone, signed in or not', async t => {
 test('GET /api/config: DEFAULT_LANG is public when set, absent when unset or malformed (#303)', async t => {
   const set = await startServer(t, { DEFAULT_LANG: 'pt-BR' });
   const anon = await fetch(`${set.api}/api/config`).then(r => r.json());
-  assert.deepEqual(anon, { invite_only: true, allow_guest: false, legal_version: '2026-10-17', default_lang: 'pt-BR' }, 'the sign-in screen can read it');
+  assert.deepEqual(anon, { invite_only: true, allow_guest: false, legal_version: '2026-10-18', default_lang: 'pt-BR' }, 'the sign-in screen can read it');
 
   const bad = await startServer(t, { DEFAULT_LANG: '<script>' });
   assert.equal('default_lang' in await fetch(`${bad.api}/api/config`).then(r => r.json()), false);

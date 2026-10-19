@@ -68,10 +68,10 @@ describe('SignupFlow terms checkbox', () => {
     act(() => host.querySelector('input[name="terms"]').click())
     act(() => button(host, 'Create passkey').click())
     await settle()
-    expect(mocks.passkeyRegister).toHaveBeenCalledWith('Ana', '', 'ana@example.com', '1990-05-05', '2026-10-17')
+    expect(mocks.passkeyRegister).toHaveBeenCalledWith('Ana', '', 'ana@example.com', '1990-05-05', '2026-10-18')
     // Settings shows the acceptance date straight away, not only after the next /api/me.
     const u = onCreated.mock.calls[0][0]
-    expect(u).toMatchObject({ id: 'u1', termsVersion: '2026-10-17', needsTerms: false })
+    expect(u).toMatchObject({ id: 'u1', termsVersion: '2026-10-18', needsTerms: false })
     expect(Number.isNaN(Date.parse(u.termsAcceptedAt))).toBe(false)
   })
 

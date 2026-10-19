@@ -1,5 +1,5 @@
 // Termos de Uso of Brilhart Fitness. Plain strings only (no markup): the views render headings,
-// paragraphs and { list } items themselves. [CONFIRMAR] marks facts the business still has to supply.
+// paragraphs and { list } items themselves.
 import { LEGAL_VERSION } from './version.js'
 
 export default {
@@ -11,7 +11,7 @@ export default {
       heading: 'Quem somos e o que é o serviço',
       paragraphs: [
         'O Brilhart Fitness é um aplicativo para você registrar seus treinos, acompanhar as cargas que levanta, montar e seguir rotinas e anotar seu peso corporal ao longo do tempo. Ele funciona no navegador, pode ser instalado na tela inicial do celular e também tem uma versão para Android.',
-        'Quem vende o serviço e responde por ele perante você é a Brilhart Escola — [CONFIRMAR razão social], CNPJ [CONFIRMAR], com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nestes termos, "nós" se refere à Brilhart Escola.',
+        'Quem vende o serviço e responde por ele perante você é a Brilhart Escola — razão social GIOVANA NEGRINI ISOTTON - ME, CNPJ 32.600.786/0001-74, com endereço na R. João Neves da Fontoura, 532, Sala 305, Centro, São Leopoldo/RS, CEP 93010-050. Nestes termos, "nós" se refere à Brilhart Escola.',
         'O desenvolvimento e a operação técnica do aplicativo (servidores, atualizações e segurança) são feitos pela Isotton, que atua em nome da Brilhart Escola.',
         'Ao criar sua conta e marcar que leu e aceita estes Termos de Uso e a Política de Privacidade (ou, se já tem conta, ao aceitá-los no próximo acesso), você fecha um contrato conosco nas condições abaixo. Se não concordar com algum ponto, não crie a conta.',
       ],
@@ -36,9 +36,9 @@ export default {
     {
       heading: 'Idade mínima e responsáveis',
       paragraphs: [
-        'O Brilhart Fitness é destinado a pessoas com 18 anos ou mais.',
-        'Menores de 18 anos só podem usar o app com autorização do pai, da mãe ou do responsável legal. Nesse caso, quem contrata a assinatura, aceita estes termos e responde pelo uso é o responsável.',
-        'Para crianças menores de 12 anos, o uso e o tratamento dos dados exigem o consentimento específico e destacado do responsável, como determina a Lei Geral de Proteção de Dados (LGPD). Se descobrirmos uma conta de menor sem essa autorização, podemos suspendê-la até que o responsável entre em contato.',
+        'A Brilhart Fitness é destinada a maiores de 18 anos. Não aceitamos o cadastro de menores de 18 anos — nem com autorização do pai, da mãe ou de outro responsável legal.',
+        'Se a data de nascimento informada no cadastro indicar menos de 18 anos, o cadastro não é concluído, e você verá o aviso: "A Brilhart Fitness é destinada a maiores de 18 anos. Não é possível concluir seu cadastro."',
+        'Se, ainda assim, identificarmos uma conta de pessoa menor de 18 anos, encerramos a conta e excluímos os dados associados; fale com a gente pelo canal de privacidade se isso acontecer.',
       ],
     },
     {
