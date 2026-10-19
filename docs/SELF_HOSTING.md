@@ -75,6 +75,8 @@ you're poking at the API directly:
 
 > Want HTTPS **without** exposing anything to the internet — a valid certificate on a LAN-only address? See [SELF_HOSTING_HTTPS.md](./SELF_HOSTING_HTTPS.md) (wildcard cert via a DNS challenge, Caddy in front).
 
+> Publishing this app's own instance on Coolify? See [DEPLOY_COOLIFY.md](./DEPLOY_COOLIFY.md) — a step-by-step for that specific deploy (domain, Stripe webhook, monitoring, rollback), in Portuguese.
+
 Put openGym behind something that terminates TLS for a hostname you control, then point it at
 the `web` container. Pick whichever you already run:
 
