@@ -188,21 +188,32 @@ paths:
       tags: [meta]
       operationId: getHealth
       summary: Health check
-      description: Always public. Also reports how many user accounts exist.
+      description: |
+        Always public. Pings the database with a short timeout (ISO-1400) — used by the
+        compose healthcheck and by external uptime monitors. Reports whether the database
+        answered, nothing about account counts.
       security: []
       responses:
         '200':
-          description: The server is up.
+          description: The server and its database are both up.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   ok: { type: boolean, const: true }
-                  users:
-                    type: integer
-                    description: Number of registered user accounts.
-              example: { ok: true, users: 7 }
+                  db: { type: string, const: ok }
+              example: { ok: true, db: ok }
+        '503':
+          description: The database did not answer in time.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: false }
+                  db: { type: string, const: down }
+              example: { ok: false, db: down }
 
   /api/config:
     get:

@@ -6,7 +6,13 @@ services:
   # metadata and instruction text, but the images and GIFs are © Gym visual
   # (https://gymvisual.com/) and are used under the dataset's terms — openGym neither
   # redistributes nor relicenses them. See NOTICE.md.
+  # Behind the `media` profile (ISO-1400): activated by COMPOSE_PROFILES=media, which
+  # .env.example sets by default so a fresh `docker compose up -d` behaves exactly as before.
+  # A deployment that may not serve this dataset commercially (see NOTICE.md) clears that
+  # variable instead — this service then never runs, ./media stays empty, and web's bind mount
+  # has nothing to serve.
   media:
+    profiles: [media]
     image: alpine/git
     volumes:
       - ./media/img:/out/img
@@ -117,8 +123,14 @@ services:
         BUILD_DATE: ${BUILD_DATE:-unknown}
     restart: unless-stopped
     depends_on:
+      # `required: false` (ISO-1400): media is now behind its own profile, and compose refuses
+      # to start a stack where an always-on service depends_on one that profile excluded —
+      # "service media is not running" — unless the dependency is marked optional. With the
+      # profile active this still waits for the download to finish before web starts, exactly
+      # as before; with it inactive, there is nothing to wait for and web starts immediately.
       media:
         condition: service_completed_successfully
+        required: false
       api:
         condition: service_started
     ports:

@@ -75,7 +75,10 @@ export async function spawnApi(t, { dataDir, env = {} } = {}) {
       DATABASE_URL: databaseUrl, ...env
     }
   });
-  const h = { log: '', dataDir: dir, databaseUrl };
+  // Exposed so a test can simulate the database disappearing out from under a running server
+  // (health.test.js) — terminates backends and drops the database right now rather than waiting
+  // for teardown. Safe to call again afterwards: cleanup() itself is `DROP DATABASE IF EXISTS`.
+  const h = { log: '', dataDir: dir, databaseUrl, dropDatabase: cleanup };
   child.stdout.on('data', d => h.log += d);
   child.stderr.on('data', d => h.log += d);
   t.after(() => { child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }); });

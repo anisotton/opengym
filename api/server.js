@@ -2327,8 +2327,23 @@ if (BILLING_ON) setInterval(() => {
 }, 15 * 60000).unref();
 
 /* ---------- routes ---------- */
+// Public, unauthenticated, and polled by an external uptime monitor (ISO-1400) — so it stays
+// cheap (a bare SELECT 1, bounded by HEALTH_DB_TIMEOUT_MS) and never reports the account count
+// the old response did; a health probe is not a place to leak how many users an instance has.
+const HEALTH_DB_TIMEOUT_MS = 2000;
 const routes = {
-  'GET /api/health': async (req, res) => json(res, 200, { ok: true, users: (await getAllUsers(pool)).length }),
+  'GET /api/health': async (req, res) => {
+    try {
+      await Promise.race([
+        pool.query('SELECT 1'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('db ping timed out')), HEALTH_DB_TIMEOUT_MS))
+      ]);
+      json(res, 200, { ok: true, db: 'ok' });
+    } catch (e) {
+      console.error('health: db ping failed', e.message);
+      json(res, 503, { ok: false, db: 'down' });
+    }
+  },
 
   // Public config the login screen needs before anyone is signed in. `coach` is absent unless
   // the instance has both switched the Coach on and successfully connected a provider — the
