@@ -55,7 +55,7 @@ deve estar ausente do `.env.example`, e nenhuma obrigatória deve faltar na tabe
 | `STRIPE_WEBHOOK_SECRET` | gerado ao criar o endpoint de webhook no passo 4 | Segredo |
 | `STRIPE_PRICE_MONTHLY` / `STRIPE_PRICE_QUARTERLY` / `STRIPE_PRICE_YEARLY` / `STRIPE_PRICE_INTRO` | saída de `cd api && STRIPE_API_KEY=rk_... npm run stripe:setup` contra a conta sandbox (ver `docs/SELF_HOSTING.md` §7) | Não (são ids de Price, públicos) |
 | `ADMIN_UIDS` | **vazio no primeiro deploy.** Depois do primeiro cadastro de teste, copie o id em Settings → Conta → Account ID (ou `docker compose exec db psql -U opengym -c "SELECT id, name FROM users"`) e redeploy com esse id aqui | Não |
-| `COACH_DISABLED` | `1` — trava o Coach ligado, independente do toggle do admin (`AdminCoach.jsx` mostra "Force-disabled by COACH_DISABLED" no lugar do toggle) | Não |
+| `COACH_DISABLED` | `1` — trava o Coach desligado, independente do toggle do admin (`AdminCoach.jsx` mostra "Force-disabled by COACH_DISABLED" no lugar do toggle) | Não |
 | `COMPOSE_PROFILES` | `media` — beta fechado ainda usa as imagens da Gym visual até a mídia própria da Brilhart ficar pronta (plano B decidido em 18/10, ISO-1391); remover antes do lançamento pago | Não |
 | `TRUST_PROXY` | **não toque** — já vem `1` por padrão no `docker-compose.yml` porque a API só é alcançada através do `web` | — |
 
@@ -81,12 +81,15 @@ nunca em produção).
 
 1. No Dashboard Stripe (**modo sandbox**), Developers → Webhooks → **Add endpoint**.
 2. URL exata: `https://fit.brilhart.com.br/api/billing/webhook`.
-3. Eventos a assinar (os que `api/server.js`'s `POST /api/billing/webhook` trata, ver
-   `docs/SELF_HOSTING.md` §7): no mínimo os eventos de assinatura e fatura que a Stripe sugere
-   para Billing — `checkout.session.completed`, `customer.subscription.updated`,
-   `customer.subscription.deleted`, `invoice.payment_failed`,
-   `customer.subscription.trial_will_end`. O Dashboard oferece um preset "Billing" que já cobre
-   esses.
+3. Eventos a assinar: exatamente os que `applyStripeEvent` trata em `api/billing.js` —
+   `checkout.session.completed`, `customer.subscription.created`,
+   `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`,
+   `invoice.payment_failed`. Sem `customer.subscription.created`, a conversão do período intro
+   R$ 1,99 para o preço cheio do plano nunca dispara; sem `invoice.paid`, a primeira cobrança
+   cheia nunca fica registrada (`firstFullCharge`). Marcar só o preset "Billing" do Dashboard não
+   basta — ele inclui `customer.subscription.trial_will_end`, que nenhum `case` trata (não há
+   trial neste desenho, ver `docs/SELF_HOSTING.md` §7), e pode deixar de fora algum dos seis
+   acima; confira a lista final contra esses seis nomes.
 4. Depois de criar o endpoint, copie o **Signing secret** (`whsec_...`) mostrado uma vez e
    coloque em `STRIPE_WEBHOOK_SECRET` no Coolify, depois redeploy.
 5. Para ver falhas: `docker compose logs api` (ou o painel de logs do Coolify para o serviço
