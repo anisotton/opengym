@@ -1776,4 +1776,14 @@ export default {
   "Update the app to accept the new terms.": "새 약관에 동의하려면 앱을 업데이트하세요.",
   "Reload": "새로고침",
   "Could not save your acceptance — are you online?": "동의를 저장하지 못했습니다 — 온라인 상태인가요?",
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': '이메일을 확인하세요',
+  'Open the link we sent to {0}.': '{0}(으)로 보낸 링크를 여세요.',
+  'Sent': '보냄',
+  'Just a moment.': '잠시만요.',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': '계정이 확인되었습니다. 언젠가 이 기기를 잃어버리면 이 이메일로 다시 들어올 수 있습니다.',
+  'Your e-mail was already confirmed.': '이메일은 이미 확인되어 있었습니다.',
+  'This link no longer works': '이 링크는 더 이상 작동하지 않습니다',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': '만료되었거나 이미 사용되었습니다. 새 링크를 요청하고 가장 최근 이메일을 여세요.',
+  'Send a new link': '새 링크 보내기',
 }

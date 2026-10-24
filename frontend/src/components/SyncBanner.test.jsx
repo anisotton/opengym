@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
   state.toast = vi.fn()
   state.syncNow = vi.fn(async () => state.sync)
   state.passkeyLogin = vi.fn(async () => ({ id: 'u1', name: 'andi' }))
+  state.resend = vi.fn(async () => ({}))
   state.snapshot = () => ({
     user: state.user, sync: state.sync, needsMobileOnboarding: state.onboarding,
     isGuest: () => state.guest, syncNow: state.syncNow,
@@ -39,7 +40,7 @@ vi.mock('../store/useUI.js', () => {
 vi.mock('react-router-dom', () => ({ useNavigate: () => to => mocks.navs.push(to) }))
 vi.mock('../lib/mobile.js', () => ({ get MOBILE() { return mocks.MOBILE } }))
 vi.mock('../lib/demo.js', () => ({ get DEMO() { return mocks.DEMO } }))
-vi.mock('../lib/api.js', () => ({ webauthnOK: () => mocks.webauthn, passkeyLogin: (...a) => mocks.passkeyLogin(...a) }))
+vi.mock('../lib/api.js', () => ({ webauthnOK: () => mocks.webauthn, passkeyLogin: (...a) => mocks.passkeyLogin(...a), accountEmailResend: (...a) => mocks.resend(...a) }))
 vi.mock('../sheets.jsx', () => ({ askAddDeviceData: vi.fn() }))
 // What the connect sheet was opened with is the point; its own form is tested elsewhere.
 vi.mock('../views/MobileOnboarding.jsx', () => ({ ConnectSheet: props => <div className="connect" data-url={props.initialUrl ?? ''} data-again={String(!!props.again)} /> }))
@@ -59,7 +60,8 @@ beforeEach(() => {
   Object.assign(mocks, { MOBILE: false, DEMO: false, webauthn: true, user: { id: 'u1', name: 'andi' }, guest: false, onboarding: false, sync: sync('ok') })
   mocks.sheets.length = 0
   mocks.navs.length = 0
-  mocks.toast.mockClear(); mocks.syncNow.mockClear(); mocks.passkeyLogin.mockClear()
+  mocks.toast.mockClear(); mocks.syncNow.mockClear(); mocks.passkeyLogin.mockClear(); mocks.resend.mockClear()
+  sessionStorage.clear()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -303,5 +305,40 @@ describe('a change waiting while the server is reachable', () => {
     act(() => { vi.advanceTimersByTime(PENDING_GRACE_MS) })
     expect(bar()).toBeNull()
     expect(conn()).toBe('')
+  })
+})
+
+/* ISO-1397: the reminder for an address that is still unconfirmed — the one banner that is not
+   about the connection. It names the address, resends from the row (once per showing), goes for
+   the tab session on ✕, and is gone for good once the address is confirmed. */
+describe('unconfirmed e-mail', () => {
+  beforeEach(() => { mocks.user = { id: 'u1', name: 'andi', email: 'andi@example.com', emailVerified: false } })
+
+  it('reminds in its own tone, names the address, and resends from the row — once', async () => {
+    render()
+    expect(bar().className).toContain('mail')
+    expect(host.querySelector('.conn-title').textContent).toBe('Confirm your e-mail')
+    expect(host.querySelector('.conn-sub').textContent).toBe('Open the link we sent to andi@example.com.')
+    expect(button()).toBeNull()   // the row itself is not a button: a stray tap resends nothing
+    const pill = host.querySelector('.conn-a')
+    expect(pill.textContent).toBe('Resend')
+    await act(async () => { pill.click() })
+    expect(mocks.resend).toHaveBeenCalledTimes(1)
+    expect(mocks.toast).toHaveBeenCalledWith('E-mail resent.')
+    expect(host.querySelector('.conn-a').textContent).toBe('Sent')
+    expect(host.querySelector('.conn-a').disabled).toBe(true)
+    expect(conn()).not.toBe('')   // takes its own room above the page, like every banner
+  })
+
+  it('✕ quiets it for this tab session only, and a confirmed address never shows it', () => {
+    render()
+    act(() => host.querySelector('.conn-x').click())
+    expect(bar()).toBeNull()
+    expect(sessionStorage.getItem('brilhart_email_banner_dismissed')).toBe('1')
+    expect(conn()).toBe('')
+    sessionStorage.clear()
+    mocks.user = { ...mocks.user, emailVerified: true }
+    render()
+    expect(bar()).toBeNull()
   })
 })

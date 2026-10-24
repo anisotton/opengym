@@ -1779,4 +1779,14 @@ export default {
   "Update the app to accept the new terms.": "Az új feltételek elfogadásához frissítsd az alkalmazást.",
   "Reload": "Újratöltés",
   "Could not save your acceptance — are you online?": "Nem sikerült menteni az elfogadást — online vagy?",
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': 'Erősítsd meg az e-mail-címed',
+  'Open the link we sent to {0}.': 'Nyisd meg a linket, amit ide küldtünk: {0}.',
+  'Sent': 'Elküldve',
+  'Just a moment.': 'Egy pillanat.',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'A fiókod megerősítve. Ha valaha elveszítenéd ezt az eszközt, ezen az e-mailen keresztül jutsz vissza.',
+  'Your e-mail was already confirmed.': 'Az e-mail-címed már meg volt erősítve.',
+  'This link no longer works': 'Ez a link már nem működik',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'Lejárt, vagy már felhasználták. Kérj újat, és nyisd meg a legfrissebb e-mailt.',
+  'Send a new link': 'Új link küldése',
 }

@@ -42,8 +42,10 @@ describe('Brazilian Portuguese locale', () => {
     // If the hash fails, review the changed keys and wording before accepting a new one. From
     // frontend/: node scripts/pt-br-inheritance-fingerprint.mjs --list
     // ISO-1398: +1 newly inherited key ('Resend' -> 'Reenviar', identical in both pt variants,
-    // reviewed — no override needed). See the script above for how to recompute this.
-    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('ef0153b4c58e8696b8602ed82d45e09ddc006a8d5fadd2a5faaaab517c869190')
+    // reviewed — no override needed). E-mail reminder/confirmation redesign: +1 more ('Sent' ->
+    // 'Enviado', same word on both shores — reviewed, no override needed). See the script above
+    // for how to recompute this.
+    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('1b517563d94f3b71d9424465cf582e2fd58c002e85b73745171b236b925d6474')
   })
 
   test('does not leak European Portuguese UI terms', () => {

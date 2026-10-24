@@ -1796,4 +1796,14 @@ export default {
   "Update the app to accept the new terms.": "Aktualisiere die App, um die neuen Bedingungen zu akzeptieren.",
   "Reload": "Neu laden",
   "Could not save your acceptance — are you online?": "Deine Zustimmung konnte nicht gespeichert werden — bist du online?",
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': 'Bestätige deine E-Mail',
+  'Open the link we sent to {0}.': 'Öffne den Link, den wir an {0} geschickt haben.',
+  'Sent': 'Gesendet',
+  'Just a moment.': 'Einen Moment.',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'Dein Konto ist bestätigt. Solltest du dieses Gerät je verlieren, kommst du über diese E-Mail wieder rein.',
+  'Your e-mail was already confirmed.': 'Deine E-Mail war bereits bestätigt.',
+  'This link no longer works': 'Dieser Link funktioniert nicht mehr',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'Er ist abgelaufen oder wurde schon benutzt. Fordere einen neuen an und öffne die neueste E-Mail.',
+  'Send a new link': 'Neuen Link senden',
 }

@@ -1776,4 +1776,14 @@ export default {
   "Update the app to accept the new terms.": "Yeni koşulları kabul etmek için uygulamayı güncelle.",
   "Reload": "Yeniden yükle",
   "Could not save your acceptance — are you online?": "Onayın kaydedilemedi — çevrimiçi misin?",
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': 'E-postanı doğrula',
+  'Open the link we sent to {0}.': '{0} adresine gönderdiğimiz bağlantıyı aç.',
+  'Sent': 'Gönderildi',
+  'Just a moment.': 'Bir saniye.',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'Hesabın doğrulandı. Bir gün bu cihazı kaybedersen, geri dönüş yolun bu e-posta.',
+  'Your e-mail was already confirmed.': 'E-postan zaten doğrulanmıştı.',
+  'This link no longer works': 'Bu bağlantı artık çalışmıyor',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'Süresi doldu ya da zaten kullanıldı. Yenisini iste ve en son e-postayı aç.',
+  'Send a new link': 'Yeni bağlantı gönder',
 }

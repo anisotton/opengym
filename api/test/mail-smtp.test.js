@@ -74,8 +74,50 @@ test('smtp driver sends a full RFC 5321 transaction to the configured host', asy
     assert.ok(cmds.some(c => c === 'QUIT'));
     assert.ok(!cmds.some(c => c?.startsWith('AUTH')), 'no SMTP_USER set — no AUTH attempted');
     const body = received.find(r => r.cmd === 'DATA-BODY').body;
-    assert.match(body, /Subject: Confirm your e-mail/);
-    assert.match(body, /Click the link\./);
+    assert.match(body, /Subject: Confirm your e-mail/, 'an ASCII subject goes out as typed');
+    assert.match(body, /Message-ID: <[^>]+@brilhart\.test>/);
+    assert.match(body, /Content-Type: text\/plain; charset=utf-8/);
+    assert.match(body, /Content-Transfer-Encoding: base64/);
+    assert.equal(decodeParts(body).length, 1, 'text only: a single part, no multipart wrapper');
+    assert.equal(decodeParts(body)[0].content, 'Click the link.');
+  } finally { server.close(); }
+});
+
+// Reads the base64 bodies back out of what the fake server received: one part for a single-part
+// message, one per MIME part for a multipart one.
+function decodeParts(body) {
+  const [head, ...rest] = body.split('\r\n\r\n');
+  const boundary = head.match(/boundary="([^"]+)"/)?.[1];
+  if (!boundary) return [{ type: head.match(/Content-Type: ([^;]+)/)[1], content: Buffer.from(rest.join(''), 'base64').toString('utf8') }];
+  return body.split(`--${boundary}`).slice(1, -1).map(part => {
+    const [partHead, ...partBody] = part.trim().split('\r\n\r\n');
+    return { type: partHead.match(/Content-Type: ([^;]+)/)[1], content: Buffer.from(partBody.join(''), 'base64').toString('utf8') };
+  });
+}
+
+test('text + html go out together as multipart/alternative, UTF-8 intact, subject as an RFC 2047 word', async () => {
+  const { server, received } = fakeSmtpServer();
+  const port = await listen(server);
+  try {
+    await withMailModule({ SMTP_HOST: '127.0.0.1', SMTP_PORT: String(port) }, async sendMail => {
+      await sendMail({
+        to: 'person@example.com', subject: 'Confirme seu e-mail — Brilhart Fitness',
+        text: 'Oi, Zé!\n\nConfirme: https://x.test/#/v?t=1',
+        html: '<!DOCTYPE html><html><body><p>Oi, Zé!</p><a href="https://x.test/#/v?t=1">Confirmar</a>' + '<i>'.repeat(600) + '</body></html>'
+      });
+    });
+    const body = received.find(r => r.cmd === 'DATA-BODY').body;
+    assert.match(body, /Content-Type: multipart\/alternative; boundary="[^"]+"/);
+    assert.match(body, /^Subject: =\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=$/m, 'a non-ASCII subject is an encoded word');
+    const subjectWord = body.match(/^Subject: =\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=$/m)[1];
+    assert.equal(Buffer.from(subjectWord, 'base64').toString('utf8'), 'Confirme seu e-mail — Brilhart Fitness');
+    const parts = decodeParts(body);
+    assert.deepEqual(parts.map(p => p.type), ['text/plain', 'text/html'], 'plain first, html last (richest wins)');
+    assert.equal(parts[0].content, 'Oi, Zé!\n\nConfirme: https://x.test/#/v?t=1');
+    assert.ok(parts[1].content.startsWith('<!DOCTYPE html>'));
+    assert.ok(parts[1].content.includes('Oi, Zé!'));
+    // RFC 5321: no line of the wire body may exceed 998 characters — the HTML's long lines are wrapped by base64
+    for (const line of body.split('\r\n')) assert.ok(line.length <= 998, `line too long: ${line.length}`);
   } finally { server.close(); }
 });
 

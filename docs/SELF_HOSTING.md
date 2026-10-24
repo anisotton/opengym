@@ -257,6 +257,15 @@ SMTP_PORT=1025
 # needs neither. SMTP_SECURE=1 — implicit TLS (typically port 465); there is no STARTTLS (587).
 ```
 
+**What the e-mails look like.** Every message goes out as `multipart/alternative`: a plain-text
+part (the one the log driver prints) and an HTML part in the brand layout
+(`api/mail-templates/layout.js` — ameixa header, papel background, Cormorant Garamond + Nunito
+behind safe fallbacks, one column that fills a phone screen). The only image is the logo, served
+by the web container from `APP_URL/email/brilhart-fitness-horizontal-negativo.png`
+(`frontend/public/email/`), so `APP_URL` must be the address a recipient's mail client can reach —
+the same one the links in the mail open. To look at the three templates without a mail server,
+`cd api && node scripts/mail-preview.mjs` writes them as `.html`/`.txt` into `api/mail-preview/`.
+
 **The two links.**
 
 - **Confirmation** — mailed right after signup (and again from Settings if it expired or never

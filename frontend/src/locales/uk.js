@@ -1773,4 +1773,14 @@ export default {
   "Update the app to accept the new terms.": "Онови застосунок, щоб прийняти нові умови.",
   "Reload": "Перезавантажити",
   "Could not save your acceptance — are you online?": "Не вдалося зберегти твою згоду — ти онлайн?",
+  // ISO-1397 — e-mail confirmation screens in the brand's voice
+  'Confirm your e-mail': 'Підтвердьте e-mail',
+  'Open the link we sent to {0}.': 'Відкрийте посилання, яке ми надіслали на {0}.',
+  'Sent': 'Надіслано',
+  'Just a moment.': 'Хвилинку.',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'Ваш обліковий запис підтверджено. Якщо колись втратите цей пристрій, повернутися можна буде через цей e-mail.',
+  'Your e-mail was already confirmed.': 'Ваш e-mail уже був підтверджений.',
+  'This link no longer works': 'Це посилання більше не працює',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'Воно спливло або вже було використане. Попросіть нове й відкрийте останній лист.',
+  'Send a new link': 'Надіслати нове посилання',
 }

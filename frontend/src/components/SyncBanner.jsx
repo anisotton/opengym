@@ -39,6 +39,9 @@ export default function SyncBanner() {
   const [emailDismissed, setEmailDismissed] = useState(
     () => typeof sessionStorage !== 'undefined' && sessionStorage.getItem(EMAIL_DISMISS_KEY) === '1'
   )
+  // One resend per showing: the row says "Sent" afterwards instead of inviting a second tap —
+  // Settings' own button (AccountEmail.jsx) keeps the timed cooldown for anyone who needs more.
+  const [emailSent, setEmailSent] = useState(false)
   const row = useRef(null)
   const status = sync?.status
   useEffect(() => {
@@ -75,17 +78,23 @@ export default function SyncBanner() {
   if (showEmail) {
     const dismiss = () => { sessionStorage.setItem(EMAIL_DISMISS_KEY, '1'); setEmailDismissed(true) }
     const resend = async () => {
-      try { await accountEmailResend(); useUI.getState().toast(t('E-mail resent.')) }
+      if (emailSent) return
+      try { await accountEmailResend(); setEmailSent(true); useUI.getState().toast(t('E-mail resent.')) }
       catch (e) { useUI.getState().toast(passwordError(e)) }
     }
-    return <div className="conn-bar quiet">
+    // The brand's lilac rather than a warning tone: nothing is wrong, one thing is left to do.
+    // The row itself is not a button — the action is the pill, so a stray tap resends nothing.
+    return <div className="conn-bar mail">
       <div className="conn-row" ref={row} role="status" aria-live="polite">
-        <button className="conn" onClick={resend}>
+        <div className="conn">
           <Icon name="envelope" />
-          <span className="conn-t">{t('Confirm your e-mail to keep access to your subscription.')}</span>
-          <span className="conn-a">{t('Resend')}</span>
-        </button>
-        <button className="iconbtn sm" aria-label={t('Dismiss')} onClick={dismiss}><Icon name="xmark" /></button>
+          <span className="conn-t">
+            <span className="conn-title">{t('Confirm your e-mail')}</span>
+            <span className="conn-sub">{t('Open the link we sent to {0}.', user.email)}</span>
+          </span>
+          <button className="conn-a" disabled={emailSent} onClick={resend}>{emailSent ? t('Sent') : t('Resend')}</button>
+          <button className="iconbtn conn-x" aria-label={t('Dismiss')} onClick={dismiss}><Icon name="xmark" /></button>
+        </div>
       </div>
     </div>
   }

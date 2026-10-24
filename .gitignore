@@ -22,3 +22,7 @@ node_modules
 junit.xml
 coverage/
 frontend/bundle-size.json
+
+# Playwright MCP screenshots / local e-mail previews
+.playwright-mcp/
+api/mail-preview/
