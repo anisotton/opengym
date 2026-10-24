@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { provisionTestDatabase } from './helpers.mjs';
 import { connectAndMigrate } from '../db.js';
 import {
-  createUser, insertPasskey, listPasskeys, getPasskeyById, countPasskeys, renamePasskey,
-  passkeyRemovalRefused, removePasskey, touchPasskeyUse
+  createUser, getUserById, insertPasskey, listPasskeys, getPasskeyById, countPasskeys, renamePasskey,
+  passkeyRemovalRefused, removePasskey, removePasswordUnlessLast, touchPasskeyUse
 } from '../store.js';
 import { MAX_PASSKEYS } from '../passkeys-store.js';
 
@@ -121,10 +121,48 @@ test('removePasskey: refuses to remove the last passkey when nothing else signs 
 
 test('removePasskey: lets the last passkey go while a password still signs the profile in', async t => {
   const pool = await withPool(t);
+  await createUser(pool, { id: 'u1', name: 'Ana', created: iso(), pw: { h: 'h', set: iso() } });
+  await insertPasskey(pool, 'u1', cred('hello'));
+  assert.equal((await removePasskey(pool, 'u1', 'hello', true)).ok, true);
+  assert.equal(await countPasskeys(pool, 'u1'), 0);
+});
+
+// passwordCounts is PASSWORD_LOGIN (a server setting); whether a password actually exists is
+// read live, not handed in — a password-less profile gets no credit for one even if asked to.
+test('removePasskey: passwordCounts asks whether a password would help, not whether it is one', async t => {
+  const pool = await withPool(t);
   await createUser(pool, { id: 'u1', name: 'Ana', created: iso() });
   await insertPasskey(pool, 'u1', cred('hello'));
-  assert.equal((await removePasskey(pool, 'u1', 'hello', 1)).ok, true);
-  assert.equal(await countPasskeys(pool, 'u1'), 0);
+  assert.deepEqual(await removePasskey(pool, 'u1', 'hello', true),
+    { error: 'this passkey is the only way into this profile', code: 'last-way-in' });
+  assert.equal(await countPasskeys(pool, 'u1'), 1);
+});
+
+// The real race this exists for: a password removal and a passkey removal for the same account,
+// each individually passing the "something else is still left" check, running side by side —
+// only a check that re-reads the other table under the same per-account lock can't let both
+// through (ISO-1592). No HTTP, no scrypt, no WebAuthn ceremony, so any interleaving the pool's
+// own connection scheduling happens to produce is in play on every round — one round alone was
+// seen to pass without the lock more often than not (the two calls' earlier awaits often let one
+// finish before the other starts its first query), so this repeats on a fresh account until the
+// bug would have had many chances to show, rather than risking a lucky single round.
+test('removePasswordUnlessLast + removePasskey racing the same account: exactly one succeeds', async t => {
+  const pool = await withPool(t);
+  const ROUNDS = 20;
+  for (let i = 0; i < ROUNDS; i++) {
+    const uid = 'race' + i;
+    await createUser(pool, { id: uid, name: 'Ana', created: iso(), pw: { h: 'h', set: iso() } });
+    await insertPasskey(pool, uid, cred('hello' + i));
+    const [pw, pk] = await Promise.all([
+      removePasswordUnlessLast(pool, uid),
+      removePasskey(pool, uid, 'hello' + i, true)
+    ]);
+    const oks = [pw, pk].filter(r => r.ok).length;
+    assert.equal(oks, 1, `round ${i}: ${JSON.stringify(pw)} / ${JSON.stringify(pk)}`);
+    const stillHasPw = 'pw' in await getUserById(pool, uid);
+    assert.equal((stillHasPw ? 1 : 0) + (await countPasskeys(pool, uid)), 1,
+      `round ${i}: the profile kept exactly one way in`);
+  }
 });
 
 test('removePasskey: does not let one user delete another’s passkey', async t => {

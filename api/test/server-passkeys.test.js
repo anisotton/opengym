@@ -14,6 +14,7 @@ import pg from 'pg';
 import { hashPassword } from '../password.js';
 import { hashLinkCode } from '../device-link.js';
 import { MAX_PASSKEYS } from '../passkeys-store.js';
+import { createUser, insertPasskey } from '../store.js';
 import { tempData, spawnApi } from './helpers.mjs';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
@@ -440,19 +441,45 @@ test('the current password proves a removal too, while password sign-in is on', 
 // Both of a profile's two ways in removed at once, each request with its own good proof: the
 // checks before the proof pass for both, so the one that finishes second has to find out after
 // its proof that it would now leave the profile with no way in.
+//
+// ISO-1592: this used to depend on which side's proof (scrypt vs. a WebAuthn assertion) finished
+// first — the losing request's removal had already read the winner's pre-commit state, so on an
+// unlucky interleaving (seen on a cold, unloaded database) both removals went through and the
+// profile was left with neither. Fixed in store.js by reading the other table fresh under a
+// per-account lock instead of a snapshot taken before the proof. One run proves nothing about an
+// interleaving-dependent bug either way, so this repeats the race on a fresh profile every round
+// rather than trusting a single pass — store-passkeys.test.js and store-users.test.js race the
+// same two store.js calls directly, with no proof and no timing dependency at all.
 test('removing the password and the last passkey at the same time leaves one of them', async t => {
-  const key = softPasskey();
-  const h = await startServer(t, { users: [withPassword('u1', 'Ana')], creds: [key.row('u1')] });
-  const ip = '198.51.100.35', cookie = mintSession('u1');
-  const [pw, pk] = await Promise.all([
-    // The password's proof runs scrypt, so the passkey removal overtakes it.
-    h.req('DELETE', '/api/account/password', { body: { current: GOOD }, cookie, ip }),
-    (async () => h.req('DELETE', '/api/account/passkeys?id=' + encodeURIComponent(key.id), { body: await h.stepUp(key, ip), cookie, ip }))()
-  ]);
-  assert.deepEqual([pw.status, pk.status].filter(s => s === 200).length, 1, `${pw.status} ${JSON.stringify(pw.body)} / ${pk.status} ${JSON.stringify(pk.body)}`);
-  assert.ok([403, 409].includes(pw.status === 200 ? pk.status : pw.status));
-  const hasPw = await h.hasPassword('u1');
-  assert.equal((await h.creds()).length + (hasPw ? 1 : 0), 1, 'the profile kept exactly one way in');
+  const h = await startServer(t);
+  // Closed at the end of this function, not via t.after: spawnApi already registered its own
+  // t.after that drops the database, and node:test runs those in registration order — a pool
+  // closed only by a later-registered hook would still be open when that drop runs, which
+  // node-pg surfaces as a connection error rather than a clean close (seen as exactly that while
+  // writing this test).
+  const pool = new pg.Pool({ connectionString: h.databaseUrl });
+  try {
+    const ROUNDS = 25;
+    for (let round = 0; round < ROUNDS; round++) {
+      const uid = 'racer' + round, ip = '198.51.100.' + (60 + round), cookie = mintSession(uid);
+      const key = softPasskey();
+      await createUser(pool, withPassword(uid, 'Racer ' + round));
+      await insertPasskey(pool, uid, key.row(uid));
+      const [pw, pk] = await Promise.all([
+        // The password's proof runs scrypt, so the passkey removal usually (not always) overtakes it.
+        h.req('DELETE', '/api/account/password', { body: { current: GOOD }, cookie, ip }),
+        (async () => h.req('DELETE', '/api/account/passkeys?id=' + encodeURIComponent(key.id), { body: await h.stepUp(key, ip), cookie, ip }))()
+      ]);
+      const msg = `round ${round}: ${pw.status} ${JSON.stringify(pw.body)} / ${pk.status} ${JSON.stringify(pk.body)}`;
+      assert.equal([pw.status, pk.status].filter(s => s === 200).length, 1, msg);
+      assert.ok([403, 409].includes(pw.status === 200 ? pk.status : pw.status), msg);
+      const hasPw = await h.hasPassword(uid);
+      const { rows } = await pool.query('SELECT count(*)::int AS n FROM passkeys WHERE user_id = $1', [uid]);
+      assert.equal(rows[0].n + (hasPw ? 1 : 0), 1, `${msg} — the profile kept exactly one way in`);
+    }
+  } finally {
+    await pool.end();
+  }
 });
 
 test('a password is a way in only while the instance offers password sign-in', async t => {

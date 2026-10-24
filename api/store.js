@@ -9,6 +9,24 @@ import { passkeyName, transportsOf, MAX_PASSKEYS } from './passkeys-store.js';
 import { newProgramId, diffForEvent, titleMatchesForPurge } from './programs.js';
 import { withTransaction } from './db.js';
 
+// The lock insertPasskey's cap check already takes, keyed on the account rather than any one
+// table: whether a password or a passkey still signs a profile in is decided across both the
+// `users` and `passkeys` tables, so a count-then-act confined to just one of them (even inside
+// its own transaction) can still race a concurrent one on the other table — each reads the other
+// table's pre-commit state and both removals go through, exactly the ISO-1592 bug. Serializing
+// every such check-then-act on this one lock makes the second caller wait for the first's commit
+// (or rollback) before it reads anything, so it always sees the first's result rather than a
+// snapshot from before it landed. `pool.release` exists only on a checked-out client, never on
+// the Pool itself, which is what tells a caller already inside someone else's transaction (passes
+// that transaction's client here) apart from one that still needs its own.
+async function withWayInLock(pool, userId, run) {
+  const body = async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
+    return run(client);
+  };
+  return typeof pool.release === 'function' ? body(pool) : withTransaction(pool, body);
+}
+
 // { state, rev } — state is null and rev is 0 for a profile that has never pushed, exactly what
 // GET /api/data returned for a state file that did not exist yet.
 export async function getUserState(pool, userId) {
@@ -201,6 +219,28 @@ export async function setPassword(pool, id, pw) {
 
 export async function removePassword(pool, id) {
   await pool.query('UPDATE users SET password_hash = NULL, password_set_at = NULL WHERE id = $1', [id]);
+}
+
+async function hasLivePassword(client, id) {
+  const { rows } = await client.query('SELECT password_hash FROM users WHERE id = $1', [id]);
+  return rows.length > 0 && rows[0].password_hash !== null;
+}
+
+// removePassword with the "never the last way in" rule built in, atomically: server.js used to
+// check hasPassword()/passkeyCount() against a snapshot taken before proveOwner's await (a slow
+// hash, or a WebAuthn ceremony), so a passkey removal landing in that window left nothing. Both
+// the password and the passkey count are read fresh here, inside the per-account lock
+// removePasskey now takes too (ISO-1592), so whichever of the two commits second always sees the
+// other's result rather than a pre-race read.
+export async function removePasswordUnlessLast(pool, id) {
+  const run = async client => {
+    if (!(await hasLivePassword(client, id))) return { ok: true }; // already gone — nothing to refuse
+    const { rows } = await client.query('SELECT count(*)::int AS n FROM passkeys WHERE user_id = $1', [id]);
+    if (rows[0].n < 1) return { error: 'the password is the only way into this profile', code: 'last-way-in' };
+    await client.query('UPDATE users SET password_hash = NULL, password_set_at = NULL WHERE id = $1', [id]);
+    return { ok: true };
+  };
+  return withWayInLock(pool, id, run);
 }
 
 // A sign-in re-hashing an existing password at today's cost parameters — not a new password: only
@@ -548,9 +588,13 @@ export async function upsertDeviceLink(pool, { h, userId, exp, created }) {
 /* ---------- passkeys ----------
  * `passkeyName`/`transportsOf` (passkeys-store.js) shape what a name or a transports list may
  * keep; everything DB-shaped — the rows, the count, the "never lose the last way in" rule — is
- * here. `otherWays` (passkeyRemovalRefused/removePasskey) is how many ways besides its passkeys
- * can still sign the profile in (a password, while the instance offers password sign-in);
- * server.js decides that, this only counts.
+ * here. `otherWays` (passkeyRemovalRefused) is how many ways besides its passkeys can still sign
+ * the profile in (a password, while the instance offers password sign-in) — server.js's own
+ * cheap pre-proof guess, since a wrong one there costs at most a prompt. `removePasskey` takes
+ * `passwordCounts` (PASSWORD_LOGIN, a server setting server.js still owns) but decides for itself
+ * whether a password currently exists — account data, read fresh under its own lock rather than
+ * handed in — because that is the one answer this profile's access actually depends on
+ * (ISO-1592).
  */
 
 function rowToPasskey(row) {
@@ -586,11 +630,11 @@ export async function countPasskeys(pool, userId) {
 // the theory that two additions racing the same account couldn't both slip past a count checked
 // before either had committed — but a plain SELECT count(*) takes no lock, so two concurrent
 // connections each get their own READ COMMITTED snapshot and can both see the same pre-race count
-// and both pass. A `pg_advisory_xact_lock` keyed on the user id forces the second one to wait for
-// the first to commit (or roll back) before it takes its own count, so it sees the row the first
-// one just added. Pass a transaction client in place of `pool` to insert alongside the user row a
-// fresh signup creates (registration ceremonies do) — same idea as consumeInvite; the lock then
-// lives for the rest of that transaction rather than one of its own.
+// and both pass. withWayInLock's advisory lock forces the second one to wait for the first to
+// commit (or roll back) before it takes its own count, so it sees the row the first one just
+// added. Pass a transaction client in place of `pool` to insert alongside the user row a fresh
+// signup creates (registration ceremonies do) — same idea as consumeInvite; the lock then lives
+// for the rest of that transaction rather than one of its own.
 export async function insertPasskey(pool, userId, cred) {
   const name = passkeyName(cred.name);
   const row = {
@@ -599,7 +643,6 @@ export async function insertPasskey(pool, userId, cred) {
     ...(cred.lastUsed ? { lastUsed: cred.lastUsed } : {}), ...(name ? { name } : {})
   };
   const run = async client => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
     let rowCount;
     try {
       ({ rowCount } = await client.query(
@@ -616,12 +659,7 @@ export async function insertPasskey(pool, userId, cred) {
     if (rowCount === 0) return { error: `a profile can have at most ${MAX_PASSKEYS} passkeys`, code: 'passkey-limit' };
     return { ok: true, row };
   };
-  // A Pool (not a transaction client already) needs its own transaction, or the advisory lock
-  // released at that single statement's implicit commit would do nothing to order the INSERT. A
-  // checked-out client (what withTransaction hands its callback) still has a `connect` method of
-  // its own — it's a real pg Client under the hood — so `release` (only the pool ever hands out,
-  // never has itself) is what actually tells the two apart.
-  return typeof pool.release === 'function' ? run(pool) : withTransaction(pool, run);
+  return withWayInLock(pool, userId, run);
 }
 
 export async function renamePasskey(pool, userId, credId, name) {
@@ -632,8 +670,10 @@ export async function renamePasskey(pool, userId, credId, name) {
   return rows.length ? { ok: true, row: rowToPasskey(rows[0]) } : { error: 'passkey not found', code: 'not-found' };
 }
 
-// Why removing `credId` would be refused, or null when it could go. On its own so server.js can
-// ask before it asks the owner for proof, and again, through removePasskey, once the proof is in.
+// Why removing `credId` would be refused, or null when it could go. `otherWays` is a plain count
+// handed in by the caller — on its own so server.js can ask before it asks the owner for proof, a
+// deliberately cheap, non-atomic pre-check: a stale answer here only costs an unnecessary prompt
+// or skips one, never a wrong removal, because removePasskey below decides again, for real.
 export async function passkeyRemovalRefused(pool, userId, credId, otherWays = 0) {
   const cred = await getPasskeyById(pool, credId);
   if (!cred || cred.userId !== userId) return { error: 'passkey not found', code: 'not-found' };
@@ -642,11 +682,22 @@ export async function passkeyRemovalRefused(pool, userId, credId, otherWays = 0)
   return null;
 }
 
-export async function removePasskey(pool, userId, credId, otherWays = 0) {
-  const refused = await passkeyRemovalRefused(pool, userId, credId, otherWays);
-  if (refused) return refused;
-  const { rows } = await pool.query('DELETE FROM passkeys WHERE id = $1 AND user_id = $2 RETURNING *', [credId, userId]);
-  return { ok: true, row: rowToPasskey(rows[0]) };
+// The authoritative check, atomic. `passwordCounts` is PASSWORD_LOGIN — a server setting, not
+// account data, so it's safe for the caller to hand in from before any await; whether this
+// account currently *has* a password is account data, and is read fresh here instead, inside the
+// same per-account lock removePasswordUnlessLast takes, so the two never both see "the other one
+// still covers me" for the same instant (ISO-1592 — server.js used to pass a password flag read
+// from a user snapshot taken before proveOwner's await, exactly the gap a concurrent password
+// removal could land in).
+export async function removePasskey(pool, userId, credId, passwordCounts = false) {
+  const run = async client => {
+    const otherWays = passwordCounts && (await hasLivePassword(client, userId)) ? 1 : 0;
+    const refused = await passkeyRemovalRefused(client, userId, credId, otherWays);
+    if (refused) return refused;
+    const { rows } = await client.query('DELETE FROM passkeys WHERE id = $1 AND user_id = $2 RETURNING *', [credId, userId]);
+    return { ok: true, row: rowToPasskey(rows[0]) };
+  };
+  return withWayInLock(pool, userId, run);
 }
 
 // A passkey's own counter/last-use, touched by every ceremony that verifies an assertion against
