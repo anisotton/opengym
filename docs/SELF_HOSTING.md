@@ -712,8 +712,12 @@ own Price after that cycle, so the only statuses an account ever reports are `ac
 
 What each route does:
 
+- `GET /api/billing/plans` — the sellable catalog (see "The catalog" below): id, display text,
+  interval and amount in centavos for each plan that is `available`, in the order to show them.
 - `POST /api/billing/checkout` — requires a signed-in, e-mail-verified profile (Phase 2) and a
-  `plan` (`monthly`/`quarterly`/`yearly`) in the body; returns the Checkout Session's hosted URL.
+  `plan` (`monthly`/`quarterly`/`yearly`, or a later addition) in the body; returns the Checkout
+  Session's hosted URL, or 409 `already-subscribed` if the account's last subscription is still
+  `active`/`past_due` — two tabs completing Checkout at once must not end up billed twice.
 - `POST /api/billing/portal` — the Stripe Customer Portal, for changing the plan, the card on file,
   or cancelling. Cancelling there is always "at period end", no proration: access continues until
   `current_period_end`, and the account only goes read-only once that date passes and the
@@ -740,6 +744,90 @@ Whether an account may write at all is one function, `canWrite(subscription)` in
 
 Forms of payment are configured once in the Dashboard (Settings → Payment methods), never in
 code — Checkout never names them, so nothing here needs changing to add or remove one.
+
+### The catalog (ISO-1623)
+
+The plan catalog — names, prices, which plan is on sale — lives in PostgreSQL
+(`billing_plans`/`billing_prices`, migration `010_billing_catalog.sql`), mirrored from Stripe
+rather than hard-coded by env. The migration itself only creates the two tables (plus
+`billing_admin_actions`, unused until the admin UI that manages this catalog lands); filling them
+is a separate, idempotent boot step (`seedCatalogFromEnv` in `api/billing.js`):
+
+- Runs once, automatically, the first time an instance boots with billing on (`STRIPE_API_KEY` and
+  `STRIPE_WEBHOOK_SECRET` both set) and the catalog is still empty — never again after that, so a
+  later edit to the catalog is never clobbered by a redeploy.
+- Reads the four `STRIPE_PRICE_*` Prices from Stripe and validates each one (BRL, a recurring
+  interval the catalog expects) before writing anything; any divergence skips the **whole** seed
+  (logged, nothing partial) and billing keeps working exactly as it did before this migration —
+  reading `STRIPE_PRICE_*` directly, the same as every build before ISO-1623. The four env vars
+  stay mandatory either way; they're the seed's only source, and the rollback path below depends
+  on them still being there.
+- A Price, once in the catalog, is immutable (enforced by a trigger, not just convention) —
+  changing a value means minting a new Stripe Price and publishing it as the plan's new `current`
+  one; the old row stays forever, `retired`, so a subscription still billed off it keeps showing
+  the exact name and amount it was sold at.
+
+**Rollback:** reverting the code means `STRIPE_PRICE_*` drive billing again, unchanged — nothing
+about the legacy path was removed. The two new tables can be left in place (inert) or dropped —
+`DROP TABLE billing_admin_actions, billing_plans, billing_prices` — neither touches any existing
+table. Nothing in Stripe needs undoing: the seed only ever reads Prices, never creates one.
+
+### Managing the catalog (ISO-1619/ISO-1630)
+
+`/api/admin/billing/catalog/*` (requireAdmin) is the admin side ISO-1623 above left for a
+follow-up — creating, pricing, publishing and taking plans on/off sale without ever touching
+`.env`. Everything it does keeps the same invariant the read path already relied on: **Stripe is
+the source of truth, the DB is a mirror** — no route here writes a subscription's own desired
+state, only the catalog it buys from.
+
+- `GET /api/admin/billing/catalog` — every plan (including `available:false` ones) and every
+  Price in any `state`, plus how many live subscriptions are billed off each one and
+  `liveWritesDisabled` (see the live gate, below).
+- `POST .../plan/new` ("criar oferta") — mints a Stripe Price (`active:false`,
+  `metadata.bf_plan`/`bf_version`) and persists a new plan, born `available:false` with that
+  Price a `draft`. Reuses the one Stripe Product every Price in this catalog shares
+  (`scripts/stripe-setup.mjs`) — refuses `400 no-product` if the catalog has never been seeded or
+  hand-created yet, rather than minting a second Product.
+- `POST .../plan/display` ("editar apresentação") — display text only, database-only (no Stripe
+  call, no live gate). `version` works like `programs.rev`: a stale one is `409 {code: stale,
+  current}`.
+- `POST .../plan/availability` ("ativar/desativar") — `prices.update active` on the plan's
+  *current* Price, then `available` in the DB, in that order, both directions.
+- `POST .../plan/price` ("nova versão de valor") — a new `draft` Price for a plan that already
+  sells one (optionally with `decisionRef`, a free-text pointer to whatever approved the value).
+  Never changes the plan itself.
+- `POST .../plan/publish` ("publicar versão") — Stripe first (activates the new Price, deactivates
+  the old one), then one DB transaction flips both Prices' `state` and the plan's
+  `currentPriceId` together. **Never migrates an existing subscriber onto the new Price** — a
+  subscription billed off the now-`retired` Price keeps showing exactly the name and amount it was
+  sold at, forever (grandfathering).
+- `POST .../order` ("reordenar") — batch `sortOrder` update in one transaction; `order` must name
+  exactly the current plan set. Database-only — does **not** pass through the live gate.
+- `POST .../reconcile` — adopts any Stripe Price tagged `metadata.bf_plan` the catalog doesn't
+  know yet (as a `draft`, never auto-published) and records any `subscriptions.priceId` the
+  catalog has never heard of as `retired`, with its amount read straight off Stripe rather than
+  invented. Read-only against Stripe — no live gate.
+- `GET .../actions` — the last 100 `billing_admin_actions` rows (see below).
+
+**The live gate.** Every write above that touches Stripe refuses `423 {code:
+live-writes-disabled}` whenever the configured key is a live one (`sk_live_`/`rk_live_`) *unless*
+`BILLING_ADMIN_LIVE=1` is set — the one override. `stripeIsLive()` (`api/billing.js`) is the same
+check `GET .../catalog`'s own `liveWritesDisabled` field reports, so a UI greys the write buttons
+out before anyone tries; a sandbox key (`sk_test_`/`rk_test_`) never trips it. This instance's
+`seedCatalogFromEnv` boot seed uses the same check to refuse seeding a Price whose own `livemode`
+disagrees with the key's.
+
+**Proof and audit.** Every write that touches Stripe (`plan/new`, `plan/availability`,
+`plan/price`, `plan/publish`) additionally requires: a fresh `proveOwner` proof (the admin's own
+password or passkey — the same `OwnerProof` shape account-settings routes use) in the body; a
+`reason` of at least 10 characters (enforced by a database constraint on
+`billing_admin_actions`, not just the 400 at the door); and an `Idempotency-Key` header, minted
+once per confirmation dialog — a replayed key is handed back the first attempt's own result
+instead of calling Stripe a second time. Every one of those four writes leaves a row in
+`billing_admin_actions` (actor, reason, the request, before/after, every Stripe id it touched,
+and its outcome) — `GET .../actions` is how an operator reads that trail back.
+`plan/display`, `order` and `reconcile` write nothing there: none of the three is financial (the
+first two never call Stripe at all; reconcile only ever reads it).
 
 ### Account deletion and Stripe (ISO-1447, Phase 4 — LGPD)
 

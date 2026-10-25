@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, setRemoteAuth, fetchBillingStatus, fetchTeacherAssignments, ackTeacherAssignment } from '../lib/api.js'
+import { api, setRemoteAuth, fetchBillingStatus, fetchBillingPlans, fetchTeacherAssignments, ackTeacherAssignment } from '../lib/api.js'
 import { localTZ } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
 import { registerCustom } from '../lib/exercises.js'
@@ -61,6 +61,15 @@ const ADOPT_KEY = 'gym_adopt'
 const BILLING_KEY = 'gym_billing'
 const loadBilling = () => { try { return JSON.parse(localStorage.getItem(BILLING_KEY)) } catch { return null } }
 const saveBilling = b => { try { if (b) localStorage.setItem(BILLING_KEY, JSON.stringify(b)); else localStorage.removeItem(BILLING_KEY) } catch { /* storage refused — only the cache is lost */ } }
+// The last GET /api/billing/plans this device saw (ISO-1627) — the catalog itself, not any one
+// account's subscription to it, so unlike BILLING_KEY above it is never cleared on sign-out or on
+// a different account signing in: the plans on sale are the instance's, not the account's.
+// SettingsPlan reads this instead of a hard-coded PLANS array, same offline-first reasoning as
+// `billing` above — a device that last saw the catalog keeps showing it until the next fetch
+// succeeds, rather than an empty "no plans" screen the moment it has no network.
+const PLANS_KEY = 'gym_billing_plans'
+const loadBillingPlans = () => { try { return JSON.parse(localStorage.getItem(PLANS_KEY)) } catch { return null } }
+const saveBillingPlans = p => { try { if (p) localStorage.setItem(PLANS_KEY, JSON.stringify(p)); else localStorage.removeItem(PLANS_KEY) } catch { /* storage refused — only the cache is lost */ } }
 // Reads the mark with no argument, sets or clears it with one. Storage that cannot be read owes nothing.
 function logoutOwed(on) {
   try {
@@ -477,7 +486,7 @@ export const useStore = create((set, get) => {
     // after Checkout/the Portal, or right after another device's cancellation, should not show a
     // stale plan state for up to POLL_MS. Unawaited: boot does not block on it, and the cached
     // answer (loadBilling) is already on screen either way (ISO-1395).
-    if (get().user) { get().refreshBillingStatus(); get().refreshTeacherAssignments() }
+    if (get().user) { get().refreshBillingStatus(); get().refreshBillingPlans(); get().refreshTeacherAssignments() }
   }
 
   // A signed-in device shows what the server has. Coming back — to the tab, the window, the app,
@@ -493,6 +502,7 @@ export const useStore = create((set, get) => {
     // than a timer of its own — nothing here awaits it, so a slow or failed answer never holds up
     // the rev check it rode in on. The teacher-assignments pull (ISO-1610) rides the same cadence.
     get().refreshBillingStatus()
+    get().refreshBillingPlans()
     get().refreshTeacherAssignments()
     // A sign-in still deciding what becomes of this copy: no check of its own. One whose adoption
     // never ran or did not get through (no server, a pairing that failed on the way to it) runs it
@@ -982,6 +992,9 @@ export const useStore = create((set, get) => {
     // `config` above, which is memory-only and re-asked every boot — billing has to survive one
     // this device never gets to repeat until the network is back.
     billing: loadBilling(),
+    // The catalog (ISO-1627) — { plans: [{id, display, interval, intervalCount, sortOrder,
+    // amountCents, introAmountCents}] } or null before the first fetch. See PLANS_KEY above.
+    billingPlans: loadBillingPlans(),
     needsMobileOnboarding: false,   // mobile build only — set true by boot() on a genuine first launch
     // A one-time device-link code this page was opened with (?link=, #95), until it is redeemed.
     // Never persisted: the code is good for minutes and belongs to this one visit.
@@ -1162,6 +1175,26 @@ export const useStore = create((set, get) => {
         saveBilling(b)
         set({ billing: b })
       } catch { /* offline, refused, whatever — the cached answer stands */ }
+    },
+
+    // GET /api/billing/plans (ISO-1627) — same cadence and the same "never clear on failure"
+    // rule as refreshBillingStatus above. A 404 (billing not configured on this instance) is
+    // cached as `{plans:[]}` the same way as a genuinely empty catalog: SettingsPlan already
+    // renders "No plans available" for that, and this device has nothing else useful to show.
+    // Returns whether it actually refreshed — callers that care about the difference between
+    // "offline, cache stands" and "just got the latest" (SettingsPlan's own error toast) can
+    // check it; the background callers (boot, checkRev) ignore it, same as refreshBillingStatus.
+    async refreshBillingPlans() {
+      if (!get().user) return true
+      try {
+        const p = await fetchBillingPlans()
+        saveBillingPlans(p)
+        set({ billingPlans: p })
+        return true
+      } catch (e) {
+        if (e?.status === 404) { saveBillingPlans({ plans: [] }); set({ billingPlans: { plans: [] } }); return true }
+        return false
+      }
     },
 
     // GET /api/account/assignments (ISO-1594/ISO-1610): a teacher's routine/Program assignment,

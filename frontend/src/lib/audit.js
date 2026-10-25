@@ -102,6 +102,27 @@ const LABELS = {
   // Stripe billing (ISO-1393): `msg` carries the plan name. No chip of its own, same as media —
   // these rows show under All.
   'billing.checkout': 'Started a Stripe checkout',
+  // ISO-1619/ISO-1630: the admin payment-plan catalog. `activate`/`unpublish` are their own
+  // events (not folded into a generic "update"), same precedent as admin.program.publish/
+  // unpublish above — availability is the one change that affects whether a plan can be sold.
+  'admin.billing.catalog.create': 'Created a new payment plan',
+  'admin.billing.catalog.display': "Edited a payment plan's display text",
+  'admin.billing.catalog.activate': 'Put a payment plan on sale',
+  'admin.billing.catalog.deactivate': 'Took a payment plan off sale',
+  'admin.billing.catalog.price.new': 'Created a new price for a payment plan',
+  'admin.billing.catalog.price.publish': "Published a payment plan's new price",
+  'admin.billing.catalog.order': 'Reordered the payment plan catalog',
+  'admin.billing.catalog.reconcile': 'Reconciled the payment plan catalog against Stripe',
+  // ISO-1619/ISO-1624 T2a, ISO-1625 T2b: one account's billing ficha and its actions — never
+  // folded into a generic "update", same precedent as the catalog events just above.
+  'admin.billing.subscription.change-plan': "Changed an account's plan",
+  'admin.billing.subscription.cancel-period-end': "Scheduled an account's subscription to cancel",
+  'admin.billing.subscription.resume': "Undid a scheduled cancellation on an account's subscription",
+  'admin.billing.subscription.cancel-immediately': "Cancelled an account's subscription immediately",
+  'admin.billing.subscription.suspend-collection': "Suspended an account's billing",
+  'admin.billing.subscription.resume-collection': "Resumed an account's billing",
+  'admin.billing.subscription.generate-link': 'Generated a subscription link for an account',
+  'admin.billing.subscription.sync': "Synced an account's subscription with Stripe",
   // "Sign in with Google" (ISO-1597). `ok`'s `msg` carries the proof kind ('reauth') or, for a
   // pending signup with no account yet, a masked address; `refused`/`fail` carry a reason code.
   'auth.google.start': 'Started linking a Google account',

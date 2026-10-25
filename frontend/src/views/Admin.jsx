@@ -5,11 +5,11 @@ import { useUI } from '../store/useUI.js'
 import { api } from '../lib/api.js'
 import { fmtDate, fmtNum } from '../lib/format.js'
 import { auditCat, auditLine, fmtWhen } from '../lib/audit.js'
-import { fmtCentsBRL } from '../lib/billing.js'
 import { confirmSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
 import AdminCoach from './AdminCoach.jsx'
+import AdminBilling, { SubscriptionPanel } from './AdminBilling.jsx'
 import AdminPrograms from './AdminPrograms.jsx'
 import '../admin.css'
 
@@ -44,11 +44,6 @@ function ResetCodeSheet({ name, email, code, expires, close }) {
   </>
 }
 
-// Plan names the admin's own account+subscription tiles word the same way SettingsPlan does —
-// fmtCentsBRL/dayOf-style formatting, not a fetched label, since GET /api/admin/user hands back
-// the same shape GET /api/billing/status does (ISO-1447).
-const PLAN_NAME = { monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly' }
-
 function UserDetail({ id, onChanged, close }) {
   const [d, setD] = useState(null)
   const toast = useUI(s => s.toast)
@@ -72,8 +67,9 @@ function UserDetail({ id, onChanged, close }) {
     onConfirm: () => setRole('student'),
   })
   // No workout, body-weight or routine data reaches this screen at all any more (ISO-1394 Phase
-  // 4, LGPD) — GET /api/admin/user only ever answers account and subscription fields now.
-  const sub = d.subscription
+  // 4, LGPD) — GET /api/admin/user only ever answers account fields now; its own `subscription`
+  // summary is superseded by <SubscriptionPanel> below (ISO-1627), which reads the fuller
+  // GET /api/admin/user/billing ficha instead.
   const doDelete = () => {
     api('/api/admin/user/delete', { method: 'POST', body: JSON.stringify({ id: u.id }) })
       .then(() => { toast('Account deleted'); onChanged(); close() })
@@ -111,11 +107,12 @@ function UserDetail({ id, onChanged, close }) {
     </div>
     <h4 className="sec">Account</h4>
     <div className="tiles" style={{ textAlign: 'start' }}>
-      <div className="tile"><div className="l">Plan</div><div className="v" style={{ fontSize: '1.1rem' }}>{sub ? (PLAN_NAME[sub.plan] || sub.plan || '—') : '—'}</div></div>
-      <div className="tile"><div className="l">Status</div><div className="v" style={{ fontSize: '1.1rem' }}>{sub?.status || '—'}</div></div>
-      <div className="tile"><div className="l">Next charge</div><div className="v" style={{ fontSize: '.95rem' }}>{sub?.nextChargeDate ? fmtDate(sub.nextChargeDate.slice(0, 10)) + (sub.nextChargeAmount != null ? ' · ' + fmtCentsBRL(sub.nextChargeAmount) : '') : '—'}</div></div>
       <div className="tile"><div className="l">Last sync</div><div className="v" style={{ fontSize: '.95rem' }}>{rel(d.lastSync)}</div></div>
     </div>
+    {/* The old Plan/Status/Next charge tiles above are replaced by this panel (ISO-1619/ISO-1627)
+        — a bigger payload (full subscription history + the 7 admin actions), loaded lazily
+        rather than folded into GET /api/admin/user's own, smaller answer. */}
+    <SubscriptionPanel userId={u.id} />
     {/* ISO-1594/ISO-1610: grant/revoke the teacher role. Not gated by !u.admin below — an admin
         can also be a teacher (D11: the plan never ties the two roles together). */}
     <h4 className="sec">Role</h4>
@@ -332,6 +329,8 @@ export default function Admin() {
     {/* The Coach setup. Renders nothing at all unless the instance offers the Coach, so an admin
         page on a box that never enabled it is byte-for-byte the page it was before. */}
     <AdminCoach />
+
+    <AdminBilling />
 
     <AdminPrograms />
 
