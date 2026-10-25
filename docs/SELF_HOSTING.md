@@ -412,6 +412,57 @@ profile that only has a password cannot sign in.
 The mobile app keeps pairing: someone with a password signs in to the website with it and pairs
 from Settings → "Pair the mobile app", as with a passkey.
 
+### Sign in with Google (optional)
+
+Off by default — an instance with neither `GOOGLE_CLIENT_ID` nor `GOOGLE_CLIENT_SECRET` set has
+no `/api/auth/google/*`, `/api/account/google/*` or `/api/register/google` route at all (a plain
+404) and the sign-in screen never shows the button. Turning it on:
+
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an OAuth
+   client of type **Web application**.
+2. Add an **Authorized redirect URI**: `https://your-domain.example/api/auth/google/callback` (or
+   whatever `GOOGLE_REDIRECT_URI` names, if you set one — the default is `${APP_URL}/api/auth/
+   google/callback`). **Google only accepts a redirect URI on a public top-level domain or on
+   literal `localhost`** — not a `.lyra`/`.local`/`.internal` address, a bare IP or a self-signed
+   certificate's name. An instance only reachable on a private network cannot offer Google sign-in
+   until it has a real public domain (see *Expose it over HTTPS on your own domain* above).
+3. Put the client id and secret in `.env`:
+
+   ```bash
+   GOOGLE_CLIENT_ID=123456789-abc.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-...
+   ```
+
+What changes when it is on:
+
+- The sign-in and signup screens offer **Sign in with Google** / **Continue with Google**. A
+  Google account whose e-mail matches an existing, **confirmed** profile's e-mail links and signs
+  in automatically; one whose e-mail matches an account that has *not* confirmed its e-mail yet is
+  refused rather than linked — Google proving an address is not the same as this account's owner
+  proving it, and linking on that alone would let anyone who merely shares (or once owned) an
+  address ride into someone else's profile. No matching account at all opens "Complete your
+  profile" — a birth date and Terms acceptance are all that is still needed, since Google already
+  proved the e-mail (no confirmation link is mailed for a Google signup).
+- Settings → Account → Ways to sign in gets a **Google** row: linking asks the same proof as
+  adding a passkey, and shows the linked account's e-mail and the date once done.
+- Google counts as a way into the profile the same way a password does while `PASSWORD_LOGIN=1` —
+  it cannot be unlinked, and a password or the profile's last passkey cannot be removed either,
+  while it is the only one left (`last-way-in`, same rule and the same per-account lock as the
+  password/passkey one). A profile created through Google with no password and no passkey can
+  still confirm every change that normally asks for one — adding a passkey, changing the e-mail,
+  **deleting its own account** — by reauthenticating with the *same* Google account instead
+  (**Confirm with Google**, in the same proof sheet): a fresh, one-time, 5-minute proof tied to
+  that one action and that one browser session, never a lasting way to skip the check.
+- `GET /api/me`'s `google` field (e-mail, linked date, or `null`) and `GET /api/config`'s
+  `google_login` flag are what the client reads — see `api/openapi.yaml` (tag `google`) for the
+  full route list and every result code the callback can come back with.
+
+**Switching it off again** takes every Google route away (404) the same way turning `PASSWORD_LOGIN`
+off does for the password routes; an existing link is kept in the database (so it comes back if
+you turn it back on) but stops counting as a way in and stops being removable through the API
+while it is off. Before switching it off, make sure every Google-only profile (no password, no
+passkey) has added one of those first, the same caution as switching off passwords.
+
 ## 5. Fitting it into an existing stack
 
 Running Kubernetes? Example manifests (Deployment, PVCs, Service, Gateway API route) are in

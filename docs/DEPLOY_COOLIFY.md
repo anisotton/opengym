@@ -50,6 +50,7 @@ deve estar ausente do `.env.example`, e nenhuma obrigatória deve faltar na tabe
 | `DATABASE_URL` | **não defina** — o próprio `docker-compose.yml` monta a partir dos três `POSTGRES_*` acima, apontando para o serviço `db` | — |
 | `MAIL_PROVIDER` | deixe **sem definir** por enquanto (ver "Sem dados reais" acima) — sem provedor, e-mails de confirmação/recuperação vão só para o log do container; o Anderson decide o provedor de produção depois | Não |
 | `MAIL_API_KEY` / `MAIL_FROM` | só quando `MAIL_PROVIDER` for ligado — ver `docs/SELF_HOSTING.md` ("Verificação de e-mail") | `MAIL_API_KEY` é segredo |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | deixe **sem definir** por enquanto — ver "Entrar com Google" na seção 3 abaixo para quando o Anderson decidir ligar | `GOOGLE_CLIENT_SECRET` é segredo |
 | `STRIPE_API_KEY` | chave **restrita** (`rk_...`) do Dashboard Stripe — **sandbox primeiro** (Developers → API keys, modo de teste) | Segredo |
 | `STRIPE_WEBHOOK_SECRET` | gerado ao criar o endpoint de webhook no passo 4 | Segredo |
 | `STRIPE_PRICE_MONTHLY` / `STRIPE_PRICE_QUARTERLY` / `STRIPE_PRICE_YEARLY` / `STRIPE_PRICE_INTRO` | saída de `cd api && STRIPE_API_KEY=rk_... npm run stripe:setup` contra a conta sandbox (ver `docs/SELF_HOSTING.md` §7) | Não (são ids de Price, públicos) |
@@ -61,8 +62,9 @@ Variáveis que existem no `.env.example` mas **não entram aqui por enquanto**: 
 (opcional, usa o padrão derivado de `ORIGIN`), `DEFAULT_LANG` (opcional, deixe a app detectar o
 idioma do navegador), `AUDIT_*` (fica nos padrões — log ligado, sem IP), `SESSION_DAYS` (fica no
 padrão de 90), `MEDIA_*` (ficam nos padrões do upload de fotos/vídeos de exercícios próprios),
-`PROGRAM_*` (ficam nos padrões do catálogo de programas), `HEVY_API_KEY` (uso de desenvolvedor,
-nunca em produção).
+`PROGRAM_*` (ficam nos padrões do catálogo de programas), `GOOGLE_REDIRECT_URI` (opcional — só
+precisa de valor próprio se a API responder num endereço público diferente de `APP_URL`, o que não
+é o caso aqui), `HEVY_API_KEY` (uso de desenvolvedor, nunca em produção).
 
 ## 3. Domínio e HTTPS
 
@@ -74,6 +76,23 @@ nunca em produção).
 3. **Passkeys só funcionam com o `RP_ID` igual ao hostname exato do navegador.** Se o domínio
    mudar depois, toda passkey já registrada para de funcionar — contas teriam que se cadastrar
    de novo. Por isso, confirme `fit.brilhart.com.br` antes de qualquer cadastro de teste real.
+
+### Entrar com Google (quando for ligar)
+
+Fora do escopo do primeiro deploy (tabela da seção 2 deixa `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+sem definir), mas o domínio real já estar decidido aqui (`fit.brilhart.com.br`) é o que faz essa
+etapa valer a pena documentar agora, não depois:
+
+1. No [Google Cloud Console](https://console.cloud.google.com/apis/credentials), crie um cliente
+   OAuth do tipo **Web application**.
+2. **Redirect URI autorizado**: `https://fit.brilhart.com.br/api/auth/google/callback` — exatamente
+   esse domínio, sem variação. **O Google só aceita um redirect URI em domínio de TLD público ou
+   em `localhost` literal** — nunca em `.lyra`, `.local`, IP nu ou certificado autoassinado; por
+   isso este passo não pode ser testado em ambiente interno Lyra, só contra o domínio real depois
+   do DNS e do certificado da seção 3 já estarem no ar.
+3. Copie o client id e o client secret para `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` no Coolify e
+   redeploy. Detalhes de comportamento (o que muda nas telas, a regra do último jeito de entrar, a
+   reautenticação para uma conta só-Google) estão em `docs/SELF_HOSTING.md` ("Sign in with Google").
 
 ## 4. Webhook da Stripe
 

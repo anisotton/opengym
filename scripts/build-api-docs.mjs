@@ -126,6 +126,7 @@ const TAGS = {
   password: { title: 'Password', side: 'Optional name &amp; password (PASSWORD_LOGIN)' },
   passkeys: { title: 'Passkeys', side: 'More passkeys &amp; device links' },
   email: { title: 'E-mail', side: 'Verified e-mail &amp; recovery' },
+  google: { title: 'Google', side: 'Sign in with Google (OpenID Connect)' },
   data: { title: 'Data', side: 'State sync' },
   push: { title: 'Push', side: 'Notifications &amp; rest timer' },
   activity: { title: 'Activity', side: 'Live presence' },

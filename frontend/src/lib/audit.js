@@ -102,6 +102,15 @@ const LABELS = {
   // Stripe billing (ISO-1393): `msg` carries the plan name. No chip of its own, same as media —
   // these rows show under All.
   'billing.checkout': 'Started a Stripe checkout',
+  // "Sign in with Google" (ISO-1597). `ok`'s `msg` carries the proof kind ('reauth') or, for a
+  // pending signup with no account yet, a masked address; `refused`/`fail` carry a reason code.
+  'auth.google.start': 'Started linking a Google account',
+  'auth.google.ok': 'Signed in with Google',
+  'auth.google.link': 'Linked a Google account',
+  'auth.google.signup': 'Created a profile with Google',
+  'auth.google.refused': 'Signing in with Google was refused',
+  'auth.google.fail': 'Signing in with Google failed',
+  'auth.google.unlink': 'Unlinked a Google account',
   // Teacher/student roles, the link between them and workout assignments (ISO-1594/ISO-1609).
   // `teacher.student.view` is logged every time, not just on refusal — it is access to another
   // person's training data, same reasoning as any other personal-data read worth a trail.
@@ -154,6 +163,14 @@ const REASONS = {
   // What a `media.throttled` pause was for.
   'upload': 'photo and video uploads',
   'sweep': 'clearing unused photos and videos',
+  // "Sign in with Google" (ISO-1597).
+  'disabled': 'the account is disabled',
+  'cancelled': 'they cancelled on Google’s side',
+  'already-linked': 'that Google account is already linked to a different profile',
+  'email-unverified': 'the e-mail matches a profile that has not confirmed it yet',
+  'reauth': 'confirmed with a fresh Google sign-in',
+  'reauth-mismatch': 'confirmed with a different Google account than the one linked',
+  'google-proof-invalid': 'the Google confirmation was missing, expired or already used',
   // teacher.link.end's reason, and teacher.denied's one uniform refusal (ISO-1609).
   'by-student': 'the student unlinked',
   'by-teacher': 'the teacher removed the student',
@@ -169,7 +186,9 @@ const ACTS = {
   'passkey-add': 'adding a passkey',
   'passkey-remove': 'removing a passkey',
   'device-link': 'making a one-time code for another device',
-  'account-delete': 'deleting the account'
+  'account-delete': 'deleting the account',
+  'google-link': 'linking a Google account',
+  'google-remove': 'unlinking Google'
 }
 export const auditAct = act => ACTS[act] || (act ? String(act) : '')
 

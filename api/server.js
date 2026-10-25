@@ -27,6 +27,7 @@ import {
 } from './password.js';
 import { createBackoff, createWindow } from './rate-limit.js';
 import { MAX_PASSKEYS } from './passkeys-store.js';
+import * as oauthGoogle from './oauth-google.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE, sniffMedia } from './media.js';
 import { connectAndMigrate, withTransaction } from './db.js';
 import {
@@ -40,6 +41,8 @@ import {
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
   removePasskey, touchPasskeyUse, upsertPasskey,
+  insertOAuthIdentity, findOAuthIdentityBySubject, findOAuthIdentityByUser, touchOAuthIdentityUse,
+  removeOAuthIdentityUnlessLast,
   createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup,
   listPrograms, getProgram, listProgramEvents, createProgram, updateProgram, trashProgram,
   restoreProgram, purgeProgram, purgeExpiredPrograms, setProgramCover, clearProgramCover,
@@ -117,6 +120,17 @@ const ALLOW_GUEST = !/^(0|false|no|off)$/i.test(process.env.ALLOW_GUEST || '');
 // every account that opts in, so an instance has to ask for it. While it is off every password
 // route answers 404 and the app shows none of it; hashes already stored stay where they are.
 const PASSWORD_LOGIN = /^(1|true|yes|on)$/i.test(process.env.PASSWORD_LOGIN || '');
+// "Sign in with Google" (ISO-1597). Both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required —
+// with either missing, every /api/auth/google/* and /api/register/google route is absent (404,
+// the googleRoutes spread below never happens) and GET /api/config answers exactly as it did
+// before this feature existed. GOOGLE_REDIRECT_URI is only for an instance whose public API
+// address differs from APP_URL (reached through a different hostname than the app itself); the
+// default has to match whatever is registered as the OAuth client's redirect URI in Google Cloud
+// Console, or Google itself refuses the request before any of this code runs.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `${APP_URL}/api/auth/google/callback`;
+const GOOGLE_LOGIN = !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 // The language the sign-in screen, and every profile that never picked one, starts in (#303) —
 // for an instance whose people share a language. Only a tag's shape is checked here; the app
 // matches it against the languages it has and ignores one it does not know. Unset, it is left
@@ -483,6 +497,17 @@ function verifySig(token) {
   } catch { return null; }
   return payload;
 }
+// Structured signed cookies for the Google OAuth flow (ISO-1597) — the state/nonce/PKCE verifier
+// a GET /api/auth/google/start hands back to itself via the browser, and the pending-signup
+// ticket a callback with no matching account hands to POST /api/register/google. Same HMAC as a
+// session cookie, over a JSON payload instead of the colon-joined session string, since these
+// carry a handful of fields of varying shape rather than one fixed tuple.
+function signJSON(obj) { return sign(Buffer.from(JSON.stringify(obj)).toString('base64url')); }
+function verifyJSON(token) {
+  const payload = verifySig(token);
+  if (!payload) return null;
+  try { return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { return null; }
+}
 // Session payload is `<uid>:<expiry>:<version>[:<sessionId>]`. `version` is the user's `sv`
 // counter — bumping it (POST /api/logout/all) still invalidates every cookie for the account at
 // once, the way it always did. `sessionId` (ISO-1403) is a `sessions` row, for POST /api/logout to
@@ -518,6 +543,15 @@ function cookieValues(req, name) {
     if (c.slice(0, i).trim() === name) out.push(c.slice(i + 1).trim());
   }
   return out;
+}
+// One specific cookie's value, refusing two different ones under the same name the same way
+// cookieToken (the session cookie) does — nobody but this server ever sets gauth_oauth or
+// gauth_signup, so two different values under that name means someone else tried to.
+function singleCookie(req, name) {
+  const vals = cookieValues(req, name);
+  if (!vals.length) return null;
+  if (vals.some(v => v !== vals[0])) return null;
+  return vals[0];
 }
 function cookieToken(req) {
   for (const name of (COOKIE === LEGACY_COOKIE ? [COOKIE] : [COOKIE, LEGACY_COOKIE])) {
@@ -653,6 +687,16 @@ const CSRF_EXEMPT = new Set([
   // navigator.sendBeacon to this same page's own origin (lib/api.js beacon(); MOBILE never
   // calls it), so Sec-Fetch-Site: same-origin already clears it below — exempting it too would
   // let a cross-site page spam the audit log for free, for no caller that actually needs it.
+  //
+  // GET /api/auth/google/start and GET /api/auth/google/callback (ISO-1597) need no entry here
+  // at all: csrfOk already answers every GET true, before this set is even consulted — which is
+  // exactly right for a callback that is itself a cross-site GET navigation coming back from
+  // accounts.google.com. Its own `state` parameter, checked against the signed cookie
+  // GET /api/auth/google/start set, is this flow's actual CSRF defense. POST /api/register/google
+  // and DELETE /api/account/google are deliberately NOT here, same reasoning as the password
+  // routes above: register/google is how an account with a chosen password-equivalent (the
+  // Google identity itself) comes to exist, so an exempt POST would be a login-CSRF hole; unlink
+  // acts on the caller's own session the same as every other DELETE /api/account/*.
 ]);
 const originsMatch = (a, b) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
 function csrfOk(req, key) {
@@ -713,6 +757,27 @@ function makePairCode() {
   return code;
 }
 setInterval(() => { for (const [k, v] of pairings) if (v.exp < Date.now()) pairings.delete(k); }, 60000).unref();
+
+// Google "Confirm with Google" (intent=reauth, ISO-1597 addendum): proveOwner's third proof, for
+// an account that only has a Google identity and so cannot confirm anything with a passkey or a
+// password. A successful reauth callback mints one of these, bound to the account and to the
+// exact session that started it (sid — or, for a pre-ISO-1403 cookie with none, no session row to
+// tie it to, same fallback sessionOf's own revocation check uses); proveOwner below redeems it
+// once, for whichever action the caller was in the middle of. 5 minutes, same ceremony-TTL
+// reasoning as the WebAuthn challenge store above.
+const reauthProofs = new Map(); // token -> { uid, sid, exp }
+function putReauthProof(uid, sid) {
+  const token = crypto.randomBytes(24).toString('base64url');
+  reauthProofs.set(token, { uid, sid: sid || null, exp: Date.now() + 5 * 60000 });
+  return token;
+}
+function takeReauthProof(token) {
+  const p = reauthProofs.get(token);
+  reauthProofs.delete(token); // single-use regardless of outcome
+  if (!p || p.exp < Date.now()) return null;
+  return p;
+}
+setInterval(() => { for (const [k, v] of reauthProofs) if (v.exp < Date.now()) reauthProofs.delete(k); }, 60000).unref();
 
 /* ---------- helpers ---------- */
 function json(res, code, obj, extraHeaders) {
@@ -1007,6 +1072,17 @@ const THROTTLED = {
   'POST /api/client-event': null,
   // Accepting the current terms (ISO-1390): nothing to guess, so only the shared burst budget.
   'POST /api/account/terms/accept': null,
+  // Google sign-in (ISO-1597). The callback is where a forged `state`/`code` or a tampered ID
+  // token would be guessed at, so it gets its own `kind`, struck on each such failure
+  // (strikeAddress below) exactly like a wrong password or device-link code; the start routes
+  // (GET, and the proof-gated POST that mints the same cookie for a Settings-initiated link) have
+  // nothing to guess, only the shared burst budget. register/google's ticket lives in a signed,
+  // HttpOnly cookie, not something a caller can present in bulk, but repeated attempts at a birth
+  // date/Terms combination that keeps missing are still worth its own pause.
+  'GET /api/auth/google/start': null, 'POST /api/account/google/start': null,
+  'GET /api/auth/google/callback': 'google',
+  'POST /api/register/google': 'google-signup',
+  'DELETE /api/account/google': null,
   // A teacher invite code is 60 random bits, same alphabet as a device link — wrong guesses share
   // that pause, counted per address against both the preview and the accept (ISO-1609).
   'POST /api/teacher-invite/preview': 'teacher-invite', 'POST /api/teacher-invite/accept': 'teacher-invite'
@@ -1303,6 +1379,20 @@ async function proveOwner(req, res, user, body, act) {
     json(res, 403, { error: 'the passkey could not be verified', code: 'passkey' });
     return null;
   }
+  // The third proof (ISO-1597 addendum): a one-time token GET /api/auth/google/callback minted
+  // after an intent=reauth round trip confirmed the same Google identity already linked to this
+  // account. Bound to the account *and* the exact session that started the reauth (sid) — a proof
+  // made for one browser tab must not confirm an action typed into a different, stolen session.
+  if (typeof body.googleProof === 'string' && body.googleProof) {
+    const s = await sessionOf(req);
+    const p = takeReauthProof(body.googleProof);
+    if (!p || !s || p.uid !== user.id || p.sid !== s.sid) {
+      audit(req, 'auth.proof.fail', { ok: false, user, msg: 'google-proof-invalid', act });
+      json(res, 403, { error: 'reauthenticate with Google first', code: 'google-proof-invalid' });
+      return null;
+    }
+    return 'google';
+  }
   if (!passwordWayIn(user)) {
     json(res, 403, { error: 'confirm with your passkey first', code: 'passkey-required' });
     return null;
@@ -1524,17 +1614,18 @@ const passwordRoutes = {
     const body = await readBody(req);
     const lastWayIn = () => json(res, 409, { error: 'the password is the only way into this profile', code: 'last-way-in' });
     if (!hasPassword(user)) return json(res, 200, { ok: true });
-    if (!(await passkeyCount(user))) return lastWayIn();
+    if (!(await passkeyCount(user)) && !(await hasGoogle(user))) return lastWayIn();
     const proof = await proveOwner(req, res, user, body, 'password-remove');
     if (!proof) return;
-    // Everything above awaited: the session may have ended, and the profile's last passkey may
-    // have been removed by a request that ran alongside this one. sessionStillValid re-checks the
-    // session itself; removePasswordUnlessLast re-checks (and acts on) the password/passkey count
-    // atomically, under the same per-account lock a concurrent passkey removal takes (ISO-1592) —
-    // the two checks above are only a cheap pre-proof filter, not the real decision.
+    // Everything above awaited: the session may have ended, and the profile's last passkey (or
+    // its Google identity) may have been removed by a request that ran alongside this one.
+    // sessionStillValid re-checks the session itself; removePasswordUnlessLast re-checks (and acts
+    // on) the password/passkey/Google count atomically, under the same per-account lock a
+    // concurrent passkey or Google removal takes (ISO-1592, extended ISO-1597) — the two checks
+    // above are only a cheap pre-proof filter, not the real decision.
     const fresh = await sessionStillValid(req, user);
     if (!fresh) return json(res, 401, { error: 'not signed in' });
-    const r = await removePasswordUnlessLast(pool, fresh.id);
+    const r = await removePasswordUnlessLast(pool, fresh.id, GOOGLE_LOGIN);
     if (r.error) return lastWayIn();
     audit(req, 'auth.password.remove', { user: fresh });
     json(res, 200, { ok: true });
@@ -1627,11 +1718,19 @@ const passwordRoutes = {
 // Sessions are not tied to the passkey that opened them — a session is `uid:expiry:version`,
 // nothing more — so removing a passkey stops it signing in again but does not end a session it
 // already opened. "Sign out everywhere" does that, and Settings says so where a passkey is removed.
+// Whether GOOGLE_LOGIN is on and this account currently has a linked Google identity — the
+// Google-counts-as-a-way-in half of passwordWayIn's own rule (ISO-1597): a server setting
+// (GOOGLE_LOGIN) the caller may read from before any await, account data (the identity row) read
+// fresh at the call site, same split passwordWayIn/hasLivePassword keep.
+async function hasGoogle(user) {
+  return GOOGLE_LOGIN && !!(await findOAuthIdentityByUser(pool, 'google', user.id));
+}
 const passkeyState = async u => {
   const passkeys = await listPasskeys(pool, u.id);
   // `password`: whether the password can confirm an addition or a removal (proveOwner) — only
   // while password sign-in is on. `lastWayIn`: whether removing any one passkey would be refused.
-  return { passkeys, password: passwordWayIn(u), lastWayIn: passkeys.length + (passwordWayIn(u) ? 1 : 0) <= 1 };
+  const otherWayIn = passwordWayIn(u) || await hasGoogle(u);
+  return { passkeys, password: passwordWayIn(u), lastWayIn: passkeys.length + (otherWayIn ? 1 : 0) <= 1 };
 };
 const LIMIT = { error: `a profile can have at most ${MAX_PASSKEYS} passkeys`, code: 'passkey-limit' };
 const LINK_INVALID = { error: 'that code is wrong, used or expired', code: 'link-invalid' };
@@ -1755,13 +1854,14 @@ const passkeyRoutes = {
     const id = new URL(req.url, 'http://x').searchParams.get('id') || '';
     const body = await readBody(req);
     const refuse = r => json(res, r.code === 'last-way-in' ? 409 : 404, { error: r.error, code: r.code });
-    const refused = await passkeyRemovalRefused(pool, user.id, id, passwordWayIn(user) ? 1 : 0);
+    const otherWays = (passwordWayIn(user) ? 1 : 0) + (await hasGoogle(user) ? 1 : 0);
+    const refused = await passkeyRemovalRefused(pool, user.id, id, otherWays);
     if (refused) return refuse(refused);
     const proof = await proveOwner(req, res, user, body, 'passkey-remove');
     if (!proof) return;
     const fresh = await sessionStillValid(req, user);
     if (!fresh) return notSignedIn(res);
-    const r = await removePasskey(pool, fresh.id, id, PASSWORD_LOGIN);
+    const r = await removePasskey(pool, fresh.id, id, PASSWORD_LOGIN, GOOGLE_LOGIN);
     if (r.error) return refuse(r);
     await dropDeviceLinks(pool, fresh.id);
     audit(req, 'auth.passkey.remove', { user: fresh, msg: r.row.name || null });
@@ -2078,6 +2178,361 @@ const emailRoutes = {
     audit(req, first ? 'auth.email.set' : 'auth.email.change', { user, msg: proof + ' · ' + maskEmail(email) });
     await issueVerification(user);
     json(res, 200, { ok: true, email });
+  }
+};
+
+/* ---------- "Sign in with Google" (OpenID Connect, ISO-1597) ----------
+ * Authorization code + PKCE (S256), `state` and `nonce` — oauth-google.js (discovery, JWKS
+ * caching, ID token verification) holds the OIDC mechanics; everything account-shaped is here,
+ * same split as password.js/device-link.js keep for their own flows.
+ *
+ * Two signed, HttpOnly cookies, path-scoped so neither is ever confused with the session cookie:
+ *   gauth_oauth   state/nonce/PKCE verifier/intent/uid, 10 min, set by whichever /start mints it,
+ *                 read once by the callback and always cleared there (success or failure).
+ *   gauth_signup  the pending-signup ticket (sub/email/name), 15 min, set by the callback when no
+ *                 account matches, read once by POST /api/register/google. Never the ID token
+ *                 itself — exactly what the issue asks for ("não vaze o ID token").
+ *
+ * `intent` decides who may ask and what the callback does with a verified identity:
+ *   login/signup  no session needed; identical handling either way (the only difference is which
+ *                 screen the person started from) — an existing, Google-linked account signs in;
+ *                 one found by e-mail links and signs in, but only if that e-mail is already
+ *                 *verified* on this account (ISO-1397) — the whole point being that a stranger
+ *                 who merely shares an e-mail string with a real account can never ride in on it
+ *                 by owning a Google account with the same address but unverified "proof";
+ *                 nobody matches → a signup ticket.
+ *   link          GOOGLE_OAUTH_COOKIE minted by POST /api/account/google/start (not the plain GET
+ *                 start below), which asks proveOwner's usual proof — the same one adding a
+ *                 passkey asks — before it ever redirects. Links to the session's own account
+ *                 regardless of whether the Google e-mail matches anything about it.
+ *   reauth        requires a session and an existing Google link; confirms the *same* identity is
+ *                 behind the wheel right now and mints proveOwner's third proof (above) — the
+ *                 only way an account with no password and no passkey (one created by #signup
+ *                 below) can ever confirm anything of its own.
+ *
+ * Result codes in `#/entrar?google=<code>` (login/signup) or `#/configuracoes?google=<code>`
+ * (link/reauth) — the exact set closed in ISO-1595's `ux` document §4: `ok`, `linked`,
+ * `email-unverified`, `signup` (ticket pending — see gauth_signup above), `disabled`,
+ * `already-linked` (link only), `cancelled` (Google's own `error=access_denied`), `reauth-ok`
+ * (reauth only, carries `proof`), `reauth-mismatch` (reauth only), and `error` for anything else —
+ * a network failure, a malformed response, an id-token that fails any one of its checks. */
+const GOOGLE_OAUTH_COOKIE = 'gauth_oauth';
+const GOOGLE_SIGNUP_COOKIE = 'gauth_signup';
+const GOOGLE_OAUTH_CLEAR = `${GOOGLE_OAUTH_COOKIE}=; Path=/api/auth/google; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
+const GOOGLE_SIGNUP_CLEAR = `${GOOGLE_SIGNUP_COOKIE}=; Path=/api/register/google; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
+
+// The HashRouter path a Google round trip returns to, with its result as a query string after
+// the hash (`#/entrar?google=ok`) — same idea as verifyLink/recoverLink, just with a route and
+// params that vary per result instead of carrying a single mailed token.
+function hashRedirect(routePath, params = {}) {
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== '')).toString();
+  return `${APP_URL}/#${routePath}${qs ? '?' + qs : ''}`;
+}
+
+// Everything both /start routes need: a discovery round trip (cached by oauth-google.js after
+// the first), a fresh PKCE/state/nonce triple, and the signed cookie the callback will check
+// itself against. `uid` is null for login/signup, the session's own id for link/reauth.
+async function googleAuthRequest(intent, uid) {
+  const discovery = await oauthGoogle.discover();
+  const { verifier, challenge } = oauthGoogle.makePkce();
+  const state = oauthGoogle.makeState();
+  const nonce = oauthGoogle.makeNonce();
+  const cookie = `${GOOGLE_OAUTH_COOKIE}=${signJSON({ state, nonce, verifier, intent, uid, iat: Date.now() })}; Path=/api/auth/google; Max-Age=600; HttpOnly;${SECURE} SameSite=Lax`;
+  const authUrl = new URL(discovery.authorization_endpoint);
+  authUrl.search = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID, redirect_uri: GOOGLE_REDIRECT_URI, response_type: 'code',
+    scope: 'openid email profile', state, nonce,
+    code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account'
+  }).toString();
+  return { url: authUrl.toString(), cookie };
+}
+const googleUnavailable = res => json(res, 503, { error: 'google is unavailable right now' });
+
+const googleRoutes = {
+  // No session for login/signup. reauth needs one, and an existing link to reauthenticate —
+  // there would be nothing for Google to confirm against otherwise. link is deliberately NOT
+  // handled here — see POST /api/account/google/start below for why it needs a POST.
+  'GET /api/auth/google/start': async (req, res) => {
+    const intent = new URL(req.url, 'http://x').searchParams.get('intent');
+    if (!['login', 'signup', 'reauth'].includes(intent)) return json(res, 400, { error: 'invalid intent' });
+    let uid = null;
+    if (intent === 'reauth') {
+      const user = await readSession(req);
+      if (!user) return notSignedIn(res);
+      if (!(await findOAuthIdentityByUser(pool, 'google', user.id))) {
+        return json(res, 400, { error: 'no Google account linked yet', code: 'not-linked' });
+      }
+      uid = user.id;
+    }
+    let built;
+    try { built = await googleAuthRequest(intent, uid); }
+    catch (e) { console.error('google: discovery failed', e.message); return googleUnavailable(res); }
+    res.writeHead(302, { Location: built.url, 'Set-Cookie': built.cookie });
+    res.end();
+  },
+
+  // Linking from Settings asks the same proof adding a passkey does (proveOwner) — and asks it
+  // here, before ever redirecting, which is the one thing a bare GET (no body to carry a password
+  // or a passkey assertion in) cannot do itself. The browser still ends up on a full-page redirect
+  // to Google exactly like the GET routes above — this just hands back the URL to navigate to,
+  // rather than sending the 302 itself, so the proof can be checked first.
+  'POST /api/account/google/start': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return notSignedIn(res);
+    const body = await readBody(req);
+    if (await findOAuthIdentityByUser(pool, 'google', user.id)) {
+      return json(res, 409, { error: 'this profile is already linked to a Google account', code: 'already-linked' });
+    }
+    const proof = await proveOwner(req, res, user, body, 'google-link');
+    if (!proof) return;
+    // Awaited: a sign-out everywhere, a disable or an admin reset may have ended this session.
+    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
+    let built;
+    try { built = await googleAuthRequest('link', user.id); }
+    catch (e) { console.error('google: discovery failed', e.message); return googleUnavailable(res); }
+    audit(req, 'auth.google.start', { user, msg: proof });
+    json(res, 200, { url: built.url }, { 'Set-Cookie': built.cookie });
+  },
+
+  'GET /api/auth/google/callback': async (req, res) => {
+    const q = new URL(req.url, 'http://x').searchParams;
+    const cookieRaw = singleCookie(req, GOOGLE_OAUTH_COOKIE);
+    const cookie = cookieRaw ? verifyJSON(cookieRaw) : null;
+    const expired = !cookie || Date.now() - (cookie.iat || 0) > 10 * 60000;
+    const base = cookie && (cookie.intent === 'link' || cookie.intent === 'reauth') ? '/configuracoes' : '/entrar';
+    // Every path out of this handler clears the state cookie — it is good for one round trip,
+    // success or failure, never replayed.
+    const done = (code, params = {}, extraCookies = []) => {
+      res.writeHead(302, { Location: hashRedirect(base, { google: code, ...params }), 'Set-Cookie': [GOOGLE_OAUTH_CLEAR, ...extraCookies] });
+      res.end();
+    };
+    // A wrong state, a code that fails to exchange, or an id-token that fails any one of its
+    // checks are all the same kind of thing this flow's own throttle (THROTTLED's 'google' kind)
+    // exists for: a guess at forging the round trip. `reason` is never shown to anyone — only
+    // audited — so it is free to be specific.
+    const fail = (reason, code = 'error') => {
+      strikeAddress(req, 'google');
+      audit(req, 'auth.google.fail', { ok: false, uid: cookie?.uid || null, msg: reason });
+      done(code);
+    };
+
+    if (q.get('error')) {
+      if (q.get('error') === 'access_denied') {
+        // Not a failure — a real "never mind", the same philosophy webauthnOutcome already
+        // applies to a dismissed passkey prompt (ISO-1595 §4.6). Not struck, not `auth.google.fail`.
+        audit(req, 'auth.google.refused', { ok: false, uid: cookie?.uid || null, msg: 'cancelled' });
+        return done('cancelled');
+      }
+      return fail('provider:' + text(q.get('error')).slice(0, 40));
+    }
+    if (!cookie || expired) return fail('state-cookie-invalid');
+    // Constant-time: a byte-by-byte early-exit comparison would let an attacker learn the state
+    // one byte at a time from response timing, same reasoning as verifySig's HMAC check above.
+    const gotState = Buffer.from(text(q.get('state')));
+    const wantState = Buffer.from(String(cookie.state || ''));
+    const stateOk = gotState.length === wantState.length && crypto.timingSafeEqual(gotState, wantState);
+    if (!stateOk) return fail('state-mismatch');
+    if (addressPaused(req, res, 'google')) return;
+    const code = text(q.get('code'));
+    if (!code) return fail('missing-code');
+
+    let discovery, tokenSet;
+    try {
+      discovery = await oauthGoogle.discover();
+      tokenSet = await oauthGoogle.exchangeCode({
+        tokenEndpoint: discovery.token_endpoint, code, redirectUri: GOOGLE_REDIRECT_URI,
+        clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET, codeVerifier: cookie.verifier
+      });
+    } catch (e) {
+      return fail('token-exchange:' + e.message.slice(0, 60));
+    }
+
+    let claims;
+    try {
+      claims = await oauthGoogle.verifyGoogleIdToken(tokenSet.id_token, {
+        jwksUri: discovery.jwks_uri, clientId: GOOGLE_CLIENT_ID, nonce: cookie.nonce
+      });
+    } catch (e) {
+      return fail('id-token:' + (e.reason || 'invalid'));
+    }
+    // users.email is stored through normalizeEmail (lower-cased via nameKey); fold the Google
+    // claim through the same function once, here, so every lookup/insert/ticket below compares
+    // and stores the same form — a Workspace account returning `Ana.Silva@empresa.com.br` must
+    // still find the account that verified `ana.silva@empresa.com.br`, not open a second one.
+    claims.email = normalizeEmail(claims.email);
+    if (!claims.email) return fail('id-token:malformed');
+
+    if (cookie.intent === 'reauth') {
+      const s = await sessionOf(req);
+      if (!s || s.user.id !== cookie.uid) return fail('session-lost');
+      const identity = await findOAuthIdentityByUser(pool, 'google', cookie.uid);
+      if (!identity || identity.subject !== claims.sub) {
+        audit(req, 'auth.google.refused', { ok: false, user: s.user, msg: 'reauth-mismatch' });
+        return done('reauth-mismatch');
+      }
+      await touchOAuthIdentityUse(pool, 'google', claims.sub);
+      const proof = putReauthProof(s.user.id, s.sid);
+      audit(req, 'auth.google.ok', { user: s.user, msg: 'reauth' });
+      return done('reauth-ok', { proof });
+    }
+
+    if (cookie.intent === 'link') {
+      const user = await getUserById(pool, cookie.uid);
+      if (!user || user.disabled) return fail('session-lost');
+      const existing = await findOAuthIdentityBySubject(pool, 'google', claims.sub);
+      if (existing && existing.userId !== user.id) {
+        audit(req, 'auth.google.refused', { ok: false, user, msg: 'already-linked' });
+        return done('already-linked');
+      }
+      if (existing) { // already linked to this very account — an idempotent replay, not an error
+        await touchOAuthIdentityUse(pool, 'google', claims.sub);
+        return done('linked');
+      }
+      const added = await insertOAuthIdentity(pool, { provider: 'google', subject: claims.sub, userId: user.id, email: claims.email });
+      if (added.error) { // raced a concurrent link of this same Google account to someone else
+        audit(req, 'auth.google.refused', { ok: false, user, msg: 'already-linked' });
+        return done('already-linked');
+      }
+      audit(req, 'auth.google.link', { user, msg: maskEmail(claims.email) });
+      return done('linked');
+    }
+
+    // login or signup: identical handling either way — only `base` above (always /entrar for
+    // both) would ever have told them apart, and it doesn't need to.
+    const bySubject = await findOAuthIdentityBySubject(pool, 'google', claims.sub);
+    if (bySubject) {
+      const user = await getUserById(pool, bySubject.userId);
+      if (!user) return fail('user-missing');
+      if (user.disabled) {
+        audit(req, 'auth.google.refused', { ok: false, user, msg: 'disabled' });
+        return done('disabled');
+      }
+      await touchOAuthIdentityUse(pool, 'google', claims.sub);
+      audit(req, 'auth.google.ok', { user });
+      return done('ok', {}, await sessionCookie(user, req.headers['user-agent']));
+    }
+    // No identity yet — does the e-mail match an existing account? Only a *verified* one may be
+    // linked here: Google proved the e-mail is this person's, but if the Brilhart Fitness account
+    // using it has never confirmed that same address, trusting Google's word over it would let
+    // anyone who merely knows (or once owned) that address ride into someone else's profile —
+    // exactly the account-hijack ISO-1397's confirmation step exists to close.
+    const holder = (await getAllUsers(pool)).find(u => u.email === claims.email);
+    if (holder) {
+      if (holder.disabled) {
+        audit(req, 'auth.google.refused', { ok: false, user: holder, msg: 'disabled' });
+        return done('disabled');
+      }
+      if (!holder.emailVerifiedAt) {
+        audit(req, 'auth.google.refused', { ok: false, user: holder, msg: 'email-unverified' });
+        return done('email-unverified');
+      }
+      const added = await insertOAuthIdentity(pool, { provider: 'google', subject: claims.sub, userId: holder.id, email: claims.email });
+      if (added.error) return fail('link-race'); // raced a concurrent link/signup for this same Google account
+      audit(req, 'auth.google.link', { user: holder, msg: maskEmail(claims.email) });
+      return done('linked', {}, await sessionCookie(holder, req.headers['user-agent']));
+    }
+    // Nobody — a pending signup, finished by POST /api/register/google within 15 minutes. The
+    // ticket is the ID token's claims the account actually needs, signed into its own cookie —
+    // never the ID token itself, which this never exposes past this one request.
+    const signupCookie = `${GOOGLE_SIGNUP_COOKIE}=${signJSON({ sub: claims.sub, email: claims.email, name: claims.name, iat: Date.now() })}; Path=/api/register/google; Max-Age=900; HttpOnly;${SECURE} SameSite=Lax`;
+    audit(req, 'auth.google.ok', { msg: 'pending-signup · ' + maskEmail(claims.email) });
+    return done('signup', { name: claims.name, email: claims.email }, [signupCookie]);
+  },
+
+  // Finishes the signup the callback above started: Google already proved the e-mail, so this
+  // never mails a confirmation — email_verified_at is set in the same breath the row is created.
+  // Same Terms/birth-date/invite rules as every other signup route, same single transaction
+  // shape as POST /api/register/password (createUser, the invite, the identity all commit or
+  // fail together) — just reading its identity from the ticket cookie instead of a WebAuthn
+  // challenge or a typed password.
+  'POST /api/register/google': async (req, res) => {
+    const body = await readBody(req);
+    const ticketRaw = singleCookie(req, GOOGLE_SIGNUP_COOKIE);
+    const ticket = ticketRaw ? verifyJSON(ticketRaw) : null;
+    const invalid = () => json(res, 400, { error: 'that Google sign-up has expired — start again', code: 'ticket-invalid' });
+    if (!ticket || Date.now() - (ticket.iat || 0) > 15 * 60000) {
+      strikeAddress(req, 'google-signup');
+      return invalid();
+    }
+    const termsProblem = termsVersionProblem(body);
+    if (termsProblem) {
+      audit(req, 'auth.register.denied', { ok: false, msg: termsProblem.code });
+      return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    }
+    const birthProblem = birthDateProblem(body);
+    if (birthProblem) {
+      audit(req, 'auth.register.denied', { ok: false, msg: birthProblem.code });
+      return json(res, birthProblem.status, { error: birthProblem.error, code: birthProblem.code });
+    }
+    const birthDate = parseBirthDate(body.birthDate);
+    const name = (text(body.name).trim() || text(ticket.name).trim() || ticket.email.split('@')[0]).slice(0, 40);
+    if (!name) return json(res, 400, { error: 'name required', code: 'missing' });
+    const code = text(body.code).trim().toUpperCase();
+    if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
+    if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: 'invite-rejected' });
+      strikeAddress(req, 'signup');
+      return json(res, 403, { error: 'a valid invite code is required', code: 'invite' });
+    }
+    if (await nameTaken(name)) return json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
+    if (await emailTaken(ticket.email)) {
+      audit(req, 'auth.register.fail', { ok: false, name, msg: 'email-taken' });
+      return json(res, 409, EMAIL_ERRORS.taken);
+    }
+    const created = new Date().toISOString();
+    const user = {
+      id: crypto.randomBytes(12).toString('base64url'), name, created, email: ticket.email, birthDate,
+      termsAcceptedVersion: LEGAL_VERSION, termsAcceptedAt: created
+    };
+    if (INVITE_ONLY) user.invitedBy = code;
+    let added;
+    try {
+      await withTransaction(pool, async client => {
+        await createUser(client, user);
+        await markEmailVerified(client, user.id); // Google already proved this address
+        if (INVITE_ONLY && !(await consumeInvite(client, code, user.id))) throw new InviteRaceError();
+        added = await insertOAuthIdentity(client, { provider: 'google', subject: ticket.sub, userId: user.id, email: ticket.email });
+        if (added.error) throw new HttpError(409, added.error);
+      });
+    } catch (e) {
+      if (e instanceof InviteRaceError) {
+        audit(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
+        return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
+      }
+      if (e instanceof HttpError) {
+        audit(req, 'auth.register.fail', { ok: false, name, msg: added.code });
+        return json(res, e.status, { error: e.message, code: added.code });
+      }
+      if (e.code === '23505') { // unique_violation — the e-mail was taken in the gap above
+        audit(req, 'auth.register.fail', { ok: false, name, msg: 'email-taken' });
+        return json(res, 409, EMAIL_ERRORS.taken);
+      }
+      throw e;
+    }
+    audit(req, 'auth.google.signup', { user, msg: INVITE_ONLY ? code : null });
+    json(res, 200, { user: publicUser(user) }, {
+      'Set-Cookie': [...(await sessionCookie(user, req.headers['user-agent'])), GOOGLE_SIGNUP_CLEAR]
+    });
+  },
+
+  // Never the last way in, same rule as removing the password (DELETE /api/account/password) or
+  // a passkey — and the same proof as either of those: proveOwner now also accepts a fresh
+  // Google reauth (above) for an account with nothing else to confirm with.
+  'DELETE /api/account/google': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return notSignedIn(res);
+    const body = await readBody(req);
+    const lastWayIn = () => json(res, 409, { error: 'connecting with Google is the only way into this profile', code: 'last-way-in' });
+    if (!(await findOAuthIdentityByUser(pool, 'google', user.id))) return json(res, 200, { ok: true });
+    if ((await passkeyCount(user)) + (passwordWayIn(user) ? 1 : 0) < 1) return lastWayIn();
+    const proof = await proveOwner(req, res, user, body, 'google-remove');
+    if (!proof) return;
+    const fresh = await sessionStillValid(req, user);
+    if (!fresh) return notSignedIn(res);
+    const r = await removeOAuthIdentityUnlessLast(pool, fresh.id, 'google', PASSWORD_LOGIN);
+    if (r.error) return lastWayIn();
+    audit(req, 'auth.google.unlink', { user: fresh });
+    json(res, 200, { ok: true });
   }
 };
 
@@ -2411,6 +2866,9 @@ const routes = {
       legal_version: LEGAL_VERSION,
       // Only when on, so an instance without passwords answers exactly as it did before (#118).
       ...(PASSWORD_LOGIN ? { password_login: true } : {}),
+      // Only when both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set (ISO-1597) — otherwise
+      // every /api/auth/google/* route is absent (404) and this answers exactly as before.
+      ...(GOOGLE_LOGIN ? { google_login: true } : {}),
       // Public: the sign-in screen is the first thing that reads it.
       ...(DEFAULT_LANG ? { default_lang: DEFAULT_LANG } : {}),
       // Public like the two flags above: the caps are not a secret, and the absence of the
@@ -2448,6 +2906,13 @@ const routes = {
     if (!s) return json(res, 401, { error: 'not signed in' });
     const { user } = s;
     const renew = s.bearer && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
+    // ISO-1597: whether this profile has a linked Google identity, and since when — read
+    // regardless of whether GOOGLE_LOGIN is currently on, same as `email`/`termsVersion` below are
+    // always present: an instance that switches Google off again must not make a profile's own
+    // Settings screen forget it still has one (DELETE /api/account/google would 404 there too, by
+    // the same "the whole feature is absent" rule — nothing here promises it can be *removed*
+    // while off, only that Settings still shows it honestly).
+    const google = await findOAuthIdentityByUser(pool, 'google', user.id);
     json(res, 200, {
       user: publicUser(user),
       // ISO-1397/ISO-1596: what the app needs to show "confirm your e-mail" or ask for one at
@@ -2463,6 +2928,7 @@ const routes = {
       termsVersion: user.termsAcceptedVersion || null,
       termsAcceptedAt: user.termsAcceptedAt || null,
       needsTerms: user.termsAcceptedVersion !== LEGAL_VERSION,
+      google: google ? { email: google.email || null, linkedAt: google.created } : null,
       ...(renew ? { token: await makeSession(user, req.headers['user-agent']) } : {})
     });
   },
@@ -2749,6 +3215,11 @@ const routes = {
 
   // Always there: more passkeys and device links need nothing an instance has to switch on.
   ...passkeyRoutes,
+
+  // Absent entirely without both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (ISO-1597) — every
+  // /api/auth/google/*, /api/account/google/* and /api/register/google route a plain 404, same
+  // shape as PASSWORD_LOGIN above.
+  ...(GOOGLE_LOGIN ? googleRoutes : {}),
 
   // `rev` is the server's own count of writes to this profile (also stored inside the document as
   // `_rev`, so every other reader — reminder tick, admin, Coach, MCP — is unaffected). A client

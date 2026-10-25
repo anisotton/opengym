@@ -71,6 +71,12 @@ info:
     password of its own, and could otherwise sign a visitor into it (login CSRF).
     Neither are the device-link routes: a link is redeemed on the app's own origin,
     the only one a passkey can be created for.
+    `GET /api/auth/google/start` and `GET /api/auth/google/callback` need no exemption:
+    every GET is already allowed through, which is what lets the callback work at all
+    — it is itself a cross-site GET navigation coming back from Google. Its own `state`
+    parameter, checked against a signed cookie the start route set, is that flow's CSRF
+    defense. `POST /api/register/google` and `DELETE /api/account/google` are **not**
+    exempt, same login-CSRF reasoning as the password routes.
 
     ### Environment-dependent behavior
     - `INVITE_ONLY=1` — registration requires a valid invite code (minted by an admin).
@@ -84,6 +90,11 @@ info:
       log served by `GET /api/admin/audit`.
     - `PASSWORD_LOGIN=1` — adds the `password` routes and `password_login: true` in
       `GET /api/config`. Off by default.
+    - `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` together add the `google` routes and
+      `google_login: true` in `GET /api/config`; either missing, every one of them is a
+      404. `GOOGLE_REDIRECT_URI` (default `${APP_URL}/api/auth/google/callback`) is only
+      for an instance whose public API address differs from `APP_URL` — it has to match
+      the redirect URI registered on the Google OAuth client exactly.
     - `MAIL_PROVIDER` / `MAIL_API_KEY` / `MAIL_FROM` — the transactional e-mail driver (tag
       `email`). Without `MAIL_API_KEY` (every instance until configured, and every test) the
       confirmation and recovery mail is written to the API's own log instead of sent.
@@ -157,6 +168,11 @@ tags:
       as any other (tag `passkeys`). Independent of `PASSWORD_LOGIN` — this is the address
       every profile has, not the optional, never-mailed-to sign-in identifier that flag adds
       (tag `password`).
+  - name: google
+    description: >-
+      "Sign in with Google" (OpenID Connect) — login, signup, linking an existing profile
+      and unlinking. Every route here is a 404 unless the instance sets both
+      `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
   - name: data
     description: Per-user state sync (the whole app state as one JSON blob)
   - name: push
@@ -248,6 +264,10 @@ paths:
         caps are not a secret, and its absence is how the app knows this server does not
         store photos and videos at all.
 
+        `google_login` (tag `google`) is there, and true, only when the instance sets both
+        `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; its absence is how the app knows to
+        hide the "Sign in with Google" button entirely, the same shape as `password_login`.
+
         A caller with a valid session also gets a `coach` key: the block when the
         instance has the AI Coach switched on **and** a provider connected, and `null`
         when it has not. A caller with no session gets no key at all — the block names
@@ -306,6 +326,13 @@ paths:
                       Present (and true) only when the instance runs with
                       PASSWORD_LOGIN=1 — the client then offers name-and-password
                       sign-in next to passkeys.
+                  google_login:
+                    type: boolean
+                    const: true
+                    description: >-
+                      Present (and true) only when the instance sets both
+                      GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET — the client then offers
+                      "Sign in with Google" (tag `google`).
                   default_lang:
                     type: string
                     example: pt-BR
@@ -394,6 +421,12 @@ paths:
         `PASSWORD_LOGIN` included. `needsTerms` is true whenever the accepted version is not the
         one in force (`legal_version` in `GET /api/config`) — an account from before ISO-1390
         has accepted none, so it is true with both other fields `null`.
+
+        `google` (tag `google`) is always present too, regardless of `google_login`: `null`
+        for a profile with no linked Google identity, otherwise its e-mail and when it was
+        linked. An instance that switches Google off again still shows an existing link
+        honestly here — it just can no longer be removed or added through the (then 404)
+        `google` routes.
       responses:
         '200':
           description: A valid session.
@@ -409,6 +442,14 @@ paths:
                   termsVersion: { oneOf: [{ type: string }, { type: 'null' }], description: 'Always present. The Terms/Privacy version this account accepted; null if none.' }
                   termsAcceptedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }], description: 'Always present. When that version was accepted; null if never.' }
                   needsTerms: { type: boolean, description: 'Always present. True unless termsVersion is the version in force.' }
+                  google:
+                    description: 'Always present. null for a profile with no linked Google identity.'
+                    oneOf:
+                      - type: 'null'
+                      - type: object
+                        properties:
+                          email: { oneOf: [{ type: string }, { type: 'null' }] }
+                          linkedAt: { type: string, format: date-time }
                   token: { type: string, description: 'Bearer sessions past half their lifetime only — the renewed token.' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -1785,6 +1826,245 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "credential already registered", code: "credential-exists" }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/google/start:
+    get:
+      tags: [google]
+      operationId: googleAuthStart
+      summary: Begin a Google OAuth round trip (login, signup or reauth)
+      description: |
+        302s to Google's own authorization endpoint (discovered from
+        `https://accounts.google.com/.well-known/openid-configuration`), with a fresh PKCE
+        pair, `state` and `nonce`. Sets a signed, HttpOnly `gauth_oauth` cookie (path
+        `/api/auth/google`, 10 minutes) carrying all three plus `intent` and, for `reauth`,
+        the session's own user id — `GET /api/auth/google/callback` checks the request
+        against it.
+
+        `intent=login` and `intent=signup` need no session and behave identically — only
+        which screen the person started from differs, and the result always routes back to
+        `#/entrar`. `intent=reauth` needs a session **and** an existing linked Google
+        identity (400 `not-linked` otherwise); it is proveOwner's third proof (tag `google`,
+        `OwnerProof.googleProof`), for a profile with neither a password nor a passkey.
+
+        `intent=link` is **not** handled here — see `POST /api/account/google/start`, which
+        asks for proof before it ever redirects, something a bare GET cannot carry.
+      security: []
+      parameters:
+        - name: intent
+          in: query
+          required: true
+          schema: { type: string, enum: [login, signup, reauth] }
+      responses:
+        '302':
+          description: Redirect to Google's authorization endpoint.
+          headers:
+            Location: { schema: { type: string } }
+            Set-Cookie: { schema: { type: string }, description: The signed gauth_oauth state cookie. }
+        '400':
+          description: '`invalid intent`, or (reauth) `not-linked`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no Google account linked yet", code: "not-linked" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503':
+          description: Google's discovery document could not be fetched.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "google is unavailable right now" }
+
+  /api/account/google/start:
+    post:
+      tags: [google]
+      operationId: googleLinkStart
+      summary: Prove ownership, then begin the Google round trip to link this profile
+      description: |
+        The proof `POST /api/account/passkeys/options` asks before adding a passkey — a
+        passkey assertion (`cid` + `credential`) or the current password — asked here
+        instead of at a bare GET, which could not carry either. On success, returns the
+        same authorization URL `GET /api/auth/google/start` would redirect to and sets the
+        same signed `gauth_oauth` cookie (`intent` fixed to `link`); the client navigates
+        the whole page to it itself.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OwnerProof' }
+      responses:
+        '200':
+          description: The URL to navigate to.
+          headers:
+            Set-Cookie:
+              description: The signed gauth_oauth state cookie.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ProofRefused' }
+        '409':
+          description: This profile already has a linked Google identity.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "this profile is already linked to a Google account", code: "already-linked" }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503':
+          description: Google's discovery document could not be fetched.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "google is unavailable right now" }
+
+  /api/auth/google/callback:
+    get:
+      tags: [google]
+      operationId: googleAuthCallback
+      summary: Google's redirect back — verify the ID token and act on the result
+      description: |
+        Checks the `gauth_oauth` cookie and `state` (constant-time), exchanges `code` at
+        Google's token endpoint (with the PKCE verifier), and verifies the ID token itself:
+        RS256 signature against Google's own published JWKS (cached per
+        `Cache-Control: max-age`; an unknown `kid` gets one refetch), `iss`, `aud`/`azp`,
+        `exp`/`iat` within 5 minutes, the `nonce` from the cookie, and
+        `email_verified === true`. Always a 302 back into the app — never a JSON error —
+        carrying a result code in `google` after the hash (`#/entrar?google=ok` for
+        login/signup, `#/configuracoes?google=linked` for link/reauth):
+
+        | `google` | Meaning |
+        |---|---|
+        | `ok` | Existing account, already linked — signed in. |
+        | `linked` | Login/signup: a verified e-mail matched an unlinked account, now linked and signed in. Link: a new link was created. |
+        | `email-unverified` | Login/signup: the e-mail matches an account whose e-mail is not yet confirmed — refused, not linked (ISO-1397 anti-hijack rule). |
+        | `signup` | No account matches at all — a pending-signup ticket (`gauth_signup` cookie) was set; carries `name`/`email` to prefill. Finish with `POST /api/register/google`. |
+        | `disabled` | The matching account is disabled. |
+        | `already-linked` | Link only: this Google account is already linked to a *different* profile. |
+        | `cancelled` | Google returned `error=access_denied` — a real decline, not a failure; never audited or throttled as one. |
+        | `reauth-ok` | Reauth only: the linked identity matched; carries `proof`, for `OwnerProof.googleProof`. |
+        | `reauth-mismatch` | Reauth only: a different Google account confirmed than the one linked to this profile. |
+        | `error` | Anything else — a forged/expired state cookie, a token-exchange failure, an ID token that failed any check. |
+
+        Every path clears `gauth_oauth`; a successful `ok`/`linked` for login/signup also
+        sets the session cookie, same shape as `POST /api/login/verify`. Rate-limited (tag
+        `google`'s own throttle kind): a wrong `state`, a failed token exchange, or a failed
+        ID-token check each strike the caller's address.
+      security: []
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+        - name: error
+          in: query
+          schema: { type: string }
+          description: Set by Google itself, e.g. `access_denied`.
+      responses:
+        '302':
+          description: Always — back into the app, result in the `google` query parameter after the hash.
+          headers:
+            Location: { schema: { type: string } }
+            Set-Cookie:
+              schema: { type: string }
+              description: Clears gauth_oauth; sets the session cookie or gauth_signup on success.
+
+  /api/register/google:
+    post:
+      tags: [google]
+      operationId: registerGoogle
+      summary: Finish a Google signup (no existing account matched)
+      description: |
+        Reads the `gauth_signup` cookie `GET /api/auth/google/callback` set (15 minutes,
+        single-use — the `(provider, subject)` unique index that backs every Google link is
+        what actually enforces that, same as every other one-time claim in this API).
+        Google already proved the e-mail, so this never mails a confirmation —
+        `email_verified_at` is set the moment the row is. Same Terms-acceptance and
+        under-18 rules as `POST /api/register/password` (checked in the same order, before
+        any address- or invite-guess budget is spent), the same `INVITE_ONLY` gate, and the
+        same single transaction (the account, the invite and the Google identity commit or
+        fail together). **Not** CSRF-exempt — see *CSRF* above.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [birthDate, termsVersion]
+              properties:
+                birthDate: { type: string, format: date }
+                termsVersion: { type: string }
+                name: { type: string, maxLength: 40, description: "Defaults to the Google account's own name, then the e-mail's local part." }
+                code: { type: string, description: Invite code — required when INVITE_ONLY=1. }
+            example: { birthDate: "2000-01-01", termsVersion: "2026-10-18", name: "Ada" }
+      responses:
+        '200':
+          description: Account created and signed in.
+          headers:
+            Set-Cookie:
+              description: Session cookie; clears gauth_signup.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/SessionUser' }
+        '400':
+          description: >-
+            `ticket-invalid` (no/expired gauth_signup cookie), `missing` (no name could be
+            derived), `terms-required`, `terms-version-stale`, `birth-date-required`,
+            `birth-date-invalid`, or `underage`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "that Google sign-up has expired — start again", code: "ticket-invalid" }
+        '403':
+          description: '`invite` — missing or no-longer-valid invite code (INVITE_ONLY=1 only).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "a valid invite code is required", code: "invite" }
+        '409':
+          description: >-
+            `name-taken`, `email-taken`, or `already-linked` (this Google account was
+            linked elsewhere in the gap since the ticket was issued).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "another profile already signs in with this name", code: "name-taken" }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/account/google:
+    delete:
+      tags: [google]
+      operationId: unlinkAccountGoogle
+      summary: Remove this profile's linked Google identity
+      description: >-
+        Never the last way in: refused while it is the only one (no passkey, no password
+        that counts). Otherwise the same proof adding a passkey asks (`OwnerProof` —
+        including, for a Google-only profile, `googleProof`). A profile with no Google
+        identity gets 200 as well, with no proof asked. Audited as `auth.google.unlink`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OwnerProof' }
+      responses:
+        '200':
+          description: Removed (or there was none).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ProofRefused' }
+        '409':
+          description: Connecting with Google is the profile's only way in.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "connecting with Google is the only way into this profile", code: "last-way-in" }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/data:
@@ -4673,7 +4953,9 @@ components:
         counts — none is set, or `PASSWORD_LOGIN` is off — so a passkey has to confirm),
         `passkey` (the assertion did not verify, belongs to another profile, or was made
         for another challenge, one handed out for another ceremony or one already used),
-        `current-required` or `current-wrong`.
+        `current-required`, `current-wrong`, or `google-proof-invalid` (tag `google`) —
+        `googleProof` is missing, expired, already used, or was minted for a different
+        account or session.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -4773,13 +5055,21 @@ components:
     OwnerProof:
       type: object
       description: >-
-        Either a passkey assertion made for this request (`cid` + `credential`), or the
-        profile's current password (`current`) — which counts only while `PASSWORD_LOGIN`
-        is on. Each assertion is good for one request: its challenge is spent by it.
+        A passkey assertion made for this request (`cid` + `credential`); the profile's
+        current password (`current`, counts only while `PASSWORD_LOGIN` is on); or a
+        one-time Google reauthentication proof (`googleProof`, tag `google`) — the third
+        option, for a profile with neither a password nor a passkey. Each is good for one
+        request: a passkey challenge or a Google proof is spent by using it.
       properties:
         cid: { type: string, description: 'From POST /api/login/options.' }
         credential: { $ref: '#/components/schemas/WebAuthnAuthenticationCredential' }
         current: { type: string }
+        googleProof:
+          type: string
+          description: >-
+            From `#/configuracoes?google=reauth-ok&proof=…` after a
+            `GET /api/auth/google/start?intent=reauth` round trip. Single-use, 5 minutes,
+            bound to this exact session.
 
     SessionUser:
       type: object
