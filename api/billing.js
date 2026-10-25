@@ -463,14 +463,27 @@ export async function applyStripeEvent(pool, event) {
     case 'customer.subscription.deleted': {
       const userId = await resolveUserId(pool, obj);
       if (!userId) break;
-      // First-ever subscription, still on the intro Price, not a schedule yet: convert it and stop
-      // — the conversion's own update event re-enters this same case with the final shape, so
-      // nothing below needs to run against the pre-conversion object.
-      if (event.type === 'customer.subscription.created' && obj.metadata?.scheduleTo && !obj.schedule) {
-        await convertToSchedule(getStripe(), obj.id, obj.metadata.scheduleTo);
-        break;
+      let live = await getStripe().subscriptions.retrieve(obj.id);
+      // First-ever subscription, still on the intro Price, not a schedule yet: convert it to the
+      // two-phase schedule — but only once Stripe actually allows it (ISO-1633).
+      // `subscriptionSchedules.create` rejects a subscription that isn't `active`/`past_due` yet
+      // (the same set `canWrite`/WRITABLE_STATUSES treats as writable), which is exactly what
+      // happens when the very first charge fails or needs 3DS: `customer.subscription.created`
+      // then arrives with the subscription still `incomplete`. `scheduleTo` stays on the
+      // subscription's own metadata regardless, so the later `customer.subscription.updated` that
+      // reports the retry/3DS outcome as `active` re-enters this same case and completes the
+      // conversion then — no separate retry bookkeeping needed. Either way (skipped here because
+      // not yet eligible, or thrown by Stripe for some other reason) must never skip the upsert
+      // below: that used to be exactly what left the row permanently missing
+      // priceId/customerId/plan whenever this call threw.
+      if (live.metadata?.scheduleTo && !live.schedule && WRITABLE_STATUSES.has(live.status)) {
+        try {
+          await convertToSchedule(getStripe(), live.id, live.metadata.scheduleTo);
+          live = await getStripe().subscriptions.retrieve(obj.id);
+        } catch (e) {
+          console.error('billing: schedule conversion failed for', live.id, e.message);
+        }
       }
-      const live = await getStripe().subscriptions.retrieve(obj.id);
       await upsertSubscription(pool, obj.id, userId, await subscriptionWriteFields(pool, live));
       await markDuplicateSubscriptions(pool, userId);
       break;

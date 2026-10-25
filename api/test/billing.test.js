@@ -352,7 +352,7 @@ test('customer.subscription.created with scheduleTo: the real schedule update se
   // account's API version (400 parameter_unknown). Points billing.js's Stripe client at a local
   // mock (STRIPE_API_HOST/STRIPE_API_PORT) so the exact outgoing request can be inspected, instead
   // of only re-reading the source that changed.
-  const { server, port, calls } = await mockStripeApi();
+  const { server, port, calls, subscriptions } = await mockStripeApi();
   t.after(() => server.close());
   const users = [{ id: 'u_bill_8', name: 'Eight', created: new Date().toISOString() }];
   const h = await startServer(t, { users, env: { STRIPE_API_HOST: '127.0.0.1', STRIPE_API_PORT: String(port) } });
@@ -361,6 +361,11 @@ test('customer.subscription.created with scheduleTo: the real schedule update se
     items: { data: [{ price: { id: INTRO_PRICE, unit_amount: 199 }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400 }] },
     metadata: { userId: 'u_bill_8', plan: 'monthly', scheduleTo: MONTHLY_PRICE }
   }));
+  // ISO-1633: applyStripeEvent now retrieves the live subscription unconditionally (so the full
+  // upsert can run even when the schedule conversion is skipped or fails) — this server talks to
+  // this standalone mock (not h.mock), so that GET needs its own registered object, same as
+  // postWebhook's registerLive does for h.mock in every other test.
+  subscriptions[event.data.object.id] = event.data.object;
   const r = await postWebhook(h, event);
   assert.equal(r.status, 200, 'convertToSchedule succeeded against the mock');
 
@@ -370,6 +375,49 @@ test('customer.subscription.created with scheduleTo: the real schedule update se
   assert.ok(update, 'subscriptionSchedules.update was called');
   assert.match(update.body, /end_date/, 'uses end_date, the version-correct way to say "one more cycle"');
   assert.doesNotMatch(update.body, /iterations/, 'iterations is rejected by this account\'s API version');
+});
+
+test('customer.subscription.created with a failed-first-charge/3DS subscription does not 500, and the schedule conversion runs once Stripe reports it active (ISO-1633)', async t => {
+  // Real Stripe refuses subscriptionSchedules.create against a subscription that is still
+  // `incomplete` — exactly what Stripe reports while the 1st charge (the R$1,99 intro Price) has
+  // failed or still needs 3DS. The old code called convertToSchedule unconditionally from this
+  // event, with nothing catching that rejection: a 500, and the upsert below it never ran, so the
+  // row was left permanently missing priceId/customerId/plan.
+  const users = [{ id: 'u_bill_18', name: 'Eighteen', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+
+  const incomplete = sub('sub_1633', {
+    status: 'incomplete',
+    items: { data: [{ price: { id: INTRO_PRICE, unit_amount: 199 }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400 }] },
+    metadata: { userId: 'u_bill_18', plan: 'monthly', scheduleTo: MONTHLY_PRICE }
+  });
+  let r = await postWebhook(h, stripeEvent('customer.subscription.created', incomplete));
+  assert.equal(r.status, 200, 'an incomplete subscription must not crash the webhook');
+
+  const createWhileIncomplete = h.mock.calls.find(c => c.method === 'POST' && c.url === '/v1/subscription_schedules');
+  assert.equal(createWhileIncomplete, undefined, 'the conversion is not attempted while the subscription is not yet active');
+
+  let status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_18') }).then(r => r.json());
+  assert.equal(status.status, 'incomplete');
+  assert.equal(status.active, false, 'an incomplete first charge never grants access');
+  assert.equal(status.plan, 'monthly', 'the full upsert ran despite the deferred conversion — plan is never left null');
+
+  // The retry succeeds (or 3DS completes): Stripe reports the same subscription active, still
+  // carrying scheduleTo and no schedule yet.
+  const nowActive = sub('sub_1633', {
+    status: 'active',
+    items: { data: [{ price: { id: INTRO_PRICE, unit_amount: 199 }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400 }] },
+    metadata: { userId: 'u_bill_18', plan: 'monthly', scheduleTo: MONTHLY_PRICE }
+  });
+  r = await postWebhook(h, stripeEvent('customer.subscription.updated', nowActive));
+  assert.equal(r.status, 200);
+
+  const createOnceActive = h.mock.calls.find(c => c.method === 'POST' && c.url === '/v1/subscription_schedules');
+  assert.ok(createOnceActive, 'the schedule conversion ran once the subscription became active, not stuck on the intro price forever');
+
+  status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_18') }).then(r => r.json());
+  assert.equal(status.status, 'active');
+  assert.equal(status.active, true);
 });
 
 test('PUT /api/data: 402 without a subscription, 200 once active, 200 while past_due, 402 once canceled', async t => {
