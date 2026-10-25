@@ -75,9 +75,6 @@ Abra **http://localhost:8080** e crie um perfil. Use `--build` para gerar as ima
 deste código: o `docker-compose.yml` herdado aponta para as imagens publicadas do openGym original,
 que não contêm as modificações deste fork.
 
-Na primeira execução, a instância baixa as mídias dos exercícios (~140 MB) de uma fonte externa.
-Essas mídias **não pertencem a este projeto** — veja [Licença](#licença).
-
 Para expor a instância com HTTPS e passkeys num domínio próprio, veja
 [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
 
@@ -166,13 +163,14 @@ disponibilizar o código-fonte dessa versão sob a mesma licença. O copyright o
 - **Dados e instruções dos exercícios** — vêm do [ExerciseDB v1](https://exercisedb.dev/), por meio
   do [hasaneyldrm/exercises-dataset](https://github.com/hasaneyldrm/exercises-dataset), sob licença
   **MIT**.
-- **Imagens e animações dos exercícios** — conteúdo de terceiros **não coberto** nem pela MIT nem
-  pela AGPL, com titularidade atualmente **em disputa** entre [Gym visual](https://gymvisual.com/)
-  e ExerciseDB/AscendAPI. Este repositório **não as redistribui**: a instância as baixa da fonte
-  original na primeira execução. Para o uso comercial, o ballet-opengym vai adotar **mídia própria**
-  para os exercícios de balé.
+- **Imagens e animações dos exercícios** — eram conteúdo de terceiros, com titularidade em
+  disputa entre [Gym visual](https://gymvisual.com/) e ExerciseDB/AscendAPI, e **foram removidas
+  deste projeto a partir desta versão**: os exercícios embutidos ficam só com texto (MIT, acima).
+  O ballet-opengym usa **mídia própria** para os exercícios de balé.
 - **Geometria do mapa corporal** — derivada do [MuscleMap](https://github.com/melihcolpan/MuscleMap),
   sob licença **MIT**.
+- **Mídia dos 4 exercícios de port de bras da Brilhart** — **© Brilhart Fitness, todos os direitos
+  reservados**, não é MIT nem AGPL; ver [frontend/public/brilhart/COPYRIGHT.md](frontend/public/brilhart/COPYRIGHT.md).
 
 Todos os avisos de terceiros, com o texto integral das licenças: **[NOTICE.md](NOTICE.md)**.
 

@@ -1,4 +1,5 @@
 import { EXDB } from './exercises-data.js'
+import { EXBRILHART } from './exercises-brilhart.js'
 import { USER_EXERCISE_MUSCLE_OVERRIDES, exerciseMuscleMetadataFor } from './exercise-muscle-batch-1.js'
 import { t, getVersion, exerciseNameSearchText } from './i18n-core.js'
 
@@ -22,7 +23,10 @@ const catalogueExercise = ex => {
   return out
 }
 
-export const CATALOGUE = EXDB.map(catalogueExercise)
+// EXBRILHART (exercises-brilhart.js) is appended raw, not run through catalogueExercise: that
+// overlay is keyed to EXDB's 4-digit ids and exerciseMuscleMetadataFor('bf01') always misses, so
+// running it would be a no-op that only risked tying the two datasets together by accident.
+export const CATALOGUE = [...EXDB.map(catalogueExercise), ...EXBRILHART]
 
 // The generated dataset already supplies secondary muscles for most exercises. Keep the
 // handful of conservative catalogue additions that are useful to the muscle map here so a
@@ -125,15 +129,22 @@ export function matchesExerciseSearch(exercise, query) {
   return searchScore(exercise, query) > 0
 }
 
-// Media normally sits next to the app (img/ and gif/, mounted into the web container).
-// A build can point them somewhere else — the demo build pulls them off a CDN instead of
-// shipping ~140 MB of images into the deployment. `import.meta.env` is undefined in plain
-// Node; the guard keeps this module loadable without Vite.
+// Media sits next to the app (img/ and gif/, bundled or mounted into the web container).
+// `VITE_IMG_BASE`/`VITE_GIF_BASE` let a build point them somewhere else instead.
+// `import.meta.env` is undefined in plain Node; the guard keeps this module loadable
+// without Vite.
 const ENV = import.meta.env || {}
 const IMG_BASE = ENV.VITE_IMG_BASE || 'img/'
 const GIF_BASE = ENV.VITE_GIF_BASE || 'gif/'
-export const imgSrc = ex => IMG_BASE + ex.img
-export const gifSrc = ex => GIF_BASE + ex.gif
+// Brilhart's own 4 exercises (exercises-brilhart.js, `src: 'brilhart'`) ship inside the app
+// bundle at frontend/public/brilhart/ instead — never IMG_BASE/GIF_BASE, which point at the
+// CDN-swappable EXDB media mount and would resolve to the wrong host/path for a file that
+// isn't there. BASE_URL is Vite's own base ('./' here, see vite.config.js), so this resolves
+// the same way the app's other bundled assets (favicon, manifest) already do, offline-safe
+// for the Android/iOS build too.
+const BRILHART_BASE = (ENV.BASE_URL || './') + 'brilhart/'
+export const imgSrc = ex => (ex.src === 'brilhart' ? BRILHART_BASE : IMG_BASE) + ex.img
+export const gifSrc = ex => (ex.src === 'brilhart' ? BRILHART_BASE : GIF_BASE) + ex.gif
 
 // Cardio exercises log time + speed instead of weight × reps.
 export const isCardio = idOrEx => (typeof idOrEx === 'string' ? EXIDX[idOrEx] : idOrEx)?.bp === 'cardio'
