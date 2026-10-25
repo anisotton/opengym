@@ -98,7 +98,7 @@ export default {
             'o código-fonte do aplicativo é software livre, licenciado sob a GNU AGPL-3.0 (Affero General Public License, versão 3 ou posterior), e está disponível em https://github.com/anisotton/opengym;',
             'os textos de descrição e instrução dos exercícios da biblioteca geral vêm do conjunto de dados hasaneyldrm/exercises-dataset, sob a licença MIT;',
             'as animações e imagens dos exercícios da Brilhart são de titularidade da Brilhart Fitness, com todos os direitos reservados, exibidas no app apenas para ilustrar os exercícios — você não pode copiá-las nem redistribuí-las;',
-            'as instruções dos exercícios da Brilhart são revisadas por profissional da Brilhart Fitness, sem prejuízo do aviso de saúde mais adiante nestes termos;',
+            'as instruções dos exercícios da Brilhart passam por revisão de profissional da Brilhart Fitness; enquanto não revisadas, aparecem no app marcadas como rascunho, sem prejuízo do aviso de saúde mais adiante nestes termos;',
             'a marca, o nome e a identidade visual da Brilhart Escola e do Brilhart Fitness pertencem aos seus titulares e não podem ser usados sem autorização.',
           ],
         },
