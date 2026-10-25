@@ -2021,4 +2021,14 @@ export default {
   '{0} workouts this week': '{0} تمارين هذا الأسبوع',
   // ISO-1594/ISO-1610 — teacher/student area
   'Recommended by your teacher': 'موصى به من معلمك',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "جاري تحميل الباقات…",
+  "No plans available right now. Check back later.": "لا توجد باقات متاحة الآن. تحقق مرة أخرى لاحقًا.",
+  "Could not load plans. Try again.": "تعذّر تحميل الباقات. حاول مرة أخرى.",
+  "R$ {0} / month": "R$ {0} / شهريًا",
+  "R$ {0} every {1} months": "R$ {0} كل {1} أشهر",
+  "R$ {0} per year": "R$ {0} سنويًا",
+  "Your first month for R$ {0}.": "شهرك الأول بسعر R$ {0}.",
+  "{0}% less than the monthly plan": "أقل بنسبة {0}% من الباقة الشهرية",
+  "Includes everything Brilhart Fitness offers.": "يشمل كل ما يقدمه Brilhart Fitness.",
 }

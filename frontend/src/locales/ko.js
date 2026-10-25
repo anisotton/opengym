@@ -1968,4 +1968,14 @@ export default {
   '{0} workouts this week': '이번 주 운동 {0}회',
   // ISO-1594/ISO-1610 — teacher/student area
   'Recommended by your teacher': '선생님이 추천함',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "요금제를 불러오는 중…",
+  "No plans available right now. Check back later.": "현재 이용 가능한 요금제가 없습니다. 나중에 다시 확인해 주세요.",
+  "Could not load plans. Try again.": "요금제를 불러올 수 없습니다. 다시 시도해 주세요.",
+  "R$ {0} / month": "R$ {0} / 월",
+  "R$ {0} every {1} months": "{1}개월마다 R$ {0}",
+  "R$ {0} per year": "R$ {0} / 년",
+  "Your first month for R$ {0}.": "첫 달은 R$ {0}입니다.",
+  "{0}% less than the monthly plan": "월간 요금제보다 {0}% 저렴",
+  "Includes everything Brilhart Fitness offers.": "Brilhart Fitness가 제공하는 모든 것을 포함합니다.",
 }

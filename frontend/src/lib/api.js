@@ -437,6 +437,12 @@ export async function resumeGoogleReauth(action, proof) {
 export async function fetchBillingStatus() {
   return api('/api/billing/status')
 }
+// The catalog itself (ISO-1623/ISO-1627) — only `available` plans, already priced in centavos.
+// SettingsPlan reads this instead of a hard-coded PLANS array; useStore caches it offline the
+// same way it already caches fetchBillingStatus's own answer.
+export async function fetchBillingPlans() {
+  return api('/api/billing/plans')
+}
 export async function billingCheckout(plan) {
   return post('/api/billing/checkout', { plan })
 }

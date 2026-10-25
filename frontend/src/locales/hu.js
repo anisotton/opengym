@@ -1971,4 +1971,14 @@ export default {
   '{0} workouts this week': '{0} edzés ezen a héten',
   // ISO-1594/ISO-1610 — teacher/student area
   'Recommended by your teacher': 'A tanárod ajánlotta',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "Csomagok betöltése…",
+  "No plans available right now. Check back later.": "Jelenleg nincs elérhető csomag. Nézz vissza később.",
+  "Could not load plans. Try again.": "Nem sikerült betölteni a csomagokat. Próbáld újra.",
+  "R$ {0} / month": "R$ {0} / hónap",
+  "R$ {0} every {1} months": "R$ {0} {1} hónaponta",
+  "R$ {0} per year": "R$ {0} évente",
+  "Your first month for R$ {0}.": "Az első hónapod R$ {0}-ért.",
+  "{0}% less than the monthly plan": "{0}%-kal kevesebb, mint a havi csomag",
+  "Includes everything Brilhart Fitness offers.": "Mindent tartalmaz, amit a Brilhart Fitness nyújt.",
 }

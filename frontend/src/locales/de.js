@@ -1988,4 +1988,14 @@ export default {
   'People under 18 should use this app with a guardian’s guidance.': 'Personen unter 18 Jahren sollten diese App unter Anleitung eines Erziehungsberechtigten nutzen.',
   // ISO-1594/ISO-1610 — teacher/student area
   'Recommended by your teacher': 'Von deinem Lehrer empfohlen',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "Pläne werden geladen…",
+  "No plans available right now. Check back later.": "Derzeit keine Pläne verfügbar. Später erneut versuchen.",
+  "Could not load plans. Try again.": "Pläne konnten nicht geladen werden. Erneut versuchen.",
+  "R$ {0} / month": "R$ {0} / Monat",
+  "R$ {0} every {1} months": "R$ {0} alle {1} Monate",
+  "R$ {0} per year": "R$ {0} pro Jahr",
+  "Your first month for R$ {0}.": "Dein erster Monat für R$ {0}.",
+  "{0}% less than the monthly plan": "{0}% günstiger als der Monatsplan",
+  "Includes everything Brilhart Fitness offers.": "Enthält alles, was Brilhart Fitness bietet.",
 }

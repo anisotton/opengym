@@ -1290,6 +1290,16 @@ export const PT_BR_OVERRIDES = {
   '{0} workouts this week': '{0} treinos esta semana',
   // ISO-1594/ISO-1610 — teacher/student area
   'People under 18 should use this app with a guardian’s guidance.': 'Pessoas menores de 18 anos devem usar este app com a orientação de um responsável.',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "Carregando planos…",
+  "No plans available right now. Check back later.": "Nenhum plano disponível agora. Volte mais tarde.",
+  "Could not load plans. Try again.": "Não foi possível carregar os planos. Tente novamente.",
+  "R$ {0} / month": "R$ {0} / mês",
+  "R$ {0} every {1} months": "R$ {0} a cada {1} meses",
+  "R$ {0} per year": "R$ {0} por ano",
+  "Your first month for R$ {0}.": "Seu primeiro mês por R$ {0}.",
+  "{0}% less than the monthly plan": "{0}% menos que o plano mensal",
+  "Includes everything Brilhart Fitness offers.": "Inclui tudo que o Brilhart Fitness oferece.",
 }
 
 export default { ...pt, ...PT_BR_OVERRIDES }

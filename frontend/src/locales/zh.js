@@ -1968,4 +1968,14 @@ export default {
   '{0} workouts this week': '本周 {0} 次训练',
   // ISO-1594/ISO-1610 — teacher/student area
   'Recommended by your teacher': '由老师推荐',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "正在加载套餐…",
+  "No plans available right now. Check back later.": "目前没有可用的套餐，请稍后再查看。",
+  "Could not load plans. Try again.": "无法加载套餐，请重试。",
+  "R$ {0} / month": "R$ {0} / 月",
+  "R$ {0} every {1} months": "每 {1} 个月 R$ {0}",
+  "R$ {0} per year": "每年 R$ {0}",
+  "Your first month for R$ {0}.": "首月仅需 R$ {0}。",
+  "{0}% less than the monthly plan": "比月付套餐便宜 {0}%",
+  "Includes everything Brilhart Fitness offers.": "包含 Brilhart Fitness 提供的所有内容。",
 }

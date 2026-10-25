@@ -11,7 +11,13 @@ const mocks = vi.hoisted(() => ({
   billingCheckout: null, openTermsSheet: null, openNeedsEmailPrompt: null,
 }))
 vi.mock('../store/useStore.js', () => {
-  const snap = () => ({ user: { id: 'u', name: 'A', emailVerified: true }, billing: { status: 'none' }, refreshBillingStatus: vi.fn() })
+  // ISO-1627: SettingsPlan now renders its cards from the catalog cache, not a fixed PLANS
+  // array — one plan is enough here, this suite is about the checkout refusal, not the catalog.
+  const snap = () => ({
+    user: { id: 'u', name: 'A', emailVerified: true }, billing: { status: 'none' },
+    billingPlans: { plans: [{ id: 'monthly', display: { 'pt-BR': { name: 'Mensal' } }, interval: 'month', intervalCount: 1, sortOrder: 1, amountCents: 8900, introAmountCents: null }] },
+    refreshBillingStatus: vi.fn(), refreshBillingPlans: vi.fn(() => Promise.resolve(true))
+  })
   const useStore = selector => (selector ? selector(snap()) : snap())
   useStore.getState = snap
   return { useStore }

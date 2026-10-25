@@ -1968,4 +1968,14 @@ export default {
   '{0} workouts this week': 'Bu hafta {0} antrenman',
   // ISO-1594/ISO-1610 — teacher/student area
   'Recommended by your teacher': 'Eğitmeniniz tarafından önerildi',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "Planlar yükleniyor…",
+  "No plans available right now. Check back later.": "Şu anda kullanılabilir plan yok. Daha sonra tekrar kontrol edin.",
+  "Could not load plans. Try again.": "Planlar yüklenemedi. Yeniden deneyin.",
+  "R$ {0} / month": "R$ {0} / ay",
+  "R$ {0} every {1} months": "{1} ayda bir R$ {0}",
+  "R$ {0} per year": "Yılda R$ {0}",
+  "Your first month for R$ {0}.": "İlk ayın R$ {0}.",
+  "{0}% less than the monthly plan": "Aylık plandan %{0} daha az",
+  "Includes everything Brilhart Fitness offers.": "Brilhart Fitness'in sunduğu her şeyi içerir.",
 }

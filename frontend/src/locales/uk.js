@@ -1965,4 +1965,14 @@ export default {
   '{0} workouts this week': '{0} тренувань цього тижня',
   // ISO-1594/ISO-1610 — teacher/student area
   'Recommended by your teacher': 'Рекомендовано вашим вчителем',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "Завантаження планів…",
+  "No plans available right now. Check back later.": "Наразі немає доступних планів. Перевірте пізніше.",
+  "Could not load plans. Try again.": "Не вдалося завантажити плани. Спробуйте ще раз.",
+  "R$ {0} / month": "R$ {0} / місяць",
+  "R$ {0} every {1} months": "R$ {0} кожні {1} місяців",
+  "R$ {0} per year": "R$ {0} на рік",
+  "Your first month for R$ {0}.": "Перший місяць за R$ {0}.",
+  "{0}% less than the monthly plan": "На {0}% дешевше, ніж помісячний план",
+  "Includes everything Brilhart Fitness offers.": "Включає все, що пропонує Brilhart Fitness.",
 }

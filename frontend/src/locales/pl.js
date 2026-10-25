@@ -1968,4 +1968,14 @@ export default {
   '{0} workouts this week': '{0} treningów w tym tygodniu',
   // ISO-1594/ISO-1610 — teacher/student area
   'Recommended by your teacher': 'Polecone przez Twojego instruktora',
+  // --- payment-plan catalog (ISO-1619/ISO-1627) ---
+  "Loading plans…": "Wczytywanie planów…",
+  "No plans available right now. Check back later.": "Obecnie brak dostępnych planów. Sprawdź później.",
+  "Could not load plans. Try again.": "Nie udało się wczytać planów. Spróbuj ponownie.",
+  "R$ {0} / month": "R$ {0} / miesiąc",
+  "R$ {0} every {1} months": "R$ {0} co {1} miesięcy",
+  "R$ {0} per year": "R$ {0} rocznie",
+  "Your first month for R$ {0}.": "Twój pierwszy miesiąc za R$ {0}.",
+  "{0}% less than the monthly plan": "{0}% mniej niż plan miesięczny",
+  "Includes everything Brilhart Fitness offers.": "Zawiera wszystko, co oferuje Brilhart Fitness.",
 }

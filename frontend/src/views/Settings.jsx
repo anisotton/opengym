@@ -13,7 +13,7 @@ import { unlock, playOnSilentSupported, vibrateSupported } from '../lib/sound.js
 import { api, webauthnOK, IS_ANDROID } from '../lib/api.js'
 import { pushSupported, enablePush, disablePush, sendTestPush, syncPushSubscription } from '../lib/push.js'
 import { wakeLockSupported } from '../lib/wakelock.js'
-import { t, LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, baseLang, dateLocale } from '../lib/i18n.js'
+import { t, getLang, LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, baseLang, dateLocale } from '../lib/i18n.js'
 import { effectiveLang } from '../lib/default-lang.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, isAndroid, shareExport, shareExportBlob, syncReminder } from '../lib/mobile.js'
@@ -40,6 +40,7 @@ export default function Settings() {
   const S = useStore(s => s.S)
   const user = useStore(s => s.user)
   const billing = useStore(s => s.billing)
+  const billingPlans = useStore(s => s.billingPlans)
   const coachLocal = useStore(s => s.coachLocal)
   // Name-and-password sign-in, where the instance offers it (#118).
   const config = useStore(s => s.config)
@@ -313,7 +314,11 @@ export default function Settings() {
             (ISO-1395), same as every other Stripe-gated piece of this phase. */}
         {billing?.enabled && <Row icon="crown" iconTint="var(--yellow)" title={t('Plan')}
           subtitle={billing.status === 'active' || billing.status === 'past_due'
-            ? ({ monthly: t('Monthly'), quarterly: t('Quarterly'), yearly: t('Yearly') })[billing.plan] || null
+            // Resolved against the catalog (ISO-1619/ISO-1627), not a fixed monthly/quarterly/
+            // yearly map — same graceful fallback (plain id, or null) SettingsPlan.jsx uses.
+            ? (billingPlans?.plans.find(p => p.id === billing.plan)?.display?.[getLang()]?.name
+              ?? billingPlans?.plans.find(p => p.id === billing.plan)?.display?.['pt-BR']?.name
+              ?? billing.plan ?? null)
             : t("Your subscription isn't active — you can view and export your history, but new workouts won't be logged.")}
           accessory="chevron" onClick={() => nav('/configuracoes')} />}
         <MyTeacherRow />
