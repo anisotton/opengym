@@ -81,7 +81,7 @@ async function startServer(t, { env = {}, users = [] } = {}) {
     // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
     // server-terms.test.js's subject, not this file's. ISO-1521: same idea for the now-required
     // birthDate — an adult one, since the under-18 refusal is server-age-gate.test.js's subject.
-    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-25' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-26' };
     if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
@@ -188,7 +188,7 @@ test('GET /api/me reports email/emailVerified/needsEmail; confirming the link se
   // ISO-1390's terms fields ride along; their own values are server-terms.test.js's subject.
   assert.equal(typeof me1.body.termsAcceptedAt, 'string');
   assert.deepEqual(me1.body, { user, email: 'ada@example.com', emailVerified: false, needsEmail: false,
-    termsVersion: '2026-10-25', termsAcceptedAt: me1.body.termsAcceptedAt, needsTerms: false, google: null });
+    termsVersion: '2026-10-26', termsAcceptedAt: me1.body.termsAcceptedAt, needsTerms: false, google: null });
 
   const { token } = h.mailedLink('verificar-email');
   const v = await h.req('POST', '/api/account/email/verify', { body: { token }, ip });

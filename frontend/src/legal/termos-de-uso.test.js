@@ -17,10 +17,16 @@ describe('Termos de Uso', () => {
   it('states the decided facts', () => {
     const text = flat(termos)
     for (const fact of ['Brilhart Escola', 'GIOVANA NEGRINI ISOTTON - ME', '32.600.786/0001-74', 'Isotton',
-      'R$ 89', 'R$ 237', 'R$ 768', 'R$ 1,99', '7 dias', 'art. 49', '18 anos',
+      '7 dias', 'art. 49', '18 anos',
       'Não é possível concluir seu cadastro', 'AGPL', 'MIT', 'São Leopoldo',
       'atendimento@brilhart.com.br', '(51) 2165-8600'])
       expect(text, fact).toContain(fact)
+  })
+  it('does not commit to a fixed price, deferring to what the app shows at checkout', () => {
+    const text = flat(termos)
+    expect(text).toMatch(/valor exibido no app/)
+    expect(text).toMatch(/mantém o valor que contratou/)
+    expect(text).not.toMatch(/R\$\s?\d/)
   })
   it('has no leftover [CONFIRMAR] placeholder', () => {
     expect(flat(termos)).not.toContain('CONFIRMAR')
