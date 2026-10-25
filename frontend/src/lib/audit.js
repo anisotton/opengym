@@ -79,6 +79,8 @@ const LABELS = {
   'admin.invite.create': 'Created an invite code',
   'admin.invite.revoke': 'Revoked an invite code',
   'admin.audit.clear': 'Cleared the activity log',
+  // FIRST_USER_ADMIN=1: the first profile on a fresh instance is made admin as it signs up.
+  'admin.first-user': 'Became admin as the first profile',
   'admin.denied': 'Blocked from the admin dashboard',
   // ISO-1485: the training program catalog. `msg`/`target` name the program; `publish`/
   // `unpublish` are their own events (not folded into `update`) since they're the one change

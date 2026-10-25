@@ -37,6 +37,13 @@ export async function getUserState(pool, userId) {
 // Just the revision — one narrow column, never the (possibly multi-MB) state jsonb. This is what
 // used to need the file-stat cache in server.js; a plain query here already does not pay to parse
 // the document, so the cache had nothing left to save and is gone.
+// The revision and the stored document's write id, without reading the document itself: what
+// GET /api/data/rev answers every half minute to every open client.
+export async function getUserStateWid(pool, userId) {
+  const { rows } = await pool.query("SELECT rev, state->>'_wid' AS wid FROM user_state WHERE user_id = $1", [userId]);
+  return rows.length ? { rev: Number(rows[0].rev), wid: rows[0].wid || null } : { rev: 0, wid: null };
+}
+
 export async function getUserStateRev(pool, userId) {
   const { rows } = await pool.query('SELECT rev FROM user_state WHERE user_id = $1', [userId]);
   return rows.length ? Number(rows[0].rev) : 0;
@@ -56,7 +63,10 @@ export async function putUserState(pool, userId, decide) {
     const curRev = rows.length ? Number(rows[0].rev) : 0;
     const decision = decide(cur, curRev);
     if (decision.conflict) return { conflict: true, rev: curRev, state: cur };
-    const nextRev = curRev + 1;
+    if (decision.invalid) return { invalid: true, rev: curRev, state: cur };
+    // `decide` may name the revision the row takes (PUT /api/data moves two on when it stamped
+    // something the writer left out, sync-stamps.js); otherwise the next one.
+    const nextRev = decision.rev ?? curRev + 1;
     if (rows.length) {
       const { rowCount } = await pool.query(
         'UPDATE user_state SET state = $1, rev = $2, updated_at = now() WHERE user_id = $3 AND rev = $4',
@@ -70,7 +80,8 @@ export async function putUserState(pool, userId, decide) {
       );
       if (rowCount === 0) continue; // someone else's first write beat us to it, retry against it
     }
-    return { conflict: false, rev: nextRev, state: decision.state };
+    // `told`: the revision the writer is told (PUT /api/data), when it differs from the stored one.
+    return { conflict: false, rev: nextRev, state: decision.state, told: decision.told ?? nextRev };
   }
 }
 
@@ -105,7 +116,8 @@ function rowToUser(row) {
       ? { pwReset: { h: row.password_reset_hash, exp: row.password_reset_expires_at.getTime(), by: row.password_reset_by } }
       : {}),
     ...(row.last_pull_at ? { lastPull: row.last_pull_at.getTime() } : {}),
-    ...(row.extra?.lastReminder ? { lastReminder: row.extra.lastReminder } : {})
+    ...(row.extra?.lastReminder ? { lastReminder: row.extra.lastReminder } : {}),
+    ...(row.extra?.lastNudge ? { lastNudge: row.extra.lastNudge } : {})
   };
 }
 
@@ -134,12 +146,12 @@ export async function getAllUsers(pool) {
 export async function createUser(pool, user) {
   await pool.query(
     `INSERT INTO users (id, name, email, birth_date, password_hash, password_set_at, created_at, extra,
-       terms_accepted_version, terms_accepted_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       terms_accepted_version, terms_accepted_at, admin)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       user.id, user.name, user.email || null, user.birthDate || null,
       user.pw?.h || null, user.pw?.set || null, user.created, extraOf(user),
-      user.termsAcceptedVersion || null, user.termsAcceptedAt || null
+      user.termsAcceptedVersion || null, user.termsAcceptedAt || null, user.admin === true
     ]
   );
 }
@@ -307,6 +319,19 @@ export async function setStripeCustomerId(pool, id, customerId) {
 export async function getUserIdByStripeCustomer(pool, customerId) {
   const { rows } = await pool.query('SELECT id FROM users WHERE stripe_customer_id = $1', [customerId]);
   return rows.length ? rows[0].id : null;
+}
+
+// How many accounts exist — FIRST_USER_ADMIN's "the instance had no profiles at all" test.
+export async function countUsers(pool) {
+  const { rows } = await pool.query('SELECT count(*)::int AS n FROM users');
+  return rows[0].n;
+}
+
+export async function setLastNudge(pool, id, date) {
+  await pool.query(
+    "UPDATE users SET extra = jsonb_set(extra, '{lastNudge}', to_jsonb($1::text)) WHERE id = $2",
+    [date, id]
+  );
 }
 
 export async function setLastReminder(pool, id, date) {
@@ -477,7 +502,8 @@ export async function upsertSub(pool, { userId, endpoint, keys, deviceId, create
     `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, device_id, created_at)
      VALUES ($1,$2,$3,$4,$5, COALESCE($6, now()))
      ON CONFLICT (endpoint) DO UPDATE SET
-       user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, device_id = EXCLUDED.device_id
+       user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth,
+       device_id = COALESCE(EXCLUDED.device_id, push_subscriptions.device_id)
      WHERE push_subscriptions.user_id = EXCLUDED.user_id
         OR (push_subscriptions.p256dh = EXCLUDED.p256dh AND push_subscriptions.auth = EXCLUDED.auth)`,
     [userId, endpoint, keys.p256dh, keys.auth, deviceId || null, created ? new Date(created) : null]
@@ -514,11 +540,12 @@ export async function hasPush(pool, userId) {
   return rows.length > 0;
 }
 
+// The caller's row for `endpoint` — { deviceId } — or null when this instance does not hold it.
 export async function subStatus(pool, userId, endpoint) {
   const { rows } = await pool.query(
-    'SELECT 1 FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [userId, endpoint]
+    'SELECT device_id FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [userId, endpoint]
   );
-  return rows.length > 0;
+  return rows.length ? { deviceId: rows[0].device_id || null } : null;
 }
 
 // Send-time pruning (a dead or refused endpoint) and Settings' unsubscribe both just need the

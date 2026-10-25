@@ -68,7 +68,7 @@ const hrefs = page => [...page.querySelectorAll('a')].map(a => a.getAttribute('h
 describe('Settings footer → legal', () => {
   it('links to both pages and shows the version and date accepted', () => {
     mocks.user = { id: 'u', name: 'A', termsVersion: '2026-10-17', termsAcceptedAt: '2026-10-17T12:00:00.000Z' }
-    const page = mount(<Settings />)
+    const page = mount(<Settings page="about" />)
     expect(hrefs(page).some(h => h.endsWith('#/termos'))).toBe(true)
     expect(hrefs(page).some(h => h.endsWith('#/privacidade'))).toBe(true)
     expect(page.textContent).toContain('You accepted version 2026-10-17')
@@ -76,7 +76,7 @@ describe('Settings footer → legal', () => {
 
   it('without an acceptance the links stay and the sentence goes', () => {
     mocks.user = { id: 'u', name: 'A', termsVersion: null, termsAcceptedAt: null }
-    const page = mount(<Settings />)
+    const page = mount(<Settings page="about" />)
     expect(hrefs(page).some(h => h.endsWith('#/termos'))).toBe(true)
     expect(hrefs(page).some(h => h.endsWith('#/privacidade'))).toBe(true)
     expect(page.textContent).not.toContain('You accepted version')

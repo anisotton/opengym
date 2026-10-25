@@ -8,7 +8,7 @@ Uma plataforma SaaS para escolas de balé e bailarinas: rotinas de condicionamen
 a dança, acompanhamento de cargas e esforço, mapa de fadiga muscular e, em breve, o planejamento
 de aulas de barra e centro por nível.
 
-<br>
+**A self-hosted gym and body-weight tracker you actually own.**
 
 [![Licença: AGPL v3](https://img.shields.io/badge/licen%C3%A7a-AGPL--3.0-a3e635?style=flat-square)](LICENSE)
 ![Status](https://img.shields.io/badge/status-em%20desenvolvimento-f59e0b?style=flat-square)

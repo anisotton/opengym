@@ -20,7 +20,8 @@ const EMAIL_DISMISS_KEY = 'brilhart_email_banner_dismissed'
 /* The connection, always in view while the app is not connected to a server: offline, the server
    unreachable or answering with an error (its HTTP code, for whoever runs it), a server that no
    longer accepts this device, an answer that is not Brilhart Fitness's, and no server at all — a phone
-   kept local, a guest in a browser. It cannot be dismissed; it goes when the condition does.
+   kept local, a guest in a browser. It cannot be dismissed; it goes when the condition does — or
+   when Settings → "Show connection status" is off, and then a dot on Home says a problem is there.
    The first ones say what is wrong and that the changes are kept here, with the one thing to do
    about it (retry, pair again, sign in); the deliberate local setup only says so, quietly.
 
@@ -28,21 +29,15 @@ const EMAIL_DISMISS_KEY = 'brilhart_email_banner_dismissed'
    tab bar, the timer and every sheet. Its height goes into --conn on the root, which the page's
    top padding and those headers add in, so it takes its own room instead of covering a control.
    The public demo has no server by design and says so itself; it never shows there. */
-export default function SyncBanner() {
-  const nav = useNavigate()
+// What the indicator would say right now, and whether it would say it: shared by the banner and
+// by the dot that stands in for it when the banner is switched off (useConnectionTrouble).
+function useConnection() {
   const user = useStore(s => s.user)
   const sync = useStore(s => s.sync)
   const guest = useStore(s => s.isGuest())
   const onboarding = useStore(s => s.needsMobileOnboarding)
   const online = useOnline()
   const [waited, setWaited] = useState(false)
-  const [emailDismissed, setEmailDismissed] = useState(
-    () => typeof sessionStorage !== 'undefined' && sessionStorage.getItem(EMAIL_DISMISS_KEY) === '1'
-  )
-  // One resend per showing: the row says "Sent" afterwards instead of inviting a second tap —
-  // Settings' own button (AccountEmail.jsx) keeps the timed cooldown for anyone who needs more.
-  const [emailSent, setEmailSent] = useState(false)
-  const row = useRef(null)
   const status = sync?.status
   useEffect(() => {
     setWaited(false)
@@ -54,13 +49,45 @@ export default function SyncBanner() {
   const view = connectionView(sync, { online })
   // Signed out on the web, the sign-in screen is the whole app: it hears only that the server
   // ended the session, and that the changes are still here.
-  const showConn = !DEMO && !onboarding && !!view?.banner && (!!user || guest || status === 'auth') && (status !== 'pending' || waited)
+  const show = !DEMO && !onboarding && !!view?.banner && (!!user || guest || status === 'auth') && (status !== 'pending' || waited)
+  return { view, show, user, status, guest, onboarding }
+}
+
+// "Show connection status" (#369, #330): on by default, and an older profile without the key
+// reads as on. Off hides the banner — for a phone kept local on purpose it is a line that never
+// goes — but a sync that is stuck still has to be noticed somewhere.
+export const showsConnection = S => S?.connStatus !== false
+
+/* True while the banner is switched off and the connection has a problem worth seeing: offline,
+   the server unreachable or answering with an error, refusing this device, a sign-in question
+   still open, or changes waiting past the grace period. Never for a device with no server at all
+   (a phone kept local, a guest): that is a choice, not a fault. The Home tab and the Settings
+   gear carry a dot for it. */
+export function useConnectionTrouble() {
+  const on = useStore(s => showsConnection(s.S))
+  const { view, show } = useConnection()
+  return !on && show && (view.tone === 'off' || view.tone === 'bad' || view.tone === 'wait')
+}
+
+export default function SyncBanner() {
+  const nav = useNavigate()
+  const on = useStore(s => showsConnection(s.S))
+  const conn = useConnection()
+  const { view, user, status, guest, onboarding } = conn
+  const [emailDismissed, setEmailDismissed] = useState(
+    () => typeof sessionStorage !== 'undefined' && sessionStorage.getItem(EMAIL_DISMISS_KEY) === '1'
+  )
+  // One resend per showing: the row says "Sent" afterwards instead of inviting a second tap —
+  // Settings' own button (AccountEmail.jsx) keeps the timed cooldown for anyone who needs more.
+  const [emailSent, setEmailSent] = useState(false)
+  const showConn = conn.show && on
   // ISO-1397/1398: a quieter reminder for an unconfirmed e-mail — only when the connection has
   // nothing more urgent to say (one fixed banner at a time, spec section 2: a connection problem
-  // outranks this). Dismissible for the session; Settings' own row stays the permanent, silent
-  // place to resolve it either way.
-  const showEmail = !showConn && !DEMO && !onboarding && !!user && !guest && !!user.email && !user.emailVerified && !emailDismissed
+  // outranks this, shown or switched off). Dismissible for the session; Settings' own row stays
+  // the permanent, silent place to resolve it either way.
+  const showEmail = !conn.show && !DEMO && !onboarding && !!user && !guest && !!user.email && !user.emailVerified && !emailDismissed
   const show = showConn || showEmail
+  const row = useRef(null)
 
   useLayoutEffect(() => {
     const root = document.documentElement
@@ -107,6 +134,7 @@ export default function SyncBanner() {
     // Settings, where signing in sits next to creating a profile.
     signin: () => (user || status === 'auth' ? signInAgain() : nav('/settings')),
     plan: () => nav('/configuracoes'),
+    signin: () => (user || status === 'auth' ? signInAgain() : nav('/settings/account')),
   }[view.action]
   const label = actionLabel(view)
   const inner = <>

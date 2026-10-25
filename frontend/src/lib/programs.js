@@ -30,7 +30,7 @@ export function normalizeTitle(title) {
 
 // "1 h 30 min" / "45 min" / "1 h" — the list and form's duration display.
 export function formatMinutes(n) {
-  if (!Number.isFinite(n) || n <= 0) return '—'
+  if (!Number.isFinite(n) || n <= 0) return '–'
   const h = Math.floor(n / 60), m = n % 60
   if (!h) return `${m} min`
   if (!m) return `${h} h`

@@ -4,10 +4,13 @@ import { useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
 import { bindUI } from './components/ui.jsx'
 import { setWeightDecimals } from './lib/format.js'
+import { accentValue, applyAccent } from './lib/accent.js'
 import { setLang, useLang, baseLang } from './lib/i18n.js'
 import { effectiveLang } from './lib/default-lang.js'
-import { setPlayOnSilent, setVibrate } from './lib/sound.js'
+import { setPlayOnSilent, setVibrate, setAlarmBuzzer } from './lib/sound.js'
+import { buzzAsAlarm } from './lib/rest-alert.js'
 import { setNav } from './lib/nav.js'
+import { setSystemBarsLight } from './lib/system-bars.js'
 import { initBackButton } from './lib/back.js'
 import { useWakeLock } from './lib/wakelock.js'
 import { installViewportGuard } from './lib/viewport-guard.js'
@@ -42,7 +45,8 @@ import History from './views/History.jsx'
 import Library from './views/Library.jsx'
 import Muscles from './views/Muscles.jsx'
 import StructuralBalance from './views/StructuralBalance.jsx'
-import Settings from './views/Settings.jsx'
+import ProgressPhotos from './views/ProgressPhotos.jsx'
+import { SettingsRoute } from './views/Settings.jsx'
 import SettingsPlan from './views/SettingsPlan.jsx'
 import Admin from './views/Admin.jsx'
 import CoachChat from './views/CoachChat.jsx'
@@ -62,11 +66,13 @@ const resolveTheme = theme => theme === 'light' || theme === 'dark'
 // The accent is the Brilhart brand's and fixed in index.css; S.accent is only still read by the
 // Android rest notification (lib/rest-alert.js). The bar colour follows the brand guide: ameixa
 // on the light theme, the dark theme's plum on dark. Keep in sync with the script in index.html.
-function applyPrefs(theme) {
+function applyPrefs(theme, accent) {
   const de = document.documentElement
   de.dataset.theme = resolveTheme(theme)
+  applyAccent(de, accent, de.dataset.theme)
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta) meta.content = de.dataset.theme === 'light' ? '#4A284D' : '#1C141E'
+  if (MOBILE) setSystemBarsLight(de.dataset.theme === 'light')
 }
 
 function Shell() {
@@ -79,6 +85,9 @@ function Shell() {
   useEffect(() => { setPlayOnSilent(!!S.soundOnSilent) }, [S.soundOnSilent])
   // Settings → Vibrate, the same way: one page-level switch rather than a check at each buzz.
   useEffect(() => { setVibrate(S.vibrate !== false) }, [S.vibrate])
+  // Android app: "Vibrate when the phone is on silent" sends the end-of-rest buzz through the
+  // native side as an alarm (#375). buzzAsAlarm answers false off Android, so iOS buzzes as before.
+  useEffect(() => { setAlarmBuzzer(MOBILE && S.vibrate !== false && S.vibrateOnSilent ? buzzAsAlarm : null) }, [S.vibrate, S.vibrateOnSilent])
   const isGuest = useStore(s => s.isGuest())
   const needsMobileOnboarding = useStore(s => s.needsMobileOnboarding)
   const langV = useLang()   // re-renders the whole shell when the language (pack) changes
@@ -89,22 +98,26 @@ function Shell() {
   useEffect(() => {
     const previous = lastEditPath.current
     lastEditPath.current = loc.pathname
-    if (previous !== '/workout' || !S.active?.editingWorkoutId || loc.pathname === '/workout') return
+    // The live store, not this render's S: a save that just closed the editor may not have
+    // reached this render yet, and asking again would offer to delete the workout it saved.
+    if (previous !== '/workout' || !useStore.getState().S.active?.editingWorkoutId || loc.pathname === '/workout') return
     const destination = loc.pathname + loc.search
     navigate('/workout', { replace: true })
     exitWorkoutEdit(() => navigate(destination, { replace: true }))
   }, [loc.pathname, loc.search, S.active?.editingWorkoutId, navigate])
-  useEffect(() => { applyPrefs(S.theme) }, [S.theme])
+  // A preset key, or the user's own colour as '#rrggbb' (lib/accent.js), already checked.
+  const accent = accentValue(S)
+  useEffect(() => { applyPrefs(S.theme, accent) }, [S.theme, accent])
   // 'system' needs to react live if the OS theme flips while the app is open, not just on
   // the next mount — a fixed 'dark'/'light' choice never re-fires this since matchMedia
   // isn't consulted for those.
   useEffect(() => {
     if (S.theme !== 'system' || !window.matchMedia) return
     const mql = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = () => applyPrefs(S.theme)
+    const onChange = () => applyPrefs(S.theme, accent)
     mql.addEventListener('change', onChange)
     return () => mql.removeEventListener('change', onChange)
-  }, [S.theme])
+  }, [S.theme, accent])
   // A profile that never picked a language follows the instance default or the browser (#303) —
   // worked out here, on this device, and never written into the synced state (lib/default-lang.js).
   const config = useStore(s => s.config)
@@ -200,6 +213,17 @@ function Shell() {
   }, [loc.pathname, navType])
   // bound to the workout, not to the route — checking Stats mid-session keeps the screen on
   useWakeLock(!!S.active && !S.active.editingWorkoutId && S.keepAwake !== false)
+  // A running workout has the whole screen (v1.3.11): no tab bar, and the rest bar docks to the
+  // bottom edge in its place. Its header's ⌄ goes back to the app, where the tab bar's Resume
+  // brings it back.
+  const inWorkout = loc.pathname === '/workout' && !!S.active
+  useEffect(() => {
+    document.body.classList.toggle('no-tabbar', inWorkout)
+    return () => document.body.classList.remove('no-tabbar')
+  }, [inWorkout])
+  // The chat owns the bottom of the screen as well: its composer sits where the tabs would be.
+  // The first-launch card has no tabs either: they changed the route behind it.
+  const noTabs = inWorkout || loc.pathname === '/coach' || needsMobileOnboarding
 
   // Reachable whether signed in or out, and ahead of the Login/Routes split below: the person
   // opening a mailed link has usually lost any session on this device, but may also click it on
@@ -242,7 +266,9 @@ function Shell() {
               <Route path="/library" element={<Library />} />
               <Route path="/muscles" element={<Muscles />} />
               <Route path="/structural-balance" element={<StructuralBalance />} />
-              <Route path="/settings" element={<Settings />} />
+              <Route path="/progress-photos" element={<ProgressPhotos />} />
+              <Route path="/settings" element={<SettingsRoute />} />
+              <Route path="/settings/:page" element={<SettingsRoute />} />
               {/* ISO-1395: api/billing.js's Checkout/Portal success_url and cancel_url are fixed,
                   Sentinel-approved strings pointing at '/configuracoes' with no sub-path — this
                   route has to be exactly that, not the issue's own illustrative '/settings/plan'. */}
@@ -264,8 +290,7 @@ function Shell() {
           would ride along with the page for the length of it. Decides for itself when to show —
           including on the sign-in screen, when the server has just ended the session. */}
       <SyncBanner />
-      {/* The chat owns the bottom of the screen: its composer sits where the tabs would be. */}
-      {loc.pathname !== '/coach' && <TabBar onStart={startFlow} />}
+      {!noTabs && <TabBar onStart={startFlow} />}
       <RestTimer />
       <Modals />
       <Toast />
