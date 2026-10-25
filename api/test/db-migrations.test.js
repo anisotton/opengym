@@ -115,15 +115,35 @@ test('a database that already ran 001 (with the FK) and 002 converges once 003 i
     assert.equal(before.length, 1, 'the FK from the originally-applied 001 is present, same as on Lyra');
 
     // 003, 004 (ISO-1393, users.stripe_customer_id), since ISO-1447, 005 (stripe_cleanup), since
-    // ISO-1390, 006 (legal_acceptance), and since ISO-1485, 007 (programs) —
-    // all unrecorded on this database, same as any migration newer than whatever Lyra already ran.
+    // ISO-1390, 006 (legal_acceptance), since ISO-1485, 007 (programs), and since ISO-1609,
+    // 008 (teacher/student roles) — all unrecorded on this database, same as any migration newer
+    // than whatever Lyra already ran.
     const count = await runMigrations(pool, MIGRATIONS_DIR);
-    assert.equal(count, 5, 'everything after 002 is newly applied — 001 and 002 were already recorded');
+    assert.equal(count, 6, 'everything after 002 is newly applied — 001 and 002 were already recorded');
 
     const { rows: after } = await pool.query(`
       SELECT conname FROM pg_constraint
       WHERE conrelid = 'invites'::regclass AND contype = 'f' AND conname = 'invites_used_by_fkey'
     `);
     assert.deepEqual(after, [], 'running 003 on top drops the FK Lyra actually has');
+  });
+});
+
+// ISO-1609: migrations/008_teachers.sql adds users.role with a DEFAULT and no backfill — a
+// profile created on any build before it exists must read as 'student' once 008 lands, with no
+// migration step touching its row at all.
+test('an account created before 008 reads role=\'student\' once 008 is applied', async () => {
+  await withDb(async pool => {
+    const before008 = fs.readdirSync(MIGRATIONS_DIR).filter(f => /^00[1-7]_.+\.sql$/.test(f)).sort();
+    assert.equal(before008.length, 7, 'the migrations that exist before 008');
+    const dir = migrationDir(Object.fromEntries(before008.map(f => [f, fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8')])));
+    await runMigrations(pool, dir);
+    await pool.query("INSERT INTO users (id, name, created_at) VALUES ('legacy1', 'Legacy', now())");
+
+    const count = await runMigrations(pool, MIGRATIONS_DIR);
+    assert.equal(count, 1, 'only 008 was left to apply');
+
+    const { rows } = await pool.query('SELECT role FROM users WHERE id = $1', ['legacy1']);
+    assert.equal(rows[0].role, 'student');
   });
 });

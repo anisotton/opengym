@@ -134,7 +134,8 @@ const TAGS = {
   // spec needs a line here.
   coach: { title: 'AI Coach', side: 'Plans, reviews, debriefs' },
   billing: { title: 'Billing', side: 'Stripe Checkout, Portal &amp; webhook' },
-  admin: { title: 'Admin', side: 'Users, invites, audit log, Coach' }
+  admin: { title: 'Admin', side: 'Users, invites, audit log, Coach' },
+  teacher: { title: 'Teacher', side: 'Roles, the link, assignments & notes' }
 }
 
 // "Admin: list all users" → "List all users": the section heading and the ADMIN

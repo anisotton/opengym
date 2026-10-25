@@ -7,6 +7,7 @@
 import { makeLinkCode, hashLinkCode, DEVICE_LINK_TTL_MS } from './device-link.js';
 import { passkeyName, transportsOf, MAX_PASSKEYS } from './passkeys-store.js';
 import { newProgramId, diffForEvent, titleMatchesForPurge } from './programs.js';
+import { newId, acceptProblem, MAX_ACTIVE_INVITES, MAX_NOTES_PER_STUDENT } from './teacher.js';
 import { withTransaction } from './db.js';
 
 // The lock insertPasskey's cap check already takes, keyed on the account rather than any one
@@ -91,6 +92,7 @@ function rowToUser(row) {
     admin: row.admin,
     disabled: row.disabled,
     sv: row.session_version,
+    role: row.role,
     ...(row.email ? { email: row.email } : {}),
     ...(row.email_verified_at ? { emailVerifiedAt: row.email_verified_at.toISOString() } : {}),
     ...(row.terms_accepted_version ? { termsAcceptedVersion: row.terms_accepted_version } : {}),
@@ -1228,4 +1230,333 @@ export async function upsertPasskey(pool, { id, userId, publicKey, counter, tran
     [id, userId, publicKey, counter || 0, transportsOf(transports), name || null,
       created ? new Date(created) : new Date(), lastUsed ? new Date(lastUsed) : null]
   );
+}
+
+/* ---------- teacher/student roles, links, assignments & notes (ISO-1594/ISO-1609) ----------
+ * `endLink` is the one place a teacher/student relationship actually ends, whatever the reason
+ * (the student unlinking, the teacher removing them, or the teacher losing their role) — one
+ * transaction that drops the link, records the event, erases the pair's notes (D13: a note never
+ * outlives the relationship that justified it) and closes out any still-active assignment. Every
+ * route that can end a link calls this rather than open-coding its effects a second time.
+ */
+
+// Sequential, not Promise.all: a single client runs one statement at a time (concurrent queries
+// on the same connection are deprecated in `pg` and due to go away), and there is no dependency
+// between these worth racing anyway — all four commit or roll back together either way.
+async function endLinkTx(client, studentId, teacherId, reason) {
+  const assignmentEndReason = reason === 'role-revoked' ? 'role-revoked' : 'unlinked';
+  await client.query('DELETE FROM teacher_links WHERE student_id = $1', [studentId]);
+  await client.query(
+    'INSERT INTO teacher_link_events (student_id, teacher_id, action, reason) VALUES ($1,$2,$3,$4)',
+    [studentId, teacherId, 'end', reason]
+  );
+  await client.query('DELETE FROM teacher_notes WHERE student_id = $1', [studentId]);
+  await client.query(
+    'UPDATE teacher_assignments SET ended_at = now(), end_reason = $2 WHERE student_id = $1 AND ended_at IS NULL',
+    [studentId, assignmentEndReason]
+  );
+}
+
+// `reason`: 'by-student' | 'by-teacher' | 'role-revoked'. A student with no link at all (already
+// gone, or never had one) is a no-op, not an error — DELETE /api/account/teacher answers the same
+// 200 either way.
+export async function endLink(pool, studentId, reason) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT teacher_id FROM teacher_links WHERE student_id = $1', [studentId]);
+    if (!rows.length) return { ok: true };
+    await endLinkTx(client, studentId, rows[0].teacher_id, reason);
+    return { ok: true };
+  });
+}
+
+// Grant is a plain column flip; revoke runs endLink (reason 'role-revoked') for every student this
+// account still teaches, and drops its own invites, all in the one transaction — a half-revoked
+// teacher (still linked to students, say) is not a state this leaves on a failure partway through.
+export async function setUserRole(pool, id, role) {
+  if (role === 'teacher') {
+    await pool.query("UPDATE users SET role = 'teacher' WHERE id = $1", [id]);
+    return;
+  }
+  await withTransaction(pool, async client => {
+    await client.query("UPDATE users SET role = 'student' WHERE id = $1", [id]);
+    const { rows } = await client.query('SELECT student_id FROM teacher_links WHERE teacher_id = $1', [id]);
+    for (const { student_id } of rows) await endLinkTx(client, student_id, id, 'role-revoked');
+    await client.query('DELETE FROM teacher_invites WHERE teacher_id = $1', [id]);
+  });
+}
+
+export async function countStudentsOfTeacher(pool, teacherId) {
+  const { rows } = await pool.query('SELECT count(*)::int AS n FROM teacher_links WHERE teacher_id = $1', [teacherId]);
+  return rows[0].n;
+}
+
+/* ---------- teacher invites ---------- */
+
+// Not atomic against a concurrent create from the same account (unlike MAX_PASSKEYS, this isn't
+// a "last way in" style security property — at most one invite over the cap could slip through a
+// true race, which costs nothing but an extra, otherwise-ordinary row).
+export async function createTeacherInvite(pool, teacherId, { hash, note, expiresAt }) {
+  const { rows } = await pool.query(
+    'SELECT count(*)::int AS n FROM teacher_invites WHERE teacher_id = $1 AND expires_at > now()', [teacherId]
+  );
+  if (rows[0].n >= MAX_ACTIVE_INVITES) {
+    return { error: `a teacher can have at most ${MAX_ACTIVE_INVITES} active invites`, code: 'invite-limit' };
+  }
+  await pool.query(
+    'INSERT INTO teacher_invites (hash, teacher_id, note, expires_at) VALUES ($1,$2,$3,$4)',
+    [hash, teacherId, note || null, new Date(expiresAt)]
+  );
+  return { ok: true };
+}
+
+function rowToTeacherInvite(row) {
+  return { hash: row.hash, ...(row.note ? { note: row.note } : {}), created: row.created_at.toISOString(), expires: row.expires_at.getTime() };
+}
+
+export async function listTeacherInvites(pool, teacherId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM teacher_invites WHERE teacher_id = $1 AND expires_at > now() ORDER BY created_at DESC', [teacherId]
+  );
+  return rows.map(rowToTeacherInvite);
+}
+
+export async function revokeTeacherInvite(pool, teacherId, hash) {
+  const { rowCount } = await pool.query('DELETE FROM teacher_invites WHERE hash = $1 AND teacher_id = $2', [hash, teacherId]);
+  return rowCount > 0;
+}
+
+// Read-only, for the preview a student sees before deciding to accept — does not use the code up.
+export async function peekTeacherInvite(pool, hash) {
+  const { rows } = await pool.query(
+    'SELECT ti.teacher_id, u.name AS teacher_name FROM teacher_invites ti JOIN users u ON u.id = ti.teacher_id WHERE ti.hash = $1 AND ti.expires_at > now()',
+    [hash]
+  );
+  return rows.length ? { teacherId: rows[0].teacher_id, teacherName: rows[0].teacher_name } : null;
+}
+
+/* ---------- the link itself ---------- */
+
+function rowToLink(row) {
+  return {
+    studentId: row.student_id, teacherId: row.teacher_id, scopeVersion: row.scope_version,
+    shareBodyweight: row.share_bodyweight, acceptedAt: row.accepted_at.toISOString()
+  };
+}
+
+export async function getTeacherLink(pool, studentId) {
+  const { rows } = await pool.query('SELECT * FROM teacher_links WHERE student_id = $1', [studentId]);
+  return rows.length ? rowToLink(rows[0]) : null;
+}
+
+// requireStudentOf's own read — scoped to the one teacher asking, so a student linked to someone
+// else answers exactly like one with no link at all (D11: one uniform refusal either way).
+export async function getLinkForTeacher(pool, teacherId, studentId) {
+  const { rows } = await pool.query('SELECT * FROM teacher_links WHERE student_id = $1 AND teacher_id = $2', [studentId, teacherId]);
+  return rows.length ? rowToLink(rows[0]) : null;
+}
+
+export async function listStudentsOfTeacher(pool, teacherId) {
+  const { rows } = await pool.query('SELECT * FROM teacher_links WHERE teacher_id = $1 ORDER BY accepted_at', [teacherId]);
+  return rows.map(rowToLink);
+}
+
+class AcceptProblem extends Error {
+  constructor(code) { super(code); this.code = code; }
+}
+
+// One transaction: claim the code (DELETE … RETURNING, same atomic-claim shape as
+// consumeInvite/burnDeviceLink), re-check every acceptProblem() rule against what was actually
+// claimed, and only then insert the link and its event(s). Any refusal throws AcceptProblem,
+// which rolls the claim back too — a code that didn't let anyone in is not spent (D11's matrix:
+// "convite não consumido" on already-has-teacher).
+export async function acceptTeacherInvite(pool, { hash, student, scopeVersion, shareBodyweight, now = Date.now() }) {
+  try {
+    return await withTransaction(pool, async client => {
+      const claimed = await client.query('DELETE FROM teacher_invites WHERE hash = $1 RETURNING teacher_id, expires_at', [hash]);
+      const invite = claimed.rows.length
+        ? { teacherId: claimed.rows[0].teacher_id, expiresAt: claimed.rows[0].expires_at.getTime() }
+        : null;
+      const { rows: linkRows } = await client.query('SELECT teacher_id FROM teacher_links WHERE student_id = $1', [student.id]);
+      const existingLink = linkRows.length ? { teacherId: linkRows[0].teacher_id } : null;
+      const problem = acceptProblem({ invite, student, now, existingLink });
+      if (problem) throw new AcceptProblem(problem);
+      await client.query(
+        'INSERT INTO teacher_links (student_id, teacher_id, scope_version, share_bodyweight) VALUES ($1,$2,$3,$4)',
+        [student.id, invite.teacherId, scopeVersion, shareBodyweight === true]
+      );
+      await client.query(
+        "INSERT INTO teacher_link_events (student_id, teacher_id, action, scope_version) VALUES ($1,$2,'accept',$3)",
+        [student.id, invite.teacherId, scopeVersion]
+      );
+      if (shareBodyweight === true) {
+        await client.query(
+          "INSERT INTO teacher_link_events (student_id, teacher_id, action) VALUES ($1,$2,'bodyweight-on')",
+          [student.id, invite.teacherId]
+        );
+      }
+      return { ok: true, teacherId: invite.teacherId };
+    });
+  } catch (e) {
+    if (e instanceof AcceptProblem) return { error: e.code, code: e.code };
+    throw e;
+  }
+}
+
+// The opt-in a student flips any time from "Meu professor" (D12) — never on the teacher's own
+// say-so. A student with no teacher at all gets `not-found`, same code DELETE-less routes use.
+export async function setShareBodyweight(pool, studentId, share) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query(
+      'UPDATE teacher_links SET share_bodyweight = $2 WHERE student_id = $1 RETURNING teacher_id', [studentId, share === true]
+    );
+    if (!rows.length) return { error: 'no teacher linked', code: 'not-found' };
+    await client.query(
+      'INSERT INTO teacher_link_events (student_id, teacher_id, action) VALUES ($1,$2,$3)',
+      [studentId, rows[0].teacher_id, share === true ? 'bodyweight-on' : 'bodyweight-off']
+    );
+    return { ok: true };
+  });
+}
+
+/* ---------- assignments (D14) ---------- */
+
+function rowToAssignment(row) {
+  const d = row.starts_on;
+  const startsOn = d instanceof Date
+    ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    : d;
+  return {
+    id: row.id, teacherId: row.teacher_id, studentId: row.student_id, kind: row.kind, payload: row.payload,
+    startsOn, days: row.days || null, createdAt: row.created_at.toISOString(),
+    endedAt: row.ended_at ? row.ended_at.toISOString() : null, endReason: row.end_reason || null,
+    deliveredAt: row.delivered_at ? row.delivered_at.toISOString() : null,
+    endAckedAt: row.end_acked_at ? row.end_acked_at.toISOString() : null
+  };
+}
+
+export async function getActiveAssignment(pool, studentId) {
+  const { rows } = await pool.query('SELECT * FROM teacher_assignments WHERE student_id = $1 AND ended_at IS NULL', [studentId]);
+  return rows.length ? rowToAssignment(rows[0]) : null;
+}
+
+// Trading one assignment for another (or making the first one) is one transaction: end whatever
+// is active (`end_reason = 'replaced'`), then insert the new row. Two such calls racing the same
+// student can both run the UPDATE (the second simply matches nothing once the first commits), but
+// only one INSERT can ever satisfy teacher_assignments_one_active — the loser's unique_violation
+// is this function's own half of the 409 the route answers (D14).
+export async function assignToStudent(pool, { teacherId, studentId, kind, payload, startsOn, days }) {
+  return withTransaction(pool, async client => {
+    await client.query(
+      "UPDATE teacher_assignments SET ended_at = now(), end_reason = 'replaced' WHERE student_id = $1 AND ended_at IS NULL",
+      [studentId]
+    );
+    const id = newId();
+    try {
+      await client.query(
+        'INSERT INTO teacher_assignments (id, teacher_id, student_id, kind, payload, starts_on, days) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [id, teacherId, studentId, kind, payload, startsOn, days && days.length ? days : null]
+      );
+    } catch (e) {
+      if (e.code === '23505') return { error: 'another assignment is already active for this student', code: 'assignment-conflict' };
+      throw e;
+    }
+    return { ok: true, row: await getActiveAssignment(client, studentId) };
+  });
+}
+
+export async function endAssignment(pool, teacherId, studentId) {
+  const { rowCount } = await pool.query(
+    "UPDATE teacher_assignments SET ended_at = now(), end_reason = 'ended' WHERE teacher_id = $1 AND student_id = $2 AND ended_at IS NULL",
+    [teacherId, studentId]
+  );
+  if (!rowCount) return { error: 'no active assignment', code: 'no-active-assignment' };
+  return { ok: true };
+}
+
+export async function listAssignmentHistory(pool, studentId, limit = 10) {
+  const { rows } = await pool.query(
+    'SELECT * FROM teacher_assignments WHERE student_id = $1 AND ended_at IS NOT NULL ORDER BY created_at DESC LIMIT $2',
+    [studentId, limit]
+  );
+  return rows.map(rowToAssignment);
+}
+
+// What the student's own pull reads (GET /api/account/assignments), independent of whether a
+// link still exists — a student who just unlinked still has to be told their teacher's last
+// assignment ended (the "ended" half below never needs the link, only the row).
+export async function getPendingAndEndedAssignments(pool, studentId) {
+  const [pending, ended] = await Promise.all([
+    pool.query('SELECT * FROM teacher_assignments WHERE student_id = $1 AND ended_at IS NULL AND delivered_at IS NULL', [studentId]),
+    pool.query(
+      'SELECT * FROM teacher_assignments WHERE student_id = $1 AND ended_at IS NOT NULL AND delivered_at IS NOT NULL AND end_acked_at IS NULL',
+      [studentId]
+    )
+  ]);
+  return { pending: pending.rows.map(rowToAssignment), ended: ended.rows.map(rowToAssignment) };
+}
+
+// Marks whichever half of the ack this assignment is still waiting on — delivered (the app
+// imported it) or end-acked (the app noticed it ended). Scoped to the caller's own id; an
+// assignment of another student's is exactly as absent as one that does not exist (D11's spirit,
+// applied to the student's own routes too).
+export async function ackAssignment(pool, studentId, id) {
+  const { rows } = await pool.query('SELECT ended_at FROM teacher_assignments WHERE id = $1 AND student_id = $2', [id, studentId]);
+  if (!rows.length) return { error: 'no such assignment', code: 'not-found' };
+  if (rows[0].ended_at == null) {
+    await pool.query('UPDATE teacher_assignments SET delivered_at = now() WHERE id = $1 AND delivered_at IS NULL', [id]);
+  } else {
+    await pool.query('UPDATE teacher_assignments SET end_acked_at = now() WHERE id = $1 AND end_acked_at IS NULL', [id]);
+  }
+  return { ok: true };
+}
+
+/* ---------- notes (D13) ---------- */
+
+function rowToNote(row) {
+  return { id: row.id, body: row.body, created: row.created_at.toISOString(), updated: row.updated_at.toISOString() };
+}
+
+export async function listNotes(pool, teacherId, studentId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM teacher_notes WHERE teacher_id = $1 AND student_id = $2 ORDER BY created_at DESC', [teacherId, studentId]
+  );
+  return rows.map(rowToNote);
+}
+
+// A plain `count(*) < cap` in the INSERT's own WHERE (the subquery trick MAX_PASSKEYS uses) takes
+// no lock by itself — see insertPasskey's own comment on exactly this: two concurrent connections
+// each get their own READ COMMITTED snapshot of the count and can both pass. The advisory lock,
+// keyed on the pair, is what actually serializes two notes racing the same teacher+student: the
+// second one waits for the first to commit (or roll back) before it takes its own count.
+export async function createNote(pool, teacherId, studentId, body) {
+  return withTransaction(pool, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [teacherId + ':' + studentId]);
+    const { rows: [{ n }] } = await client.query(
+      'SELECT count(*)::int AS n FROM teacher_notes WHERE teacher_id = $1 AND student_id = $2', [teacherId, studentId]
+    );
+    if (n >= MAX_NOTES_PER_STUDENT) return { error: `a teacher can have at most ${MAX_NOTES_PER_STUDENT} notes per student`, code: 'notes-limit' };
+    const id = newId();
+    await client.query('INSERT INTO teacher_notes (id, teacher_id, student_id, body) VALUES ($1,$2,$3,$4)', [id, teacherId, studentId, body]);
+    const { rows: [row] } = await client.query('SELECT * FROM teacher_notes WHERE id = $1', [id]);
+    return { ok: true, row: rowToNote(row) };
+  });
+}
+
+// The WHERE filters by teacher_id *and* student_id, not just the note's own id: a note id from
+// another pair (another teacher, or the same teacher's note about a different student) matches
+// nothing here, same uniform `note-not-found` either way (D11's shape, carried into notes).
+export async function updateNote(pool, teacherId, studentId, noteId, body) {
+  const { rows } = await pool.query(
+    'UPDATE teacher_notes SET body = $1, updated_at = now() WHERE id = $2 AND teacher_id = $3 AND student_id = $4 RETURNING *',
+    [body, noteId, teacherId, studentId]
+  );
+  if (!rows.length) return { error: 'no such note', code: 'note-not-found' };
+  return { ok: true, row: rowToNote(rows[0]) };
+}
+
+export async function deleteNote(pool, teacherId, studentId, noteId) {
+  const { rowCount } = await pool.query(
+    'DELETE FROM teacher_notes WHERE id = $1 AND teacher_id = $2 AND student_id = $3', [noteId, teacherId, studentId]
+  );
+  return rowCount > 0;
 }
