@@ -367,6 +367,80 @@ test('resume: no schedule — cancel_at_period_end back to false', async t => {
   assert.equal(r.body.cancel_at_period_end, false);
 });
 
+test('cancel-at-period-end then resume, mid first month: the intro phase is untouched, phase 2 comes back at the plan price, no proration', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1', planId: 'monthly', priceId: 'price_monthly_test' });
+  // Still inside the intro cycle: phase 0 (intro, already bounded) is the active one; phase 1
+  // (the plan the user is slated for) hasn't started yet. Captured once — `now()` truncates to
+  // the second, and the requests below take real time.
+  const introStart = now() - DAY;
+  const introEnd = now() + DAY;
+  h.mock.schedules.sched_1 = {
+    id: 'sched_1', object: 'subscription_schedule', status: 'active', end_behavior: 'release',
+    phases: [
+      { start_date: introStart, end_date: introEnd, items: [{ price: 'price_intro_test' }] },
+      { start_date: introEnd, items: [{ price: 'price_monthly_test' }] }
+    ]
+  };
+  h.mock.subscriptions.sub_1.schedule = 'sched_1';
+
+  const cancel = await h.req('POST', '/api/admin/billing/subscription/cancel-period-end', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }
+  });
+  assert.equal(cancel.status, 200);
+  assert.equal(cancel.body.end_behavior, 'cancel');
+  assert.equal(cancel.body.phases.length, 1, 'the still-pending plan phase is dropped, not the intro one');
+  assert.equal(cancel.body.phases[0].items[0].price, 'price_intro_test');
+  assert.equal(cancel.body.phases[0].end_date, introEnd, 'the intro phase keeps its own original end_date');
+  const cancelCall = h.mock.calls.filter(c => c.method === 'POST' && c.url === '/v1/subscription_schedules/sched_1').pop();
+  assert.equal(parseStripeForm(cancelCall.body).proration_behavior, 'none');
+
+  const resume = await h.req('POST', '/api/admin/billing/subscription/resume', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON }
+  });
+  assert.equal(resume.status, 200);
+  assert.equal(resume.body.end_behavior, 'release');
+  assert.equal(resume.body.phases.length, 2, 'the plan phase is appended back, the intro phase is not touched');
+  assert.equal(resume.body.phases[0].items[0].price, 'price_intro_test');
+  assert.equal(resume.body.phases[0].end_date, introEnd, 'still the original intro end_date — never overwritten');
+  assert.equal(resume.body.phases[1].items[0].price, 'price_monthly_test', 'the plan this account is actually slated for, not an invented value');
+  assert.equal(resume.body.phases[1].end_date, undefined, 'open-ended, same as every schedule this app creates');
+  const resumeCall = h.mock.calls.filter(c => c.method === 'POST' && c.url === '/v1/subscription_schedules/sched_1').pop();
+  assert.equal(parseStripeForm(resumeCall.body).proration_behavior, 'none');
+});
+
+test('cancel-at-period-end once already on the plan\'s own phase: that phase stays, bounded to current_period_end, no proration', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1', planId: 'monthly', priceId: 'price_monthly_test' });
+  // Past the first month: phase 0 (intro) is history, phase 1 (the plan, open-ended) is active —
+  // the schedule is still attached (Stripe never auto-released it), same as the real sandbox.
+  h.mock.schedules.sched_1 = {
+    id: 'sched_1', object: 'subscription_schedule', status: 'active', end_behavior: 'release',
+    phases: [
+      { start_date: now() - 2 * DAY, end_date: now() - DAY, items: [{ price: 'price_intro_test' }] },
+      { start_date: now() - DAY, items: [{ price: 'price_monthly_test' }] }
+    ]
+  };
+  h.mock.subscriptions.sub_1.schedule = 'sched_1';
+  const periodEnd = now() + 29 * DAY; // captured once — `now()` truncates to the second, and the request below takes real time
+  h.mock.subscriptions.sub_1.current_period_end = periodEnd;
+
+  const r = await h.req('POST', '/api/admin/billing/subscription/cancel-period-end', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.end_behavior, 'cancel');
+  assert.equal(r.body.phases.length, 2, 'the plan\'s own active phase is kept, not dropped as if it were still pending');
+  assert.equal(r.body.phases[0].items[0].price, 'price_intro_test', 'past history, untouched');
+  assert.equal(r.body.phases[1].items[0].price, 'price_monthly_test');
+  assert.equal(r.body.phases[1].end_date, periodEnd, 'bounded to current_period_end — it had no end of its own');
+  const call = h.mock.calls.filter(c => c.method === 'POST' && c.url === '/v1/subscription_schedules/sched_1').pop();
+  assert.equal(parseStripeForm(call.body).proration_behavior, 'none');
+});
+
 test('cancel-immediately: no schedule — subscriptions.cancel, status canceled', async t => {
   const h = await startServer(t, { users: [admin(), plain()] });
   await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });

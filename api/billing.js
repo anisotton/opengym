@@ -304,6 +304,27 @@ async function convertToSchedule(stripe, subscriptionId, targetPriceId, idempote
 const scheduleIdOf = sub => (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id) || null;
 const lastPhaseOf = schedule => schedule.phases[schedule.phases.length - 1];
 
+// Which phase of `schedule` is in effect right now — NOT the same as "the last phase": Stripe
+// keeps a schedule attached to its subscription well past the transition into its final, open-
+// ended phase (there is no automatic `release` the moment that phase starts), so a two-phase
+// schedule this app created at Checkout can still have both phases long after the first month —
+// `cancelAtPeriodEnd`/`resumeCancellation` below both have to know which one is actually current,
+// not just reach for `phases[length-1]`. `current_phase` is Stripe's own answer when present
+// (matched back to its entry in `phases` by `start_date`, since that's the one field guaranteed
+// to line up); the date comparison is the fallback for a schedule object that omits it.
+function activePhaseIndex(schedule, nowUnix) {
+  if (schedule.current_phase) {
+    const idx = schedule.phases.findIndex(p => p.start_date === schedule.current_phase.start_date);
+    if (idx !== -1) return idx;
+  }
+  let idx = schedule.phases.length - 1;
+  for (let i = 0; i < schedule.phases.length; i++) {
+    const p = schedule.phases[i];
+    if (p.start_date <= nowUnix && (p.end_date == null || nowUnix < p.end_date)) { idx = i; break; }
+  }
+  return idx;
+}
+
 // The subscription-row shape shared by applyStripeEvent's own created/updated case and the
 // "sincronizar" admin action (ISO-1624 T2a) — "mesmo mapeamento do webhook" per the plan, read off
 // whichever Stripe Subscription object `obj` is (a webhook payload or a live retrieve, the two
@@ -924,6 +945,14 @@ export async function changePlan(pool, { userId, subscriptionId, newPlanId, expe
       return { ok: true, before, after, stripeIds: { subscriptionId, scheduleId: newScheduleId } };
     }
     const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId);
+    // Unlike cancelAtPeriodEnd/resumeCancellation below, `lastPhaseOf` (not `activePhaseIndex`)
+    // is correct here regardless of which phase is actually in effect: this app's own schedules
+    // never exceed two phases, so "the last phase" is either the still-pending plan phase (mid
+    // first month — the literal "substitui o Price da fase 2" the plan asks for) or, once that
+    // phase has started, the very same object is also the one currently active. Either way the
+    // effect is the same: swap that phase's Price, no proration — the next invoice (today's if
+    // already on the plan's own phase, the first one after the intro period otherwise) is simply
+    // at the new plan's price.
     const finalPhase = lastPhaseOf(schedule);
     const phases = schedule.phases.slice(0, -1)
       .map(p => ({ items: p.items.map(i => ({ price: i.price })), start_date: p.start_date, end_date: p.end_date }));
@@ -953,10 +982,25 @@ export async function cancelAtPeriodEnd(pool, { userId, subscriptionId, expected
     }
     const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId);
     const periodEnd = before.current_period_end ?? before.items?.data?.[0]?.current_period_end;
-    const phases = schedule.phases.length > 1
-      ? schedule.phases.slice(0, -1).map(p => ({ items: p.items.map(i => ({ price: i.price })), start_date: p.start_date, end_date: p.end_date }))
-      : [{ items: schedule.phases[0].items.map(i => ({ price: i.price })), start_date: schedule.phases[0].start_date, end_date: schedule.phases[0].end_date ?? periodEnd }];
-    const after = await stripe.subscriptionSchedules.update(scheduleId, { end_behavior: 'cancel', phases }, { idempotencyKey });
+    // The phase actually in effect right now — never just "the last one": this schedule can
+    // still be two phases long after the first month (see activePhaseIndex's own comment).
+    // Everything before it is already-elapsed history and is kept untouched; the active phase
+    // itself is bounded to current_period_end if it had no end date of its own (the plan's own
+    // open-ended phase never does); anything after it (a future phase, mid-first-month) is
+    // dropped — "não soltar o schedule no meio do 1º mês" means never losing the still-in-effect
+    // phase's own price, not keeping a phase that was never going to be charged.
+    const activeIdx = activePhaseIndex(schedule, Math.floor(Date.now() / 1000));
+    const activePhase = schedule.phases[activeIdx];
+    const phases = schedule.phases.slice(0, activeIdx)
+      .map(p => ({ items: p.items.map(i => ({ price: i.price })), start_date: p.start_date, end_date: p.end_date }));
+    phases.push({
+      items: activePhase.items.map(i => ({ price: i.price })),
+      start_date: activePhase.start_date,
+      end_date: activePhase.end_date ?? periodEnd
+    });
+    const after = await stripe.subscriptionSchedules.update(
+      scheduleId, { end_behavior: 'cancel', phases, proration_behavior: 'none' }, { idempotencyKey }
+    );
     return { ok: true, before, after, stripeIds: { subscriptionId, scheduleId } };
   });
 }
@@ -979,12 +1023,24 @@ export async function resumeCancellation(pool, { userId, subscriptionId, expecte
     }
     const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId);
     const lastPhase = lastPhaseOf(schedule);
+    const basePhases = schedule.phases.map(p => ({ items: p.items.map(i => ({ price: i.price })), start_date: p.start_date, end_date: p.end_date }));
     const plan = await getCatalogPlan(pool, sub.plan);
     const targetPriceId = plan?.currentPriceId || lastPhase.items[0].price;
-    const phases = schedule.phases.slice(0, -1)
-      .map(p => ({ items: p.items.map(i => ({ price: i.price })), start_date: p.start_date, end_date: p.end_date }));
-    phases.push({ items: [{ price: targetPriceId }], start_date: lastPhase.start_date });
-    const after = await stripe.subscriptionSchedules.update(scheduleId, { end_behavior: 'release', phases }, { idempotencyKey });
+    let phases;
+    if (await isIntroPrice(pool, lastPhase.items[0].price)) {
+      // cancelAtPeriodEnd was called mid-first-month: the intro phase was never modified (its own
+      // end_date was already set), so it is kept exactly as is, and the plan's own phase — the
+      // one cancelling had dropped — is appended back, open-ended, starting the moment the intro
+      // phase ends.
+      phases = [...basePhases, { items: [{ price: targetPriceId }], start_date: lastPhase.end_date }];
+    } else {
+      // cancelAtPeriodEnd was called once already on the plan's own (indefinite) phase: only the
+      // end_date it added needs removing — same phase, same price, same start_date.
+      phases = [...basePhases.slice(0, -1), { items: lastPhase.items.map(i => ({ price: i.price })), start_date: lastPhase.start_date }];
+    }
+    const after = await stripe.subscriptionSchedules.update(
+      scheduleId, { end_behavior: 'release', phases, proration_behavior: 'none' }, { idempotencyKey }
+    );
     return { ok: true, before, after, stripeIds: { subscriptionId, scheduleId } };
   });
 }
