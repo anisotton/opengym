@@ -949,7 +949,7 @@ const THROTTLED = {
   'POST /api/account/password': 'password', 'DELETE /api/account/password': null,
   // Setting an e-mail only spends the budget and asks the address's e-mail pause; an address
   // already in use counts against it (see POST /api/account/email).
-  'POST /api/account/email': 'email', 'DELETE /api/account/email': null,
+  'POST /api/account/email': 'email',
   // Redeeming a device link (#95). Adding or removing a passkey and making a link only spend the
   // budget: the password that may prove them counts its own failures (passwordAttempt).
   'POST /api/device-link/options': 'link', 'POST /api/device-link/verify': 'link',
@@ -1042,43 +1042,37 @@ async function passwordHolder(k) {
   return users.find(u => hasPassword(u) && nameKey(u.name) === k) || null;
 }
 const holdsName = u => hasPassword(u) || !!(u.pwReset && u.pwReset.exp > Date.now());
-// An e-mail is a second name to sign in with (see "e-mail as a sign-in name" below), so a name
-// is also taken by another profile's e-mail — only ever relevant for a name with an "@" in it.
+// An e-mail is a second name to sign in with (see "e-mail sign-in" below), so a name is also
+// taken by another profile's e-mail — only ever relevant for a name with an "@" in it.
 async function nameTaken(name, exceptId) {
   const k = nameKey(name);
   const users = await getAllUsers(pool);
   return users.some(u => u.id !== exceptId && ((holdsName(u) && nameKey(u.name) === k) || u.email === k));
 }
 
-/* ---------- e-mail as a sign-in name ----------
-   Optional, per profile, and only while PASSWORD_LOGIN is on: an address someone may type at the
-   password sign-in instead of their profile name. Nothing is ever sent to it — no verification,
-   no reset mail; resets stay the admin's one-time code — so the address is never proven to be
-   theirs, and it does not need to be: it is only an identifier that points at an account, and the
-   password is still what opens it. Stored as `u.email`, folded by normalizeEmail() (password.js).
+/* ---------- e-mail sign-in (ISO-1596) ----------
+   `u.email` is a single field, one per profile: the verified address ISO-1397 gave every profile
+   (confirmed by a mailed link, the one way back in once every passkey is lost — see "verified
+   e-mail + recovery" below). Before this pass, PASSWORD_LOGIN on made `POST /api/account/email`
+   and this field mean something else instead — an unverified second name to type at password
+   sign-in, never mailed to, colliding with the ISO-1397 address at the same column and the same
+   route. That split is gone: with PASSWORD_LOGIN on or off, `u.email` is always the verified
+   address, set the same way (POST /api/account/email in emailRoutes below, proof required, a
+   confirmation mailed) and exposed the same way (GET /api/me). An address an old deploy saved
+   while the split still existed is not lost — it reads back as this account's e-mail, simply unverified
+   (email_verified_at was already nullable for exactly this case) until its owner confirms it or
+   changes it.
 
-   It is unique across every profile, and no profile's address may be another password-holding
-   profile's name (nameTaken above says the same the other way round), so an identifier never
-   points at two accounts. That uniqueness is the one thing an address reveals: setting one that
-   is in use answers 409. The route could be made to hide it — accept the address silently and
-   leave it pointing nowhere — but then someone who typed their own address on a second profile
-   would be told it was saved and find it did not sign in, which is worse. So it answers, and the
-   answer is made expensive instead: in Settings only a signed-in owner can ask (session +
-   proveOwner, a passkey prompt or a checked password per try), an address already in use counts
-   against the caller's address and account (20 free, then 30 s doubling to 15 min), and profile
-   creation with a password and an address counts the same way against the caller's address.
-   Signup needs no session, so it is the cheaper place to ask: it answers only after hashing the
-   new password and, on an invite-only instance, only to someone holding a valid invite code
-   (a refusal does not use it up); an open instance answers anyone. What that leaves is what the name-taken answer already gives
-   away for names — "some profile here uses this", never which one — at a few tries an hour.
-
-   Sign-in takes it in the same field as the name (loginTarget): an identifier with an "@" is
-   looked up as an address first, then as a name, so a profile name that happens to contain an
-   "@" still signs in. Wrong passwords count against the account the identifier resolves to, so
-   switching between name and address does not reset the pause. The full address is never
-   written to the audit log or the console (maskEmail), is not part of /api/me, the Coach, the
-   MCP bridge or anything shared, and only its owner (GET /api/account/password) and an admin
-   (the user list) ever see it. */
+   What password sign-in adds to that one field: it becomes a second identifier next to the
+   profile name (loginTarget below looks up an "@" as an address first, then falls back to a
+   name), and the current password is accepted as proof of owning it (proveOwner) the same as any
+   other change to how the account is reached. Signing in with it needs no confirmation — the
+   password is the proof — so an unconfirmed address still signs in; only the "confirm your
+   e-mail" banner (GET /api/me's emailVerified) is affected. It is unique across every profile,
+   and no profile's address may be another password-holding profile's name (nameTaken above says
+   the same the other way round), so an identifier never points at two accounts. Wrong passwords
+   count against the account the identifier resolves to, so switching between name and address
+   does not reset the pause (see "What a password gives up" in SELF_HOSTING.md). */
 async function emailHolder(e) {
   const users = await getAllUsers(pool);
   return users.find(u => hasPassword(u) && u.email === e) || null;
@@ -1167,7 +1161,7 @@ const POLICY_ERRORS = {
   'too-common': 'this password is too easy to guess'
 };
 const policyError = (res, problem) => json(res, 400, { error: POLICY_ERRORS[problem], code: problem });
-const WRONG = { error: 'wrong name or password', code: 'bad-credentials' };
+const WRONG = { error: 'wrong e-mail or password', code: 'bad-credentials' };
 
 // A new password ends every other session of the account, the way "sign out everywhere" does,
 // pending pairing codes and device links included; the caller's own is re-issued by the route.
@@ -1294,19 +1288,6 @@ async function proveOwner(req, res, user, body, act) {
 
 if (PASSWORD_LOGIN) warmUp();
 
-// Taking the address away: the profile then signs in by its name only. Asks the same proof as
-// setting one; a profile without an address gets 200 with none asked.
-async function removeEmail(req, res, user, body) {
-  if (!user.email) return json(res, 200, { ok: true, email: null });
-  const proof = await proveOwner(req, res, user, body, 'email-remove');
-  if (!proof) return;
-  if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
-  delete user.email;
-  await setEmail(pool, user.id, null);
-  audit(req, 'auth.email.remove', { user, msg: proof });
-  json(res, 200, { ok: true, email: null });
-}
-
 const passwordRoutes = {
   'POST /api/login/password': async (req, res) => {
     const body = await readBody(req);
@@ -1394,19 +1375,19 @@ const passwordRoutes = {
     if (problem) return policyError(res, problem);
     const taken = () => json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
     if (await nameTaken(name)) return taken();
-    // An e-mail is optional here. One already in use counts against the address, the way it
-    // does in Settings: this route needs no session, so it is the cheaper place to ask. Whether
-    // it is in use is only answered after the hash and the invite check that follows it, so on
-    // an invite-only instance nobody without a valid code learns anything about addresses.
-    const hasEmail = typeof body.email === 'string' && body.email.trim() !== '';
-    const email = hasEmail ? normalizeEmail(body.email) : null;
-    if (hasEmail && !email) return json(res, 400, EMAIL_ERRORS.invalid);
+    // ISO-1596: a password signup needs a valid, unique e-mail too now — the same requirement
+    // register/options has had for passkey signup since ISO-1397, confirmed by the same mailed
+    // link. Checked after the invite gate, same place the optional address used to be checked, so
+    // on an invite-only instance a guess with no valid code still learns nothing about addresses.
+    const email = normalizeEmail(body.email);
+    if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
     const emailRefused = () => {
       strikeAddress(req, 'email');
       audit(req, 'auth.register.fail', { ok: false, name, msg: 'email-taken' });
       return json(res, 409, EMAIL_ERRORS.taken);
     };
-    if (email && addressPaused(req, res, 'email')) return;
+    if (addressPaused(req, res, 'email')) return;
+    if (await emailTaken(email)) return emailRefused();
     const h = await hashPassword(body.password);
     // Re-checked once more right before the insert: everything since the first nameTaken/
     // emailTaken awaited (the invite check, the hash), and a second request could have landed.
@@ -1415,33 +1396,40 @@ const passwordRoutes = {
       return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
     }
     if (await nameTaken(name)) return taken();
-    if (email && await emailTaken(email)) return emailRefused();
+    if (await emailTaken(email)) return emailRefused();
     const created = new Date().toISOString();
     const user = {
-      id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}), birthDate,
+      id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, email, birthDate,
       // ISO-1390: termsVersionProblem() above already pinned body.termsVersion to LEGAL_VERSION.
       termsAcceptedVersion: LEGAL_VERSION, termsAcceptedAt: created
     };
     if (INVITE_ONLY) user.invitedBy = code;
-    // createUser and consumeInvite commit or fail together: an invite consumed by a request whose
-    // user row then never landed (the unique-name/e-mail race below) would be burned for nothing,
-    // and a user row created on top of an invite another request consumed first (InviteRaceError)
-    // has to be undone, not left behind with no invite to show for it. createUser's own UNIQUE
-    // constraint on email is the actual backstop if two requests still land together on that.
+    // ISO-1397/ISO-1596: a confirmation token is minted in the same transaction as the account,
+    // same reasoning as POST /api/register/verify (see that route) — a password signup never
+    // exists without one to confirm either. The mail itself goes out after commit, below.
+    const verifyToken = makeEmailToken();
+    // createUser, consumeInvite and the token all commit or fail together: an invite consumed by
+    // a request whose user row then never landed (the unique-name/e-mail race below) would be
+    // burned for nothing, and a user row created on top of an invite another request consumed
+    // first (InviteRaceError) has to be undone, not left behind with no invite to show for it.
+    // createUser's own UNIQUE constraint on email is the actual backstop if two requests still
+    // land together on that.
     try {
       await withTransaction(pool, async client => {
         await createUser(client, user);
         if (INVITE_ONLY && !(await consumeInvite(client, code, user.id))) throw new InviteRaceError();
+        await createEmailToken(client, user.id, 'verify', hashEmailToken(verifyToken), VERIFY_TTL_MS);
       });
     } catch (e) {
       if (e instanceof InviteRaceError) {
         audit(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
         return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
       }
-      if (e.code === '23505') return email ? emailRefused() : taken(); // unique_violation
+      if (e.code === '23505') return emailRefused(); // unique_violation
       throw e;
     }
     audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? code + ' · password' : 'password' });
+    await mailVerification(user, verifyToken);
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
@@ -1510,60 +1498,6 @@ const passwordRoutes = {
     if (r.error) return lastWayIn();
     audit(req, 'auth.password.remove', { user: fresh });
     json(res, 200, { ok: true });
-  },
-
-  // Set, change (`email`) or remove (`email` empty or null, or DELETE) the address this profile
-  // may sign in with. The same proof as a password (proveOwner): an address that points at the
-  // account is part of how someone gets in, and a copied session must not choose it. An address
-  // already in use is refused only after the proof, and counts against the caller's address and
-  // account, so asking whether an address is in use costs a passkey prompt or a password check
-  // and runs out after a few tries (see "e-mail as a sign-in name" above).
-  'POST /api/account/email': async (req, res) => {
-    const s = await sessionOf(req);
-    if (!s) return json(res, 401, { error: 'not signed in' });
-    const { user } = s;
-    const body = await readBody(req);
-    if (body.email == null || (typeof body.email === 'string' && body.email.trim() === '')) return removeEmail(req, res, user, body);
-    const email = normalizeEmail(body.email);
-    if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
-    if (email === user.email) return json(res, 200, { ok: true, email });
-    const acct = 'email|' + acctKey(user);
-    const paused = () => {
-      const wait = ADDR_FAILS.retryAfter(acct);
-      if (wait) tooMany(res, wait);
-      return wait > 0 || addressPaused(req, res, 'email');
-    };
-    if (paused()) return;
-    const proof = await proveOwner(req, res, user, body, 'email');
-    if (!proof) return;
-    if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
-    if (paused()) return;
-    if (await emailTaken(email, user.id)) {
-      strikeAddress(req, 'email');
-      ADDR_FAILS.fail(acct);
-      audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
-      return json(res, 409, EMAIL_ERRORS.taken);
-    }
-    const first = !user.email;
-    user.email = email;
-    try {
-      await setEmail(pool, user.id, email);
-    } catch (e) {
-      if (e.code === '23505') { // unique_violation — lost a race to another request
-        strikeAddress(req, 'email');
-        ADDR_FAILS.fail(acct);
-        audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
-        return json(res, 409, EMAIL_ERRORS.taken);
-      }
-      throw e;
-    }
-    audit(req, first ? 'auth.email.set' : 'auth.email.change', { user, msg: proof + ' · ' + maskEmail(email) });
-    json(res, 200, { ok: true, email });
-  },
-  'DELETE /api/account/email': async (req, res) => {
-    const user = await readSession(req);
-    if (!user) return json(res, 401, { error: 'not signed in' });
-    removeEmail(req, res, user, await readBody(req));
   },
 
   // An admin hands out a one-time code; the person redeems it below with a password of their
@@ -1901,9 +1835,11 @@ const passkeyRoutes = {
   }
 };
 
-/* ---------- verified e-mail + password-less recovery (ISO-1397) ----------
+/* ---------- verified e-mail + recovery (ISO-1397, password reset added ISO-1596) ----------
    The HashRouter paths a confirmation or recovery link opens in the app; the API never renders
-   either screen, only mints and checks the token. */
+   either screen, only mints and checks the token. Recovery itself stayed password-less (a fresh
+   passkey via the device-link ceremony) until ISO-1596 gave it a second shape, redeemed with a
+   password instead — recover/redeem below picks between the two. */
 const verifyLink = token => `${APP_URL}/#/verificar-email?token=${encodeURIComponent(token)}`;
 const recoverLink = token => `${APP_URL}/#/recuperar?token=${encodeURIComponent(token)}`;
 
@@ -2014,10 +1950,18 @@ const emailRoutes = {
     json(res, 200, { ok: true });
   },
 
-  // Burns the recovery token and hands back a device-link code — the same shape
+  // Burns the recovery token and, by default, hands back a device-link code — the same shape
   // POST /api/account/device-link returns — so the client finishes with the device-link pair it
   // already has (device-link.js, /api/device-link/options → /verify) instead of a parallel
   // passkey ceremony of its own.
+  //
+  // ISO-1596: with PASSWORD_LOGIN on and a `password` in the body, the link sets that password
+  // directly instead — "forgot my password, no admin" without a one-time code to hand over. The
+  // policy is checked before the token is consumed, so a password this instance refuses never
+  // burns an otherwise-good link; the token is still single-use for an actual redemption, same as
+  // the device-link path. Ending every other session (changePassword) is the same rule a password
+  // change always follows — a reset is asked for when access is in doubt, so an old session is
+  // exactly what should not survive it.
   'POST /api/recover/redeem': async (req, res) => {
     const body = await readBody(req);
     if (addressPaused(req, res, 'recover')) return;
@@ -2026,6 +1970,11 @@ const emailRoutes = {
     if (!token) {
       strikeAddress(req, 'recover');
       return json(res, 400, invalid);
+    }
+    const asPassword = PASSWORD_LOGIN && typeof body.password === 'string' && body.password !== '';
+    if (asPassword) {
+      const problem = passwordProblem(body.password);
+      if (problem) return policyError(res, problem);
     }
     const userId = await consumeEmailToken(pool, hashEmailToken(token), 'recover');
     if (!userId) {
@@ -2038,48 +1987,58 @@ const emailRoutes = {
       audit(req, 'auth.recover.fail', { ok: false, uid: userId, msg: 'user-unavailable' });
       return json(res, 400, invalid);
     }
+    if (asPassword) {
+      const h = await hashPassword(body.password);
+      await changePassword(user, h);
+      ACCOUNT_FAILS.clear(acctKey(user));
+      audit(req, 'auth.recover.password', { user });
+      return json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
+    }
     const { code, link } = await createDeviceLink(pool, user.id);
     audit(req, 'auth.recover.ok', { user });
     json(res, 200, { code, expires: link.exp });
-  }
-};
+  },
 
-// An account from before this phase adding the e-mail it never had (POST /api/account/email —
-// the issue's own route name). Registered only while PASSWORD_LOGIN is off: on, that path is
-// already spoken for by passwordRoutes' own POST /api/account/email (the sign-in e-mail, #118,
-// never sent to — a different, older feature this phase does not touch). Proof first, same as
-// every other change to how this account may be reached (adding a passkey, a device link): a
-// copied session must not be enough to redirect where recovery goes.
-const setOldAccountEmail = async (req, res) => {
-  const s = await sessionOf(req);
-  if (!s) return notSignedIn(res);
-  const { user } = s;
-  const body = await readBody(req);
-  const email = normalizeEmail(body.email);
-  if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
-  if (email === user.email) return json(res, 200, { ok: true, email, emailVerified: !!user.emailVerifiedAt });
-  if (addressPaused(req, res, 'email')) return;
-  const proof = await proveOwner(req, res, user, body, 'email');
-  if (!proof) return;
-  if (!(await sessionStillValid(req, user))) return notSignedIn(res);
-  if (addressPaused(req, res, 'email')) return;
-  const refuseTaken = () => {
-    strikeAddress(req, 'email');
-    audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
-    return json(res, 409, EMAIL_ERRORS.taken);
-  };
-  if (await emailTaken(email, user.id)) return refuseTaken();
-  try {
-    await setEmail(pool, user.id, email);
-  } catch (e) {
-    if (e.code === '23505') return refuseTaken(); // unique_violation — lost a race to another request
-    throw e;
+  // Set or change the account's one e-mail — always this handler now, PASSWORD_LOGIN on or off
+  // (ISO-1596; see "e-mail sign-in" above for why there used to be two). An account from before
+  // ISO-1397 adding the address it never had goes through here exactly like a password-login
+  // account changing one: the field, the proof and the mailed confirmation are the same either
+  // way. Proof first, same as every other change to how this account may be reached (adding a
+  // passkey, a device link): a copied session must not be enough to redirect where recovery
+  // goes, or — now that a password can prove it too — to point password sign-in somewhere its
+  // owner did not type.
+  'POST /api/account/email': async (req, res) => {
+    const s = await sessionOf(req);
+    if (!s) return notSignedIn(res);
+    const { user } = s;
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
+    if (email === user.email) return json(res, 200, { ok: true, email, emailVerified: !!user.emailVerifiedAt });
+    if (addressPaused(req, res, 'email')) return;
+    const proof = await proveOwner(req, res, user, body, 'email');
+    if (!proof) return;
+    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
+    if (addressPaused(req, res, 'email')) return;
+    const refuseTaken = () => {
+      strikeAddress(req, 'email');
+      audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
+      return json(res, 409, EMAIL_ERRORS.taken);
+    };
+    if (await emailTaken(email, user.id)) return refuseTaken();
+    const first = !user.email;
+    try {
+      await setEmail(pool, user.id, email);
+    } catch (e) {
+      if (e.code === '23505') return refuseTaken(); // unique_violation — lost a race to another request
+      throw e;
+    }
+    user.email = email;
+    delete user.emailVerifiedAt;
+    audit(req, first ? 'auth.email.set' : 'auth.email.change', { user, msg: proof + ' · ' + maskEmail(email) });
+    await issueVerification(user);
+    json(res, 200, { ok: true, email });
   }
-  user.email = email;
-  delete user.emailVerifiedAt;
-  audit(req, 'auth.email.set', { user, msg: proof + ' · ' + maskEmail(email) });
-  await issueVerification(user);
-  json(res, 200, { ok: true, email });
 };
 
 /* ---------- photos & videos of custom exercises (api/media.js) ---------- */
@@ -2418,12 +2377,12 @@ const routes = {
     const renew = s.bearer && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
     json(res, 200, {
       user: { id: user.id, name: user.name, admin: isAdmin(user) },
-      // ISO-1397: what the app needs to show "confirm your e-mail" or ask for one at all — an
-      // account from before this phase has neither field until its owner sets one. Left out
-      // entirely while PASSWORD_LOGIN is on: `email` there is the older, unrelated sign-in
-      // address (#118), which SELF_HOSTING.md promises is never part of this response — exposing
-      // it here, even unverified, would break that promise for an instance that opted into it.
-      ...(PASSWORD_LOGIN ? {} : { email: user.email || null, emailVerified: !!user.emailVerifiedAt, needsEmail: !user.email }),
+      // ISO-1397/ISO-1596: what the app needs to show "confirm your e-mail" or ask for one at
+      // all — an account from before ISO-1397 has neither field until its owner sets one. Always
+      // present now, PASSWORD_LOGIN or not: `email` is the one verified address every account has
+      // (see "e-mail sign-in" above), not the older, unrelated #118 sign-in address this used to
+      // mean while the flag was on — that field is gone, so nothing collides here any more.
+      email: user.email || null, emailVerified: !!user.emailVerifiedAt, needsEmail: !user.email,
       // ISO-1390: what the app needs to put the "we updated our terms" sheet in front of an
       // account — one imported from before this phase has accepted nothing, one that accepted an
       // older version has to accept again. Always present, PASSWORD_LOGIN or not: unlike `email`
@@ -2708,13 +2667,12 @@ const routes = {
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.
   ...(PASSWORD_LOGIN ? passwordRoutes : {}),
 
-  // Verified e-mail + password-less recovery (ISO-1397). Always there — not gated by
-  // PASSWORD_LOGIN, since none of it is about signing in with a password: it is the address every
-  // new profile now has, confirmed by a link mailed to it, and the one way back in once every
-  // passkey is lost. POST /api/account/email only goes here while PASSWORD_LOGIN is off; on, that
-  // path is passwordRoutes' own (spread above), and wins — see setOldAccountEmail's own comment.
+  // Verified e-mail + recovery (ISO-1397). Always there — not gated by PASSWORD_LOGIN, since
+  // none of it is about signing in with a password: it is the address every new profile now has,
+  // confirmed by a link mailed to it, and the one way back in once every passkey is lost.
+  // POST /api/account/email is the one handler for that route either way now (ISO-1596) — see
+  // its own comment for why there used to be two.
   ...emailRoutes,
-  ...(PASSWORD_LOGIN ? {} : { 'POST /api/account/email': setOldAccountEmail }),
 
   // Always there: more passkeys and device links need nothing an instance has to switch on.
   ...passkeyRoutes,
@@ -2925,8 +2883,9 @@ const routes = {
         // workout is in progress at all is still worth an admin seeing (FR-… "training now"); its
         // content is not.
         online: !!livePresence(u.id),
-        // The sign-in e-mail is an admin's to see (to hand out a reset code, to tell two
-        // profiles apart), and only while the instance takes passwords at all.
+        // `password`/`email` here are about password sign-in specifically (whether to offer a
+        // reset code, which address a reset is redeemed with) — unchanged by ISO-1596 unifying
+        // `email` itself; still only worth showing on an instance that takes passwords at all.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null } : {})
       };
     }));
@@ -2945,8 +2904,8 @@ const routes = {
     json(res, 200, {
       user: {
         id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null,
-        // Only on an instance with password sign-in: whether they have one, and until when an
-        // unused reset code is good.
+        // Only on an instance with password sign-in: whether they have one, the address a reset
+        // code is redeemed with, and until when an unused reset code is good.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {})
       },
       lastSync: lastSyncOf(u, S),

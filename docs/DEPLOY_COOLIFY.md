@@ -46,7 +46,7 @@ deve estar ausente do `.env.example`, e nenhuma obrigatória deve faltar na tabe
 | `RP_NAME` | `Brilhart Fitness` — nome mostrado no diálogo de passkey do sistema | Não |
 | `ALLOW_GUEST` | `0` — remove "Continuar sem conta"; instância de uso identificado, não anônimo | Não |
 | `INVITE_ONLY` | `0` por enquanto (beta fechado controla quem convida de outro jeito); revisitar quando o controle de convites for decidido | Não |
-| `PASSWORD_LOGIN` | `0` — passkey é o único jeito de entrar nesta fase | Não |
+| `PASSWORD_LOGIN` | `1` — e-mail (verificado) ou nome + senha como caminho de primeira classe ao lado da passkey (ISO-1596); `.env.example` já traz isso como padrão do fork | Não |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | gere a senha com `openssl rand -base64 24` (ou o gerador do Coolify); usuário/banco podem ficar `opengym`/`opengym` | `POSTGRES_PASSWORD` é segredo |
 | `DATABASE_URL` | **não defina** — o próprio `docker-compose.yml` monta a partir dos três `POSTGRES_*` acima, apontando para o serviço `db` | — |
 | `MAIL_PROVIDER` | deixe **sem definir** por enquanto (ver "Sem dados reais" acima) — sem provedor, e-mails de confirmação/recuperação vão só para o log do container; o Anderson decide o provedor de produção depois | Não |

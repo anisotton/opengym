@@ -34,21 +34,22 @@ const LABELS = {
   'auth.password.change': 'Changed their password',
   'auth.password.remove': 'Removed their password',
   'auth.password.reset': 'Used a reset code',
-  // The e-mail a profile may sign in with instead of its name. `msg` is the proof it was set with
-  // and the address masked to two characters ("password · a…@e…") — never the address itself.
-  'auth.email.set': 'Added a sign-in e-mail',
-  'auth.email.change': 'Changed their sign-in e-mail',
-  'auth.email.remove': 'Removed their sign-in e-mail',
-  'auth.email.fail': 'Changing the sign-in e-mail failed',
-  // Verified e-mail + password-less recovery (ISO-1397) — a different, always-on address from
-  // the sign-in e-mail above (#118, PASSWORD_LOGIN only): the one every new profile has, proven
-  // by a mailed link rather than only compared.
+  // The account's one verified e-mail (ISO-1397), also usable as a second sign-in identifier
+  // next to the profile name on a PASSWORD_LOGIN instance (ISO-1596 unified what used to be two
+  // separate addresses here — see api/server.js's own "e-mail sign-in" comment). `msg` on set/
+  // change is the proof it was set with and the address masked to two characters
+  // ("password · a…@e…") — never the address itself.
+  'auth.email.set': 'Added their e-mail',
+  'auth.email.change': 'Changed their e-mail',
+  'auth.email.fail': 'Changing their e-mail failed',
   'auth.email.verify.ok': 'Confirmed their e-mail',
   'auth.email.verify.fail': 'Confirming an e-mail failed',
   'auth.email.resend': 'Resent the confirmation e-mail',
   'auth.recover.request': 'Asked to recover access',
   'auth.recover.ok': 'Recovered access',
   'auth.recover.fail': 'Recovering access failed',
+  // ISO-1596: the recovery link redeemed with a new password instead of pairing a device.
+  'auth.recover.password': 'Reset their password with a recovery link',
   // More than one passkey, and one-time codes for another device (#95). `msg` on an addition or a
   // code is the proof it was made with (passkey, password); on a removal or a redemption, the
   // passkey's name.
@@ -141,8 +142,7 @@ export const auditReason = msg => REASONS[msg] || (msg ? String(msg) : '')
 
 // What an `auth.proof.fail` was confirming (the server's `act`).
 const ACTS = {
-  'email': 'changing the sign-in e-mail',
-  'email-remove': 'removing the sign-in e-mail',
+  'email': 'changing their e-mail',
   'password': 'setting or changing the password',
   'password-remove': 'removing the password',
   'passkey-add': 'adding a passkey',

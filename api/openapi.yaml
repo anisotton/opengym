@@ -20,12 +20,16 @@ info:
     so it redeems a short pairing code (`/api/pair/redeem`) for the *same* signed token
     and sends it as `Authorization: Bearer <token>` instead.
 
-    An instance started with `PASSWORD_LOGIN=1` also offers **name-and-password
-    sign-in** (tag `password`): opt-in per profile, scrypt-hashed, throttled, with an
-    admin-issued one-time reset code instead of e-mail. A profile may also add an e-mail
-    address to sign in with instead of its name (`/api/account/email`); no mail is ever
-    sent to it. Its routes set exactly the same cookie. With the flag off (the default)
-    every one of them answers 404.
+    An instance started with `PASSWORD_LOGIN=1` also offers **e-mail/name-and-password
+    sign-in** (tag `password`): opt-in per profile, scrypt-hashed, throttled. The
+    identifier is the account's one verified e-mail (tag `email`, `/api/account/email`
+    — confirmed by a mailed link, same as passkey signup) or, for a profile from before
+    e-mail was required, its name. A forgotten password is reset either with an
+    admin-issued one-time code or, self-serve, by redeeming the recovery link
+    (`/api/recover/redeem`) with a new password instead of pairing a device (ISO-1596).
+    Its routes set exactly the same cookie. With the flag off (the default) every one of
+    them answers 404 — `/api/account/email` and the rest of the `email` tag stay live
+    either way, since they are not about signing in with a password.
 
     ### Throttling
     The `password` routes are counted per client address: at most 60 requests a minute
@@ -370,9 +374,11 @@ paths:
         the account's current session version, so "sign out everywhere" revokes it like the old
         one. Cookie sessions never get one.
 
-        `email`/`emailVerified`/`needsEmail` (tag `email`) are left out entirely while
-        `PASSWORD_LOGIN` is on: `email` there is the older, unrelated sign-in address
-        (tag `password`), which is never part of this response.
+        `email`/`emailVerified`/`needsEmail` (tag `email`) are always present (ISO-1596):
+        `email` is the one verified address every account has — confirmed or not — regardless of
+        `PASSWORD_LOGIN`. Before ISO-1596 these were left out while `PASSWORD_LOGIN` was on,
+        because `email` meant a second, unrelated, never-mailed sign-in address (tag `password`)
+        that collided with this one at the same field; that address no longer exists.
 
         `termsVersion`/`termsAcceptedAt`/`needsTerms` (ISO-1390) are always present,
         `PASSWORD_LOGIN` included. `needsTerms` is true whenever the accepted version is not the
@@ -387,9 +393,9 @@ paths:
                 type: object
                 properties:
                   user: { $ref: '#/components/schemas/SessionUser' }
-                  email: { oneOf: [{ type: string }, { type: 'null' }], description: 'PASSWORD_LOGIN off only.' }
-                  emailVerified: { type: boolean, description: 'PASSWORD_LOGIN off only.' }
-                  needsEmail: { type: boolean, description: 'PASSWORD_LOGIN off only — an account from before ISO-1397 with no e-mail yet.' }
+                  email: { oneOf: [{ type: string }, { type: 'null' }], description: 'Always present. The account''s verified e-mail; null for an account from before ISO-1397 that has not added one yet.' }
+                  emailVerified: { type: boolean, description: 'Always present.' }
+                  needsEmail: { type: boolean, description: 'Always present — an account from before ISO-1397 with no e-mail yet.' }
                   termsVersion: { oneOf: [{ type: string }, { type: 'null' }], description: 'Always present. The Terms/Privacy version this account accepted; null if none.' }
                   termsAcceptedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }], description: 'Always present. When that version was accepted; null if never.' }
                   needsTerms: { type: boolean, description: 'Always present. True unless termsVersion is the version in force.' }
@@ -759,14 +765,15 @@ paths:
       summary: Sign in with a profile name or e-mail and a password
       description: |
         Only a profile that has set a password can sign in this way. The identifier is the
-        profile's display name or the e-mail address it added (`POST /api/account/email`),
-        compared trimmed, NFKC-normalised and case-insensitively. Send it as `identifier`
+        account's verified e-mail (ISO-1397/ISO-1596; confirmed or not — the password is proof
+        enough on its own) or, for a profile from before e-mail was required, its display name.
+        Compared trimmed, NFKC-normalised and case-insensitively. Send it as `identifier`
         (what the app sends), `name` (the original field, still accepted) or `email`. In
         `identifier` and `name`, a value with an `@` is looked up as an e-mail first and
         then as a name; `email` is looked up only as an e-mail.
-        A wrong password, an unknown name and a name whose profile has no password all get
-        the same `401` after the same scrypt work, so neither the answer nor its timing says
-        which names exist. So does a password that was right when its check started but
+        A wrong password, an unknown identifier and an identifier whose profile has no password
+        all get the same `401` after the same scrypt work, so neither the answer nor its timing
+        says which accounts exist. So does a password that was right when its check started but
         was changed, reset or removed before the check finished. Five wrong passwords for an
         account pause it, whichever identifier they named it by (see *Throttling*); passkey
         sign-in is never paused by this. Sets the
@@ -803,17 +810,17 @@ paths:
                 properties:
                   user: { $ref: '#/components/schemas/SessionUser' }
         '400':
-          description: Name or password missing.
+          description: Identifier or password missing.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "name and password required", code: "missing" }
         '401':
-          description: Wrong name or password — deliberately one answer for every cause.
+          description: Wrong e-mail/name or password — deliberately one answer for every cause.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: "wrong name or password", code: "bad-credentials" }
+              example: { error: "wrong e-mail or password", code: "bad-credentials" }
         '403':
           description: The right password for a disabled account.
           content:
@@ -834,11 +841,14 @@ paths:
         registration apply: on an invite-only instance the code is checked first, checked
         again after hashing, and burned. The password must be 10–256 characters and not one
         of the passwords guessing scripts try first; no two profiles with a password may
-        share a name. An optional `email` is stored as the profile's sign-in e-mail (see
-        `POST /api/account/email`); one that is not an address is refused with `400
+        share a name. `email` is required (ISO-1596 — the same verified address passkey
+        signup has required since ISO-1397); one that is not an address is refused with `400
         email-invalid`, one that is in use with `409 email-taken` — asked only after the
-        hash and the second invite check, so without a valid code it is never answered —
-        which counts against the caller's address like a wrong invite code. `termsVersion`
+        invite check, so without a valid code neither is ever answered — which counts against
+        the caller's address like a wrong invite code. A confirmation link is mailed right
+        after signup, exactly like passkey registration (`POST /api/register/verify`); an
+        unconfirmed address signs in fine, it just leaves `needsEmail`/`emailVerified` on
+        `GET /api/me` saying so. `termsVersion`
         follows the same rule as in `POST /api/register/options` (`400 terms-required` /
         `400 terms-version-stale`, checked right after the name) and is recorded on the
         account (ISO-1390). `birthDate` is required (ISO-1521), checked right after
@@ -852,15 +862,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, password, birthDate, termsVersion]
+              required: [name, email, password, birthDate, termsVersion]
               properties:
                 name: { type: string, maxLength: 40 }
                 termsVersion: { type: string, description: Required. The Terms/Privacy version accepted; must be the one in force. }
                 birthDate: { type: string, description: 'Required, `YYYY-MM-DD`. Not in the future, not implausibly old, and 18+ as of now.' }
                 password: { type: string, minLength: 10, maxLength: 256 }
                 code: { type: string, description: Invite code (INVITE_ONLY only). }
-                email: { type: string, maxLength: 254, description: Optional sign-in e-mail. }
-            example: { name: "Ada", password: "correct horse battery staple", birthDate: "1990-05-05", termsVersion: "2026-10-18", code: "3F9C21A07B54D688" }
+                email: { type: string, maxLength: 254, description: 'Required. The account''s verified e-mail — a confirmation link is mailed right after signup.' }
+            example: { name: "Ada", email: "ada@example.com", password: "correct horse battery staple", birthDate: "1990-05-05", termsVersion: "2026-10-18", code: "3F9C21A07B54D688" }
       responses:
         '200':
           description: Registered and signed in. The session cookie is set.
@@ -1128,33 +1138,27 @@ paths:
 
   /api/account/email:
     post:
-      tags: [password]
+      tags: [email]
       operationId: setAccountEmail
-      summary: Set, change or remove the e-mail this profile may sign in with
+      summary: Set or change the account's one verified e-mail
       description: |
-        An e-mail address to type at `POST /api/login/password` instead of the profile
-        name. No mail is ever sent to it — there is no verification and no reset mail;
-        resets stay the admin's one-time code — so it is only an identifier. Stored
-        trimmed, NFKC-normalised and lower-cased; at most 254 characters; unique across
-        every profile, and never another password-holding profile's name. An empty or null
-        `email` removes it (as `DELETE` does).
+        Sets or changes the account's e-mail (ISO-1397; ISO-1596 made this the only handler for
+        this route, `PASSWORD_LOGIN` on or off — see "e-mail sign-in" in SELF_HOSTING.md for why
+        there used to be two). Stored trimmed, NFKC-normalised and lower-cased; at most 254
+        characters; unique across every profile, and never another password-holding profile's
+        name. Changing it clears `email_verified_at` and mails a fresh confirmation link (24h),
+        same as a first-time address.
 
         The body carries the same proof as setting a password (see OwnerProof): a session
         alone is never enough. Saving the address the profile already has answers 200 with
         no proof asked. An address in use by another profile is refused only after the
-        proof, with `409 email-taken`, and counts against the caller's address and account
-        (20 free, then 30 s doubling to 15 min) — so the answer never costs less than a
-        passkey prompt or a password check, and runs out after a few tries. It says an
-        address is in use somewhere on this instance, never by whom. Audited as
-        `auth.email.set` / `auth.email.change` with the address masked (`a…@e…`).
+        proof, with `409 email-taken`. It says an address is in use somewhere on this
+        instance, never by whom. Audited as `auth.email.set` / `auth.email.change` with the
+        address masked (`a…@e…`).
 
-        **With `PASSWORD_LOGIN` off** (the default, and ISO-1397's own scope) this exact path
-        is a different handler instead: an account from before ISO-1397 confirming the
-        address every new signup now has (tag `email`). Same proof, same `email-invalid`/
-        `email-taken` codes, but it mails a confirmation link (24h) rather than only being a
-        sign-in identifier, and does not accept a `null`/empty `email` to remove one — there
-        is no `DELETE` for it in that mode (`DELETE /api/account/email` stays a 404, like
-        every other `password`-tagged route, while the flag is off).
+        There is no removal — an account's e-mail is mandatory for a new signup (passkey or
+        password) and is this instance's one way back in once every passkey is lost
+        (`POST /api/recover/request`/`redeem`); `DELETE /api/account/email` is a plain 404.
       requestBody:
         required: true
         content:
@@ -1163,20 +1167,20 @@ paths:
               allOf:
                 - $ref: '#/components/schemas/OwnerProof'
                 - type: object
+                  required: [email]
                   properties:
-                    email:
-                      oneOf: [{ type: string, maxLength: 254 }, { type: 'null' }]
+                    email: { type: string, maxLength: 254 }
             example: { email: "ada@example.com", current: "correct horse battery staple" }
       responses:
         '200':
-          description: Saved (or removed).
+          description: Saved.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   ok: { type: boolean, const: true }
-                  email: { oneOf: [{ type: string }, { type: 'null' }], description: The address as stored. }
+                  email: { type: string, description: The address as stored. }
               example: { ok: true, email: "ada@example.com" }
         '400':
           description: Not an e-mail address.
@@ -1192,33 +1196,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "another profile already uses this e-mail address", code: "email-taken" }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-        '503': { $ref: '#/components/responses/Busy' }
-    delete:
-      tags: [password]
-      operationId: removeAccountEmail
-      summary: Remove the e-mail this profile may sign in with
-      description: >-
-        The profile then signs in by its name only. Takes the same proof as setting one
-        (OwnerProof); a profile without an e-mail gets 200 with none asked. Audited as
-        `auth.email.remove`.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/OwnerProof' }
-      responses:
-        '200':
-          description: Removed (or there was none).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok: { type: boolean, const: true }
-                  email: { type: 'null' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/ProofRefused' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Busy' }
 
@@ -1364,17 +1341,26 @@ paths:
 
   /api/recover/redeem:
     post:
-      tags: [email]
+      tags: [email, password]
       operationId: recoverRedeem
-      summary: Burn a recovery token for a device-link code
+      summary: Burn a recovery token for a device-link code, or (ISO-1596) a new password
       description: |
-        Single-use. On success, returns the same `{code, expires}` shape as
-        `POST /api/account/device-link` — the client finishes with the existing device-link
-        pair (`POST /api/device-link/options` → `POST /api/device-link/verify`, tag
-        `passkeys`) to create a fresh passkey on this device and sign in. Old passkeys are
-        untouched; their owner removes them in Settings if they want to. A wrong or replayed
-        token pauses the caller's address, shared with `POST /api/device-link/*` (20 free,
-        then 30 s doubling to 15 min). CSRF-exempt.
+        Single-use either way. With no `password` (or `PASSWORD_LOGIN` off), returns the same
+        `{code, expires}` shape as `POST /api/account/device-link` — the client finishes with
+        the existing device-link pair (`POST /api/device-link/options` → `POST
+        /api/device-link/verify`, tag `passkeys`) to create a fresh passkey on this device and
+        sign in. Old passkeys are untouched; their owner removes them in Settings if they want
+        to.
+
+        With `PASSWORD_LOGIN` on and a `password` in the body (ISO-1596), the token sets that
+        password directly instead and signs the account in — the same session shape as
+        `POST /api/login/password`. The password policy (same as `POST /api/account/password`)
+        is checked *before* the token is consumed, so a password this instance refuses never
+        burns an otherwise-good link. Ends every other session of the account, the same as any
+        other password change. Audited as `auth.recover.password`.
+
+        A wrong or replayed token pauses the caller's address, shared with
+        `POST /api/device-link/*` (20 free, then 30 s doubling to 15 min). CSRF-exempt.
       security: []
       requestBody:
         required: true
@@ -1385,18 +1371,32 @@ paths:
               required: [token]
               properties:
                 token: { type: string }
+                password: { type: string, minLength: 10, maxLength: 256, description: 'PASSWORD_LOGIN only. Sets a new password instead of returning a device-link code.' }
+            examples:
+              deviceLink: { value: { token: "a1b2c3…" } }
+              newPassword: { value: { token: "a1b2c3…", password: "correct horse battery staple" } }
       responses:
         '200':
-          description: A fresh device-link code.
+          description: A fresh device-link code, or (with `password`) a signed-in session.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  code: { type: string }
-                  expires: { type: number, description: Expiry (ms). }
+                oneOf:
+                  - type: object
+                    properties:
+                      code: { type: string }
+                      expires: { type: number, description: Expiry (ms). }
+                  - type: object
+                    properties:
+                      user: { $ref: '#/components/schemas/SessionUser' }
+              examples:
+                deviceLink: { value: { code: "K7WQ2MZP", expires: 1769300000000 } }
+                newPassword: { value: { user: { id: "u_123", name: "Ada", admin: false } } }
         '400':
-          description: Token missing, wrong, already used, expired, or its account is gone/disabled.
+          description: >-
+            Token missing, wrong, already used, expired, or its account is gone/disabled — or
+            (with `password`) the password breaks the policy (same codes as
+            `POST /api/account/password`).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
