@@ -43,9 +43,14 @@ describe('Brazilian Portuguese locale', () => {
     // frontend/: node scripts/pt-br-inheritance-fingerprint.mjs --list
     // ISO-1398: +1 newly inherited key ('Resend' -> 'Reenviar', identical in both pt variants,
     // reviewed — no override needed). E-mail reminder/confirmation redesign: +1 more ('Sent' ->
-    // 'Enviado', same word on both shores — reviewed, no override needed). See the script above
-    // for how to recompute this.
-    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('1b517563d94f3b71d9424465cf582e2fd58c002e85b73745171b236b925d6474')
+    // 'Enviado', same word on both shores — reviewed, no override needed). ISO-1606: +8 more
+    // (the no-media/view-switcher/draft-badge strings — 'Front'/'Costas', 'Draft — steps
+    // pending Brilhart review'/'Rascunho — passos aguardando validação da Brilhart', etc. — same
+    // wording works on both shores, reviewed, no override needed; one of the 8, 'Back', was
+    // renamed to 'Rear' after review caught it shadowing the Coach nav button's existing 'Back'
+    // key, which is why this is a separate +1 bump rather than folded into the count above).
+    // See the script above for how to recompute this.
+    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('8ea97736d76416f027d2421d4a334b4285acb66064a8cb517cbe9fd7512848fa')
   })
 
   test('does not leak European Portuguese UI terms', () => {

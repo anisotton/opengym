@@ -3,14 +3,22 @@
 /* The page's half of offline exercise media (#281): which URLs the plan needs, that only the
  * installed app fetches them ahead, when the connection is one to spend them on, and fetching
  * only what the worker's cache is missing. */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { planMediaUrls, prefetchAllowed, prefetchMedia, startMediaPrefetch, installedApp, MEDIA_CACHE, PREFETCH_DELAY_MS } from './media-prefetch.js'
 import { EXIDX, imgSrc, gifSrc } from './exercises.js'
 
 const BASE = 'https://gym.test/app/'
 const abs = src => new URL(src, BASE).href
-const bench = EXIDX['0025'] || Object.values(EXIDX).find(e => e.gif)
-const other = Object.values(EXIDX).find(e => e.gif && e.id !== bench.id)
+
+// The built-in catalogue is text-only since ISO-1603 (no img/gif on EXDB). This module's job —
+// naming and fetching whatever media a plan's exercises do carry — is independent of whether
+// today's catalogue happens to have any, so it is exercised here against two fixtures of its
+// own, planted directly on EXIDX (the same object exercises.js merges customs into) rather than
+// on a real catalogue entry.
+const bench = { id: 'fixture-bench', n: 'Fixture bench', img: 'bench.jpg', gif: 'bench.gif' }
+const other = { id: 'fixture-other', n: 'Fixture other', img: 'other.jpg', gif: 'other.gif' }
+beforeAll(() => { EXIDX[bench.id] = bench; EXIDX[other.id] = other })
+afterAll(() => { delete EXIDX[bench.id]; delete EXIDX[other.id] })
 
 const answer = (status = 200) => ({ ok: status < 400, status, arrayBuffer: async () => new ArrayBuffer(1) })
 const cacheWith = urls => ({ match: async u => (urls.includes(u) ? {} : undefined) })
