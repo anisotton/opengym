@@ -2315,6 +2315,12 @@ const googleRoutes = {
     } catch (e) {
       return fail('id-token:' + (e.reason || 'invalid'));
     }
+    // users.email is stored through normalizeEmail (lower-cased via nameKey); fold the Google
+    // claim through the same function once, here, so every lookup/insert/ticket below compares
+    // and stores the same form — a Workspace account returning `Ana.Silva@empresa.com.br` must
+    // still find the account that verified `ana.silva@empresa.com.br`, not open a second one.
+    claims.email = normalizeEmail(claims.email);
+    if (!claims.email) return fail('id-token:malformed');
 
     if (cookie.intent === 'reauth') {
       const s = await sessionOf(req);

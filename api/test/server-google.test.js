@@ -11,11 +11,12 @@ import path from 'node:path';
 import http from 'node:http';
 import pg from 'pg';
 import { hashPassword } from '../password.js';
+import { LEGAL_VERSION } from '../legal.js';
 import { tempData, spawnApi } from './helpers.mjs';
 
 const ORIGIN = 'http://localhost:8080';
 const SECRET = 'a'.repeat(64); // tempData()'s own fixed test secret (helpers.mjs)
-const TERMS = '2026-10-18';
+const TERMS = LEGAL_VERSION; // read live, not a literal — a LEGAL_VERSION bump must not break this file
 const ADULT_BIRTH = '1990-05-05';
 
 const b64u = v => Buffer.from(v).toString('base64url');
@@ -300,6 +301,22 @@ test('login: a verified e-mail match links and signs in (linked)', async t => {
   assert.ok(cookieNamed(cb, 'gymsid'));
   const identity = await h.identity('u1');
   assert.equal(identity.subject, 'sub-1');
+  assert.ok(h.audit().some(e => e.ev === 'auth.google.link' && e.uid === 'u1'));
+});
+
+test('login: a Google Workspace account\'s mixed-case e-mail still matches the verified account\'s lower-cased one (linked, not signup)', async t => {
+  const google = fakeGoogleServer();
+  const h = await startServer(t, google, { users: [{ id: 'u1', name: 'Ana', created: new Date().toISOString(), email: 'ana.silva@empresa.com.br' }] });
+  await h.verifyEmail('u1');
+  const { state, nonce, oauthCookie } = await beginStart(h, 'login');
+  google.state.nextIdToken = () => signJwt(baseClaims({ sub: 'sub-1', email: 'Ana.Silva@Empresa.com.br', nonce }), { kid: google.jwk.kid, privateKey: google.privateKey });
+  const cb = await h.raw('GET', `/api/auth/google/callback?code=c1&state=${state}`, { cookie: oauthCookie });
+  const { params } = parseHashRedirect(cb.headers.get('location'));
+  assert.equal(params.get('google'), 'linked');
+  assert.ok(cookieNamed(cb, 'gymsid'));
+  const identity = await h.identity('u1');
+  assert.equal(identity.subject, 'sub-1');
+  assert.equal(identity.email, 'ana.silva@empresa.com.br');
   assert.ok(h.audit().some(e => e.ev === 'auth.google.link' && e.uid === 'u1'));
 });
 
