@@ -321,6 +321,12 @@ async function subscriptionWriteFields(pool, obj) {
     priceId,
     priceAmount,
     customerId: obj.customer,
+    // Admin ficha item #1 (ISO-1624 T2a): the one case this app's own code ever tags is
+    // `metadata.source=admin_link` ("gerar link" — generateSubscriptionLink below); anything else
+    // is the account's own self-serve Checkout. Read off the subscription's own metadata, which
+    // Stripe persists unchanged for the life of the object, not re-derived from whichever route
+    // happens to be looking at it.
+    origin: obj.metadata?.source === 'admin_link' ? 'admin_link' : 'self',
     firstPeriod,
     // Monotonic, unlike `firstPeriod` itself: the schedule's own phase-change update flips
     // `firstPeriod` back to false the moment the subscription moves off the intro Price, which can
@@ -455,7 +461,7 @@ export async function ensureStripeCustomer(pool, user) {
 // tag, folded into the same subscription_data.metadata every other Checkout already carries —
 // never a second code path, so the once-per-account intro-Price rule above applies identically
 // whether the link was opened by the user themselves or handed to them by an admin.
-export async function createCheckoutSession(pool, user, plan, { successUrl, cancelUrl, extraMetadata } = {}) {
+export async function createCheckoutSession(pool, user, plan, { successUrl, cancelUrl, extraMetadata, idempotencyKey } = {}) {
   const priceId = await resolvePlanForCheckout(pool, plan);
   if (!priceId) return { error: 'invalid plan' };
   // ISO-1623 §5.4: two tabs completing Checkout at once must not end up with two live
@@ -470,6 +476,10 @@ export async function createCheckoutSession(pool, user, plan, { successUrl, canc
   const lineItems = [{ price: useIntro ? introPrice : priceId, quantity: 1 }];
   const subscriptionData = { metadata: { userId: user.id, plan, ...(useIntro ? { scheduleTo: priceId } : {}), ...extraMetadata } };
   const stripe = getStripe();
+  // `idempotencyKey` is optional — the self-serve route (POST /api/billing/checkout) has never
+  // sent one, since a user clicking twice is a UX concern (a disabled button), not a replay this
+  // app has to dedupe server-side. The admin "gerar link" action (ISO-1624 T2a) passes its own,
+  // the same requirement every other admin action's Stripe call follows (plan §5.1).
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: customerId,
@@ -478,7 +488,7 @@ export async function createCheckoutSession(pool, user, plan, { successUrl, canc
     subscription_data: subscriptionData,
     success_url: successUrl,
     cancel_url: cancelUrl
-  });
+  }, idempotencyKey ? { idempotencyKey } : undefined);
   return { ok: true, url: session.url };
 }
 
@@ -1010,7 +1020,9 @@ export async function generateSubscriptionLink(pool, { userId, planId, actor, re
   }, async () => {
     const user = await getUserById(pool, userId);
     if (!user) return { error: 'no such user', code: 'not-found' };
-    const result = await createCheckoutSession(pool, user, planId, { successUrl, cancelUrl, extraMetadata: { source: 'admin_link' } });
+    const result = await createCheckoutSession(pool, user, planId, {
+      successUrl, cancelUrl, extraMetadata: { source: 'admin_link' }, idempotencyKey
+    });
     if (result.error) return { error: result.error, code: result.code || 'invalid-plan' };
     return { ok: true, after: { url: result.url }, stripeIds: {} };
   });
@@ -1090,9 +1102,15 @@ export async function getUserBillingFicha(pool, userId) {
     const price = row.priceId ? await getPriceById(pool, row.priceId) : null;
     const plan = price?.planId ? await getCatalogPlan(pool, price.planId) : (row.plan ? await getCatalogPlan(pool, row.plan) : null);
     let schedule = null;
+    // ISO-1626 (D): `pauseCollection` is exposed exactly as Stripe reports it — this account's
+    // `status` stays `active` while paused (there is no synthetic `paused` status in this app,
+    // on purpose), so the raw field is the only way the ficha can tell a suspended account apart
+    // from one that is genuinely billing normally.
+    let pauseCollection = null;
     if (row === latest && canWrite(row)) {
       try {
         const live = await stripe.subscriptions.retrieve(row.id);
+        pauseCollection = live.pause_collection || null;
         const scheduleId = scheduleIdOf(live);
         if (scheduleId) schedule = await stripe.subscriptionSchedules.retrieve(scheduleId);
       } catch (e) { console.error('billing: live retrieve failed for', row.id, e.message); }
@@ -1106,10 +1124,14 @@ export async function getUserBillingFicha(pool, userId) {
       id: row.id, userId: row.userId, status: row.status, plan: plan?.id || row.plan || null,
       planDisplay: plan?.display || null, priceId: row.priceId, priceAmountCents: price?.unitAmount ?? row.priceAmount ?? null,
       priceState: price?.state || null, firstPeriod: !!row.firstPeriod, customerId: row.customerId || null,
+      // `row.origin` is only set going forward (subscriptionWriteFields, added alongside this
+      // ficha) — a row written before that change has never had a value for it, so it defaults to
+      // 'self' rather than showing as unknown.
+      origin: row.origin || 'self',
       cancelAtPeriodEnd: cancelling, currentPeriodEnd: row.currentPeriodEnd, createdAt: row.createdAt, updatedAt: row.updatedAt,
       firstFullCharge: row.firstFullCharge || null, lastInvoiceStatus: row.lastInvoiceStatus || null,
       schedule: schedule ? { id: schedule.id, endBehavior: schedule.end_behavior, phases: schedule.phases } : null,
-      scheduledPriceId,
+      scheduledPriceId, pauseCollection,
       nextCharge: cancelling ? null : { date: nextChargeDate, amountCents: nextPrice?.unitAmount ?? null }
     };
   }));

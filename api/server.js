@@ -4144,6 +4144,9 @@ const routes = {
     json(res, 200, result.after);
   },
 
+  // ISO-1626: the UI never prompts for a reason on this one — the dialog is just "sync now?" —
+  // so a fixed reason is recorded regardless of what (if anything) the body sends, rather than
+  // 400ing an admin for not typing one.
   'POST /api/admin/billing/subscription/sync': async (req, res) => {
     const admin = await requireAdmin(req, res); if (!admin) return;
     if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
@@ -4151,13 +4154,11 @@ const routes = {
     const userId = text(body.userId);
     const subscriptionId = text(body.subscriptionId);
     if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
-    const reason = adminReason(body);
-    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
     const idempotencyKey = idempotencyKeyOf(req);
     if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
     const result = await syncSubscription(pool, {
       userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
-      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+      actor: { id: admin.id, name: admin.name }, reason: 'admin manual sync', idempotencyKey
     });
     if (result.error) return subscriptionActionError(res, result);
     audit(req, 'admin.billing.subscription.sync', { user: admin, target: { id: userId } });

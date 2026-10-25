@@ -6427,9 +6427,9 @@ components:
       description: >-
         One row of `subscriptions` (ISO-1624 T2a) — the current one plus every legacy
         (cancelled, superseded) row this account has ever had. Priced off `billing_prices`
-        (`priceState` can be `retired` and still show the right name/amount). `schedule` and
-        `scheduledPriceId` are only ever set on the one row that is still writable, read live
-        from Stripe at request time — never persisted.
+        (`priceState` can be `retired` and still show the right name/amount). `schedule`,
+        `scheduledPriceId` and `pauseCollection` are only ever set on the one row that is still
+        writable, read live from Stripe at request time — never persisted.
       properties:
         id: { type: string, description: Stripe subscription id. }
         userId: { type: string }
@@ -6441,6 +6441,7 @@ components:
         priceState: { oneOf: [{ type: string, enum: [draft, current, retired] }, { type: 'null' }] }
         firstPeriod: { type: boolean }
         customerId: { oneOf: [{ type: string }, { type: 'null' }] }
+        origin: { type: string, enum: [self, admin_link], description: 'self-serve Checkout vs. an admin-generated link ("gerar link").' }
         cancelAtPeriodEnd: { type: boolean, description: 'True whether cancellation comes from `cancel_at_period_end` or a schedule''s `end_behavior:cancel`.' }
         currentPeriodEnd: { oneOf: [{ type: string }, { type: 'null' }] }
         createdAt: { type: string }
@@ -6456,6 +6457,14 @@ components:
                 phases: { type: array, items: { type: object } }
             - type: 'null'
         scheduledPriceId: { oneOf: [{ type: string }, { type: 'null' }] }
+        pauseCollection:
+          description: 'Stripe''s own `pause_collection`, raw — there is no synthetic `paused` status; `status` stays `active` while this is set (T2b owns suspending/resuming it).'
+          oneOf:
+            - type: object
+              properties:
+                behavior: { type: string, enum: [void, keep_as_draft, mark_uncollectible] }
+                resumes_at: { oneOf: [{ type: integer }, { type: 'null' }] }
+            - type: 'null'
         nextCharge:
           oneOf:
             - type: object

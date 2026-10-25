@@ -251,16 +251,37 @@ const idemp = () => 'idemp-' + crypto.randomBytes(8).toString('hex');
 const REASON = 'a perfectly good admin reason';
 
 /* ---------- ficha ---------- */
-test('admin billing ficha: lists the subscription, its price and the available actions', async t => {
+test('admin billing ficha: lists the subscription, its price, origin and the available actions', async t => {
   const h = await startServer(t, { users: [admin(), plain()] });
   await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });
   const r = await h.req('GET', '/api/admin/user/billing?id=u_plain_1', { cookie: adminCookie });
   assert.equal(r.status, 200);
   assert.equal(r.body.subscriptions.length, 1);
   assert.equal(r.body.subscriptions[0].priceAmountCents, 8900);
+  assert.equal(r.body.subscriptions[0].origin, 'self');
+  assert.equal(r.body.subscriptions[0].pauseCollection, null);
   assert.equal(r.body.actions.changePlan.enabled, true);
   assert.equal(r.body.actions.cancelAtPeriodEnd.enabled, true);
   assert.equal(r.body.actions.resumeCancellation.enabled, false);
+});
+
+test('admin billing ficha: origin reflects metadata.source=admin_link, pauseCollection is exposed raw', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });
+  h.mock.subscriptions.sub_1.metadata.source = 'admin_link';
+  h.mock.subscriptions.sub_1.pause_collection = { behavior: 'void', resumes_at: null };
+  // Sync is what actually persists `origin` from Stripe's own metadata into the DB row — the
+  // ficha's other fields are read straight off the DB, only `schedule`/`pauseCollection` come
+  // from the live retrieve it does itself.
+  await h.req('POST', '/api/admin/billing/subscription/sync', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1' }
+  });
+  const r = await h.req('GET', '/api/admin/user/billing?id=u_plain_1', { cookie: adminCookie });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.subscriptions[0].origin, 'admin_link');
+  assert.deepEqual(r.body.subscriptions[0].pauseCollection, { behavior: 'void', resumes_at: null });
+  assert.equal(r.body.subscriptions[0].status, 'active', 'no synthetic "paused" status — pause_collection is the only signal');
 });
 
 /* ---------- requireAdmin ---------- */
@@ -375,10 +396,11 @@ test('cancel-immediately: with a schedule — subscriptionSchedules.cancel, not 
   assert.equal(subCancel, undefined, 'subscriptions.cancel was not called when a schedule exists');
 });
 
-test('generate-link: reuses createCheckoutSession with metadata.source=admin_link', async t => {
+test('generate-link: reuses createCheckoutSession with metadata.source=admin_link, forwards the Idempotency-Key to Stripe', async t => {
   const h = await startServer(t, { users: [admin(), plain()] });
+  const key = idemp();
   const r = await h.req('POST', '/api/admin/billing/subscription/generate-link', {
-    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    cookie: adminCookie, headers: { 'Idempotency-Key': key },
     body: { userId: 'u_plain_1', planId: 'monthly', reason: REASON }
   });
   assert.equal(r.status, 200);
@@ -386,19 +408,22 @@ test('generate-link: reuses createCheckoutSession with metadata.source=admin_lin
   const call = h.mock.calls.find(c => c.url === '/v1/checkout/sessions');
   const f = parseStripeForm(call.body);
   assert.equal(f.subscription_data.metadata.source, 'admin_link');
+  assert.equal(call.idempotencyKey, key, 'the same Idempotency-Key reaches the checkout.sessions.create call, not just billing_admin_actions');
 });
 
-test('sync: retrieves the live subscription and writes it with the webhook\'s own mapping', async t => {
+test('sync: no reason needed from the caller (ISO-1626) — a fixed reason is recorded, the webhook\'s own mapping is applied', async t => {
   const h = await startServer(t, { users: [admin(), plain()] });
   await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });
   h.mock.subscriptions.sub_1.status = 'past_due'; // drifted on Stripe's side only
   const r = await h.req('POST', '/api/admin/billing/subscription/sync', {
     cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
-    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON }
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1' } // no `reason` in the body at all
   });
   assert.equal(r.status, 200);
   const row = await h.row1('SELECT data FROM subscriptions WHERE id = $1', ['sub_1']);
   assert.equal(row.data.status, 'past_due');
+  const action = await h.row1('SELECT reason FROM billing_admin_actions WHERE action = $1', ['subscription.sync']);
+  assert.equal(action.reason, 'admin manual sync');
 });
 
 /* ---------- idempotency, concurrency, staleness ---------- */
