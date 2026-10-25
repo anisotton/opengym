@@ -78,7 +78,9 @@ import {
   attemptStripeCleanup, tickStripeCleanup, seedCatalogFromEnv,
   liveWritesDisabled, validPlanId, validDisplay, validInterval, validIntervalCount, validUnitAmount,
   createOffer, setPlanAvailability, createPriceVersion, publishPriceVersion, reorderCatalog,
-  editPlanDisplay, getCatalogAdminView, getBillingAdminActions, reconcileCatalog
+  editPlanDisplay, getCatalogAdminView, getBillingAdminActions, reconcileCatalog,
+  getUserBillingFicha, previewSubscriptionAction, changePlan, cancelAtPeriodEnd, resumeCancellation,
+  cancelImmediately, generateSubscriptionLink, syncSubscription
 } from './billing.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -2836,15 +2838,30 @@ function catalogError(res, result) {
 }
 // `reason` ≥ 10 chars (the plan's own rule, also enforced by migrations/010's CHECK constraint on
 // billing_admin_actions — this is just the 400 that avoids a raw 23514 from Postgres) and the
-// `Idempotency-Key` header every financial catalog write requires, generated client-side once per
-// confirmation dialog. Shared by every POST route below that touches Stripe.
-function catalogReason(body) {
+// `Idempotency-Key` header every financial billing write requires, generated client-side once per
+// confirmation dialog. Shared by every catalog AND subscription POST route below that touches
+// Stripe (or, for `subscription/sync`/`subscription/generate-link`, the UI supplies a fixed reason
+// instead of prompting for one — ISO-1626 — but still goes through this same check).
+function adminReason(body) {
   const r = text(body.reason).trim();
   return r.length >= 10 ? r : null;
 }
 function idempotencyKeyOf(req) {
   const k = text(req.headers['idempotency-key']).trim();
   return k || null;
+}
+
+// billing.js's subscription actions (ISO-1624 T2a) answer the same `{ error, code }` shape as the
+// catalog's own writes. `action-unknown` (§5.2: a timeout/API/connection error — Stripe may or may
+// not have actually applied it) is 202, not a 4xx: the server is already reconciling, and retrying
+// with the same Idempotency-Key is safe. `stripe-rejected` (an invalid request or a declined card)
+// is 422, carrying Stripe's own message — never its raw body or the API key.
+const SUBSCRIPTION_ACTION_ERROR_STATUS = {
+  'not-found': 404, 'stale': 409, 'invalid-plan': 400, 'action-in-progress': 409,
+  'action-unknown': 202, 'action-failed': 400, 'stripe-rejected': 422
+};
+function subscriptionActionError(res, result) {
+  json(res, SUBSCRIPTION_ACTION_ERROR_STATUS[result.code] || 400, { error: result.error, code: result.code, ...(result.current ? { current: result.current } : {}) });
 }
 
 /* ---------- routes ---------- */
@@ -3854,7 +3871,7 @@ const routes = {
     if (!validInterval(interval)) return json(res, 400, { error: 'invalid interval', field: 'interval' });
     if (!validIntervalCount(intervalCount)) return json(res, 400, { error: 'invalid intervalCount', field: 'intervalCount' });
     if (!validUnitAmount(unitAmount)) return json(res, 400, { error: 'invalid unitAmount', field: 'unitAmount' });
-    const reason = catalogReason(body);
+    const reason = adminReason(body);
     if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
     const idempotencyKey = idempotencyKeyOf(req);
     if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
@@ -3910,7 +3927,7 @@ const routes = {
     const version = Number(body.version);
     const available = !!body.available;
     if (!id || !Number.isInteger(version)) return json(res, 400, { error: 'id and version are required' });
-    const reason = catalogReason(body);
+    const reason = adminReason(body);
     if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
     const idempotencyKey = idempotencyKeyOf(req);
     if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
@@ -3932,7 +3949,7 @@ const routes = {
     const unitAmount = Number(body.unitAmount);
     if (!planId) return json(res, 400, { error: 'planId is required' });
     if (!validUnitAmount(unitAmount)) return json(res, 400, { error: 'invalid unitAmount', field: 'unitAmount' });
-    const reason = catalogReason(body);
+    const reason = adminReason(body);
     if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
     const idempotencyKey = idempotencyKeyOf(req);
     if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
@@ -3959,7 +3976,7 @@ const routes = {
     const newPriceId = text(body.priceId);
     const version = Number(body.version);
     if (!planId || !newPriceId || !Number.isInteger(version)) return json(res, 400, { error: 'planId, priceId and version are required' });
-    const reason = catalogReason(body);
+    const reason = adminReason(body);
     if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
     const idempotencyKey = idempotencyKeyOf(req);
     if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
@@ -3981,6 +3998,170 @@ const routes = {
     if (result.error) return catalogError(res, result);
     audit(req, 'admin.billing.catalog.reconcile', { user: admin, msg: `adopted ${result.adopted.length}, retired ${result.retired.length}` });
     json(res, 200, result);
+  },
+
+  /* ---------- admin: subscription ficha and actions (ISO-1619/ISO-1624, T2a) ----------
+   * The user's billing ficha and the six actions plan §5 lists, plus the mandatory preview. Every
+   * write (change-plan, cancel-at-period-end, resume, cancel-immediately, generate-link) needs
+   * the live gate, an `Idempotency-Key` header and a `reason` ≥ 10 chars; change-plan/cancel-at-
+   * period-end/cancel-immediately additionally need a fresh proveOwner proof (plan §7's own
+   * "ações financeiras" list — resume/generate-link/sync don't, ISO-1626). `sync` is read-only
+   * against Stripe (no live gate, same precedent as catalog/reconcile). `expectedUpdatedAt` is the
+   * optimistic-concurrency check against `subscriptions.updated_at` the ficha's own GET answers
+   * with; billing.js's runSubscriptionAction is what actually enforces it (409 `stale`).
+   */
+  'GET /api/admin/user/billing': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const u = await getUserById(pool, id);
+    if (!u) return json(res, 404, { error: 'no such user' });
+    json(res, 200, await getUserBillingFicha(pool, u.id));
+  },
+
+  'POST /api/admin/billing/subscription/preview': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const body = await readBody(req);
+    const subscriptionId = text(body.subscriptionId);
+    if (!subscriptionId) return json(res, 400, { error: 'subscriptionId is required' });
+    const result = await previewSubscriptionAction(pool, { subscriptionId, action: text(body.action), newPlanId: text(body.newPlanId) });
+    if (result.error) return subscriptionActionError(res, result);
+    json(res, 200, result);
+  },
+
+  'POST /api/admin/billing/subscription/change-plan': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    const newPlanId = text(body.newPlanId);
+    if (!userId || !subscriptionId || !newPlanId) return json(res, 400, { error: 'userId, subscriptionId and newPlanId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-subscription-change-plan');
+    if (!proof) return;
+    const result = await changePlan(pool, {
+      userId, subscriptionId, newPlanId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.change-plan', { user: admin, target: { id: userId }, msg: newPlanId });
+    json(res, 200, result.after);
+  },
+
+  'POST /api/admin/billing/subscription/cancel-period-end': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-subscription-cancel-period-end');
+    if (!proof) return;
+    const result = await cancelAtPeriodEnd(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.cancel-period-end', { user: admin, target: { id: userId } });
+    json(res, 200, result.after);
+  },
+
+  'POST /api/admin/billing/subscription/resume': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const result = await resumeCancellation(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.resume', { user: admin, target: { id: userId } });
+    json(res, 200, result.after);
+  },
+
+  'POST /api/admin/billing/subscription/cancel-immediately': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-subscription-cancel-immediately');
+    if (!proof) return;
+    const result = await cancelImmediately(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.cancel-immediately', { user: admin, target: { id: userId } });
+    json(res, 200, result.after);
+  },
+
+  // "Atribuir": the link itself is handed back for the admin to copy/send — never e-mailed by this
+  // route (e-mail is optional, T2b).
+  'POST /api/admin/billing/subscription/generate-link': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const planId = text(body.planId);
+    if (!userId || !planId) return json(res, 400, { error: 'userId and planId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const result = await generateSubscriptionLink(pool, {
+      userId, planId, actor: { id: admin.id, name: admin.name }, reason, idempotencyKey,
+      successUrl: `${APP_URL}/#/configuracoes?billing=sucesso`, cancelUrl: `${APP_URL}/#/configuracoes?billing=cancelado`
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.generate-link', { user: admin, target: { id: userId }, msg: planId });
+    json(res, 200, result.after);
+  },
+
+  'POST /api/admin/billing/subscription/sync': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const result = await syncSubscription(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.sync', { user: admin, target: { id: userId } });
+    json(res, 200, result.after);
   },
 
   /* ---------- activity log ---------- */

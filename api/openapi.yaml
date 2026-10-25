@@ -3987,6 +3987,322 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/BillingOff' }
 
+  /api/admin/user/billing:
+    get:
+      tags: [admin, billing]
+      operationId: adminUserBilling
+      summary: 'Admin: one account''s billing ficha (ISO-1619/ISO-1624, T2a)'
+      description: >-
+        Every `subscriptions` row this account has ever had (current and legacy), the live
+        schedule for whichever is still writable, which of the six subscription actions are
+        safe to offer right now (with a reason when not), and this account's own
+        `billing_admin_actions` history.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The ficha.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions: { type: array, items: { $ref: '#/components/schemas/BillingSubscriptionRow' } }
+                  history: { type: array, items: { $ref: '#/components/schemas/BillingAdminAction' } }
+                  actions:
+                    type: object
+                    properties:
+                      changePlan: { $ref: '#/components/schemas/BillingSubscriptionAction' }
+                      cancelAtPeriodEnd: { $ref: '#/components/schemas/BillingSubscriptionAction' }
+                      resumeCancellation: { $ref: '#/components/schemas/BillingSubscriptionAction' }
+                      cancelImmediately: { $ref: '#/components/schemas/BillingSubscriptionAction' }
+                      generateLink: { $ref: '#/components/schemas/BillingSubscriptionAction' }
+                      sync: { $ref: '#/components/schemas/BillingSubscriptionAction' }
+                  liveWritesDisabled: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such user, or billing is not configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/billing/subscription/preview:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionPreview
+      summary: 'Admin: preview a subscription action before confirming it'
+      description: >-
+        A pass-through of Stripe's own upcoming-invoice math (`invoices.createPreview`) — never
+        a locally-computed guess. Mandatory before every write action's confirm dialog (plan
+        §5). Read-only: no live gate, no `proveOwner`, no `reason`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subscriptionId]
+              properties:
+                subscriptionId: { type: string }
+                action: { type: string, enum: [change-plan, cancel-at-period-end, resume, cancel-immediately, generate-link, sync] }
+                newPlanId: { type: string, description: Required when action is change-plan. }
+      responses:
+        '200':
+          description: The upcoming invoice as Stripe currently projects it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  amountDueCents: { type: integer }
+                  currency: { type: string }
+                  nextPaymentAttempt: { oneOf: [{ type: string }, { type: 'null' }] }
+        '400':
+          description: subscriptionId missing, or newPlanId names no catalog plan with a current price.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such subscription, or billing is not configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/billing/subscription/change-plan:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionChangePlan
+      summary: 'Admin: trocar plano — takes effect at the next renewal, no proration'
+      description: >-
+        Without a Subscription Schedule yet, converts into a two-phase one (phase 1 the cycle
+        already in progress, phase 2 the new plan's current Price, `end_behavior:release`).
+        With one already (still in the first month), only phase 2's Price is swapped,
+        `proration_behavior:none`. Requires a fresh `proveOwner` proof, a `reason` ≥ 10
+        characters and an `Idempotency-Key` header.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        $ref: '#/components/requestBodies/BillingSubscriptionActionBody'
+      responses:
+        '200':
+          description: The resulting Stripe subscription or schedule object.
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/ReasonRequired' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the proveOwner proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: '`stale` (expectedUpdatedAt no longer matches) or `action-in-progress`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`stripe-rejected` — an invalid request or a declined card; nothing changed.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/subscription/cancel-period-end:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionCancelPeriodEnd
+      summary: 'Admin: cancelar ao fim do período (the default cancellation)'
+      description: >-
+        Without a schedule, Stripe's own `cancel_at_period_end:true`. With one, the phase
+        currently in effect becomes the schedule's last (bounded to `current_period_end` if it
+        had no end of its own) and `end_behavior:cancel` — access runs out exactly where it was
+        already paid for, never a quiet extra cycle. Same auth as change-plan.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        $ref: '#/components/requestBodies/BillingSubscriptionActionBody'
+      responses:
+        '200': { description: The resulting Stripe subscription or schedule object., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/ReasonRequired' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the proveOwner proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: '`stale` or `action-in-progress`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`stripe-rejected`; nothing changed.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/subscription/resume:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionResume
+      summary: 'Admin: retomar cancelamento'
+      description: >-
+        The exact reverse of cancel-period-end. Without a schedule, `cancel_at_period_end:
+        false`. With one, restores an open-ended final phase at whatever plan this account is
+        actually slated for (never invented here), `end_behavior:release`. No `proveOwner`
+        required (ISO-1626) — still needs `reason` ≥ 10 and an `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        $ref: '#/components/requestBodies/BillingSubscriptionActionBody'
+      responses:
+        '200': { description: The resulting Stripe subscription or schedule object., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/ReasonRequired' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: '`stale` or `action-in-progress`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`stripe-rejected`; nothing changed.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/subscription/cancel-immediately:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionCancelImmediately
+      summary: 'Admin: cancelar imediatamente — access becomes read-only right away'
+      description: >-
+        `subscriptions.cancel` (`prorate:false, invoice_now:false`), or
+        `subscriptionSchedules.cancel` when a schedule drives this subscription. No refund
+        through the app (D-A3, still open — the Stripe Dashboard is the only place one happens
+        for now). Same auth as change-plan.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        $ref: '#/components/requestBodies/BillingSubscriptionActionBody'
+      responses:
+        '200': { description: The resulting Stripe subscription or schedule object., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/ReasonRequired' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the proveOwner proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: '`stale` or `action-in-progress`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`stripe-rejected`; nothing changed.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/subscription/generate-link:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionGenerateLink
+      summary: 'Admin: gerar link de assinatura ("atribuir")'
+      description: >-
+        Reuses the same Checkout Session createCheckoutSession builds for a self-serve signup
+        (the once-per-account first-month rule applies identically), `metadata.source:
+        admin_link`. The link is handed back for the admin to copy/send — never e-mailed by
+        this route. No `proveOwner` required (ISO-1626).
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, planId, reason]
+              properties:
+                userId: { type: string }
+                planId: { type: string }
+                reason: { type: string, minLength: 10 }
+      responses:
+        '200':
+          description: The Checkout Session url.
+          content:
+            application/json:
+              schema: { type: object, properties: { url: { type: string } } }
+        '400': { $ref: '#/components/responses/ReasonRequired' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: '`action-in-progress`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/subscription/sync:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionSync
+      summary: 'Admin: sincronizar com a Stripe'
+      description: >-
+        `subscriptions.retrieve` (plus its schedule), written with the exact same mapping the
+        webhook itself uses. Read-only against Stripe: no live gate, no `proveOwner` — still
+        needs `reason` ≥ 10 and an `Idempotency-Key`, logged to `billing_admin_actions` like
+        every other action.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        $ref: '#/components/requestBodies/BillingSubscriptionActionBody'
+      responses:
+        '200': { description: The subscription row as written., content: { application/json: { schema: { $ref: '#/components/schemas/BillingSubscriptionRow' } } } }
+        '400': { $ref: '#/components/responses/ReasonRequired' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: '`stale` or `action-in-progress`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/admin/audit:
     get:
       tags: [admin]
@@ -5313,6 +5629,24 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
 components:
+  requestBodies:
+    BillingSubscriptionActionBody:
+      description: >-
+        The uniform shape every `/api/admin/billing/subscription/*` action (ISO-1624 T2a) takes
+        — `change-plan` adds its own `newPlanId`; the rest need nothing beyond this.
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [userId, subscriptionId, reason]
+            properties:
+              userId: { type: string }
+              subscriptionId: { type: string, description: Stripe subscription id. }
+              newPlanId: { type: string, description: change-plan only. }
+              expectedUpdatedAt: { type: string, description: "The ficha row's own `updatedAt` — a stale value is refused with `409 {code: stale}`." }
+              reason: { type: string, minLength: 10 }
+              current: { type: string, description: "proveOwner's password proof — or `credential`/`googleProof` — on the actions that require one." }
   securitySchemes:
     cookieAuth:
       type: apiKey
@@ -6058,7 +6392,18 @@ components:
         targetUserId: { oneOf: [{ type: string }, { type: 'null' }] }
         action:
           type: string
-          enum: [catalog.plan.create, catalog.plan.activate, catalog.plan.deactivate, catalog.price.new-version, catalog.price.publish]
+          enum:
+            - catalog.plan.create
+            - catalog.plan.activate
+            - catalog.plan.deactivate
+            - catalog.price.new-version
+            - catalog.price.publish
+            - subscription.change-plan
+            - subscription.cancel-at-period-end
+            - subscription.resume
+            - subscription.cancel-immediately
+            - subscription.generate-link
+            - subscription.sync
         reason: { type: string, minLength: 10 }
         request: { type: object, description: The request body this action was called with. }
         before: { oneOf: [{ type: object }, { type: 'null' }] }
@@ -6068,6 +6413,56 @@ components:
         error: { oneOf: [{ type: string }, { type: 'null' }] }
         createdAt: { type: string }
         completedAt: { oneOf: [{ type: string }, { type: 'null' }] }
+
+    BillingSubscriptionAction:
+      type: object
+      description: Whether one action is safe to offer from the ficha's current state.
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        reason: { type: string, description: Present only when `enabled` is false. }
+
+    BillingSubscriptionRow:
+      type: object
+      description: >-
+        One row of `subscriptions` (ISO-1624 T2a) — the current one plus every legacy
+        (cancelled, superseded) row this account has ever had. Priced off `billing_prices`
+        (`priceState` can be `retired` and still show the right name/amount). `schedule` and
+        `scheduledPriceId` are only ever set on the one row that is still writable, read live
+        from Stripe at request time — never persisted.
+      properties:
+        id: { type: string, description: Stripe subscription id. }
+        userId: { type: string }
+        status: { type: string }
+        plan: { oneOf: [{ type: string }, { type: 'null' }] }
+        planDisplay: { oneOf: [{ type: object }, { type: 'null' }] }
+        priceId: { oneOf: [{ type: string }, { type: 'null' }] }
+        priceAmountCents: { oneOf: [{ type: integer }, { type: 'null' }] }
+        priceState: { oneOf: [{ type: string, enum: [draft, current, retired] }, { type: 'null' }] }
+        firstPeriod: { type: boolean }
+        customerId: { oneOf: [{ type: string }, { type: 'null' }] }
+        cancelAtPeriodEnd: { type: boolean, description: 'True whether cancellation comes from `cancel_at_period_end` or a schedule''s `end_behavior:cancel`.' }
+        currentPeriodEnd: { oneOf: [{ type: string }, { type: 'null' }] }
+        createdAt: { type: string }
+        updatedAt: { type: string, description: 'The optimistic-concurrency token every action''s `expectedUpdatedAt` is checked against.' }
+        firstFullCharge: { oneOf: [{ type: object }, { type: 'null' }] }
+        lastInvoiceStatus: { oneOf: [{ type: string }, { type: 'null' }] }
+        schedule:
+          oneOf:
+            - type: object
+              properties:
+                id: { type: string }
+                endBehavior: { type: string, enum: [release, cancel] }
+                phases: { type: array, items: { type: object } }
+            - type: 'null'
+        scheduledPriceId: { oneOf: [{ type: string }, { type: 'null' }] }
+        nextCharge:
+          oneOf:
+            - type: object
+              properties:
+                date: { oneOf: [{ type: string }, { type: 'null' }] }
+                amountCents: { oneOf: [{ type: integer }, { type: 'null' }] }
+            - type: 'null'
 
     Program:
       type: object

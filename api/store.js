@@ -885,6 +885,18 @@ export async function getLatestSubscription(pool, userId) {
   return rows.length ? rowToSubscription(rows[0]) : null;
 }
 
+// The admin billing ficha (ISO-1619/ISO-1624 T2a): every row this account has ever had — current
+// subscription first, every legacy (cancelled, superseded) one after — newest-touched first. A
+// cancel-and-resubscribe account has more than one row (the module comment above explains why:
+// one row per Stripe subscription id, never reused), and the ficha is explicit that it shows all
+// of them, not just getLatestSubscription's single pick.
+export async function getSubscriptionsForUser(pool, userId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM subscriptions WHERE user_id = $1 ORDER BY updated_at DESC', [userId]
+  );
+  return rows.map(rowToSubscription);
+}
+
 // Still in the R$1,99 first period, next (full-price) charge within 3 days, not yet mailed about
 // it — server.js's own periodic tick (billing.js's tickFirstPeriodNotices). There is no Stripe
 // trial in this design (ISO-1392), so there is no `trial_will_end` webhook to hook the warning
@@ -1359,6 +1371,18 @@ export async function finishBillingAdminAction(pool, id, { status, before, after
 
 export async function listBillingAdminActions(pool, limit = 100) {
   const { rows } = await pool.query('SELECT * FROM billing_admin_actions ORDER BY created_at DESC LIMIT $1', [limit]);
+  return rows.map(rowToBillingAdminAction);
+}
+
+// The ficha's own history panel (ISO-1624 T2a) — one account's financial actions, not the
+// instance-wide feed listBillingAdminActions above serves the catalog's own actions tab with.
+// `target_user_id` is ON DELETE SET NULL (migrations/010), so this is naturally empty again once
+// the account itself is gone — the rows persist (LGPD-reviewed: no personal data beyond an id),
+// just no longer reachable by this lookup.
+export async function listBillingAdminActionsForUser(pool, userId, limit = 50) {
+  const { rows } = await pool.query(
+    'SELECT * FROM billing_admin_actions WHERE target_user_id = $1 ORDER BY created_at DESC LIMIT $2', [userId, limit]
+  );
   return rows.map(rowToBillingAdminAction);
 }
 
