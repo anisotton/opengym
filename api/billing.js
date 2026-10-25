@@ -1445,7 +1445,15 @@ export async function getUserBillingFicha(pool, userId) {
     }
     const scheduledPriceId = schedule ? lastPhaseOf(schedule).items[0].price : null;
     const cancelling = schedule ? schedule.end_behavior === 'cancel' : !!row.cancelAtPeriodEnd;
-    const nextChargeDate = cancelling ? null : (schedule ? toIso(lastPhaseOf(schedule).start_date) : row.currentPeriodEnd);
+    // QA (ISO-1628 item 4, sandbox): the final phase's own `start_date` is only "the next charge
+    // date" while that phase is still pending — mid first month, or right after an admin change-
+    // plan. Once it has actually started, Stripe keeps the schedule attached (it doesn't release
+    // until that phase itself ends), so this kept reading the same now-past date through the
+    // entire following billing cycle. `row.currentPeriodEnd` is correct in both the "no schedule"
+    // case and "schedule exists but its final phase already began" — exactly like the no-schedule
+    // branch already did.
+    const finalPhasePending = schedule && lastPhaseOf(schedule).start_date > Math.floor(Date.now() / 1000);
+    const nextChargeDate = cancelling ? null : (finalPhasePending ? toIso(lastPhaseOf(schedule).start_date) : row.currentPeriodEnd);
     const nextPrice = !cancelling && scheduledPriceId && scheduledPriceId !== row.priceId ? await getPriceById(pool, scheduledPriceId) : price;
     return {
       id: row.id, userId: row.userId, status: row.status, plan: plan?.id || row.plan || null,

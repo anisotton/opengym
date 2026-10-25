@@ -81,6 +81,7 @@ function parseStripeForm(raw) {
 
 const DAY = 86400;
 const now = () => Math.floor(Date.now() / 1000);
+const toIsoUnix = unixSeconds => new Date(unixSeconds * 1000).toISOString(); // same conversion billing.js's own toIso does
 
 // Extends the T1b mock (prices/customers/checkout) with the live-subscription surface T2a's
 // actions and ficha actually call. `fail` lets a test arm a response for every request matching
@@ -327,6 +328,46 @@ test('admin billing ficha: origin reflects metadata.source=admin_link, pauseColl
   assert.equal(r.body.subscriptions[0].origin, 'admin_link');
   assert.deepEqual(r.body.subscriptions[0].pauseCollection, { behavior: 'void', resumes_at: null });
   assert.equal(r.body.subscriptions[0].status, 'active', 'no synthetic "paused" status — pause_collection is the only signal');
+});
+
+test('admin billing ficha: nextCharge.date is the pending phase\'s start_date while still mid first month', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1', planId: 'monthly', priceId: 'price_intro_test' });
+  const planPhaseStart = now() + DAY; // still in the future — this phase hasn't started yet
+  h.mock.schedules.sched_1 = {
+    id: 'sched_1', object: 'subscription_schedule', status: 'active', end_behavior: 'release',
+    phases: [
+      { start_date: now() - DAY, end_date: planPhaseStart, items: [{ price: 'price_intro_test' }] },
+      { start_date: planPhaseStart, items: [{ price: 'price_monthly_test' }] }
+    ]
+  };
+  h.mock.subscriptions.sub_1.schedule = 'sched_1';
+  const r = await h.req('GET', '/api/admin/user/billing?id=u_plain_1', { cookie: adminCookie });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.subscriptions[0].nextCharge.date, toIsoUnix(planPhaseStart));
+});
+
+// ISO-1628 (QA E2E, sandbox): the final phase's own start_date was used as `nextCharge.date`
+// forever, even long after that phase had actually started — Stripe never releases the schedule
+// until the final phase itself ends, so this stayed wrong for the whole second billing cycle (and
+// after a later change-plan too, since that also leaves the schedule attached with a now-past
+// "phase 2 starts" date).
+test('admin billing ficha: nextCharge.date falls back to currentPeriodEnd once the final phase has actually started', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1', planId: 'monthly', priceId: 'price_monthly_test' });
+  const planPhaseStart = now() - DAY; // already in the past — this phase is the one in effect now
+  h.mock.schedules.sched_1 = {
+    id: 'sched_1', object: 'subscription_schedule', status: 'active', end_behavior: 'release',
+    phases: [
+      { start_date: now() - 2 * DAY, end_date: planPhaseStart, items: [{ price: 'price_intro_test' }] },
+      { start_date: planPhaseStart, items: [{ price: 'price_monthly_test' }] }
+    ]
+  };
+  h.mock.subscriptions.sub_1.schedule = 'sched_1';
+  const r = await h.req('GET', '/api/admin/user/billing?id=u_plain_1', { cookie: adminCookie });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.subscriptions[0].nextCharge.date, r.body.subscriptions[0].currentPeriodEnd);
+  assert.notEqual(r.body.subscriptions[0].nextCharge.date, toIsoUnix(planPhaseStart), 'not the now-stale phase start_date');
 });
 
 /* ---------- requireAdmin ---------- */
