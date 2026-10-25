@@ -168,7 +168,7 @@ test('signs in by e-mail in any of the three fields, case-insensitively; the nam
   ].entries()) {
     const r = await signIn(h, body, `198.51.100.${10 + i}`);
     assert.equal(r.status, 200, JSON.stringify(body));
-    assert.deepEqual(r.body.user, { id: 'u1', name: 'Ana', admin: false });
+    assert.deepEqual(r.body.user, { id: 'u1', name: 'Ana', admin: false, role: 'student' });
     assert.ok(r.cookie);
   }
   // `email` means an address and nothing else: the name typed there is not looked up.

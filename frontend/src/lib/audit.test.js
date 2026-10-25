@@ -39,8 +39,8 @@ describe('auditCat', () => {
   // throttle, billing's checkout start (ISO-1393), and self-service account deletion
   // (ISO-1394 Phase 4 — its own top-level event, not `admin.*`, since no admin acted). None of
   // the three has a chip of its own — those rows show under All, and a throttle under Failed.
-  it('puts every known event in account, admin, auth, billing or media', () => {
-    expect([...new Set(EVENTS.map(auditCat))].sort()).toEqual(['account', 'admin', 'auth', 'billing', 'media'])
+  it('puts every known event in account, admin, auth, billing, media or teacher', () => {
+    expect([...new Set(EVENTS.map(auditCat))].sort()).toEqual(['account', 'admin', 'auth', 'billing', 'media', 'teacher'])
   })
 })
 
