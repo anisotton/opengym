@@ -606,7 +606,7 @@ export default function Settings() {
       {user?.termsAcceptedAt && <>{t('You accepted version {0} on {1}.', user.termsVersion, new Date(user.termsAcceptedAt).toLocaleDateString(dateLocale()))}<br /></>}
       Brilhart Fitness v{__APP_VERSION__} · {t('free & open source (AGPL v3)')}<br />
       <a href="https://github.com/anisotton/opengym" target="_blank" rel="noopener">source code</a> · exercise data: hasaneyldrm/exercises-dataset (MIT)<br />
-      exercise images and animations © <a href="https://gymvisual.com/" target="_blank" rel="noopener">Gym visual</a>
+      port de bras exercises and their media © Brilhart Fitness, all rights reserved
     </div>
   </div>
 }

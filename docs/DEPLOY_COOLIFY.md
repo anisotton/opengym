@@ -16,7 +16,7 @@ issue. As tabelas abaixo dizem onde cada valor vem de, não o valor em si.
 
 1. Novo recurso → **Docker Compose** → aponte para o `docker-compose.yml` da branch
    `release/0.0.0-alpha` do fork `anisotton/opengym` (não o `DuarteSantos8/openGym` upstream —
-   é o fork que tem o `/api/health` com banco e o profile `media`, ISO-1400).
+   é o fork que tem o `/api/health` com banco, ISO-1400).
 2. Volumes persistentes — confirme que os dois sobrevivem a um redeploy:
    - `pgdata` (volume nomeado do `db`, dados de PostgreSQL).
    - `./data` (bind mount do `api` — contas, passkeys, `secret`, `vapid.json`, uploads).
@@ -29,9 +29,8 @@ issue. As tabelas abaixo dizem onde cada valor vem de, não o valor em si.
    Postgres nem em Redis. Uma segunda réplica faria metade dos logins e das tentativas
    caírem num processo que nunca viu o desafio ou o contador — falhas intermitentes, difíceis
    de reproduzir. O `web` (nginx) pode ter quantas réplicas quiser; só o `api` é restrito a uma.
-4. Build: `COMPOSE_PROFILES=media` ligado (ver item 2 abaixo) e nada além do que já está no
-   `docker-compose.yml` — não é preciso `API_TARGET=coach` (isso ligaria o runtime do Coach, e
-   o Coach fica desligado nesta fase, item 2 abaixo).
+4. Build: nada além do que já está no `docker-compose.yml` — não é preciso `API_TARGET=coach`
+   (isso ligaria o runtime do Coach, e o Coach fica desligado nesta fase, item 2 abaixo).
 
 ## 2. Variáveis de ambiente
 
@@ -46,7 +45,7 @@ deve estar ausente do `.env.example`, e nenhuma obrigatória deve faltar na tabe
 | `RP_NAME` | `Brilhart Fitness` — nome mostrado no diálogo de passkey do sistema | Não |
 | `ALLOW_GUEST` | `0` — remove "Continuar sem conta"; instância de uso identificado, não anônimo | Não |
 | `INVITE_ONLY` | `0` por enquanto (beta fechado controla quem convida de outro jeito); revisitar quando o controle de convites for decidido | Não |
-| `PASSWORD_LOGIN` | `0` — passkey é o único jeito de entrar nesta fase | Não |
+| `PASSWORD_LOGIN` | `1` — e-mail (verificado) ou nome + senha como caminho de primeira classe ao lado da passkey (ISO-1596); `.env.example` já traz isso como padrão do fork | Não |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | gere a senha com `openssl rand -base64 24` (ou o gerador do Coolify); usuário/banco podem ficar `opengym`/`opengym` | `POSTGRES_PASSWORD` é segredo |
 | `DATABASE_URL` | **não defina** — o próprio `docker-compose.yml` monta a partir dos três `POSTGRES_*` acima, apontando para o serviço `db` | — |
 | `MAIL_PROVIDER` | deixe **sem definir** por enquanto (ver "Sem dados reais" acima) — sem provedor, e-mails de confirmação/recuperação vão só para o log do container; o Anderson decide o provedor de produção depois | Não |
@@ -56,7 +55,6 @@ deve estar ausente do `.env.example`, e nenhuma obrigatória deve faltar na tabe
 | `STRIPE_PRICE_MONTHLY` / `STRIPE_PRICE_QUARTERLY` / `STRIPE_PRICE_YEARLY` / `STRIPE_PRICE_INTRO` | saída de `cd api && STRIPE_API_KEY=rk_... npm run stripe:setup` contra a conta sandbox (ver `docs/SELF_HOSTING.md` §7) | Não (são ids de Price, públicos) |
 | `ADMIN_UIDS` | **vazio no primeiro deploy.** Depois do primeiro cadastro de teste, copie o id em Settings → Conta → Account ID (ou `docker compose exec db psql -U opengym -c "SELECT id, name FROM users"`) e redeploy com esse id aqui | Não |
 | `COACH_DISABLED` | `1` — trava o Coach desligado, independente do toggle do admin (`AdminCoach.jsx` mostra "Force-disabled by COACH_DISABLED" no lugar do toggle) | Não |
-| `COMPOSE_PROFILES` | `media` — beta fechado ainda usa as imagens da Gym visual até a mídia própria da Brilhart ficar pronta (plano B decidido em 18/10, ISO-1391); remover antes do lançamento pago | Não |
 | `TRUST_PROXY` | **não toque** — já vem `1` por padrão no `docker-compose.yml` porque a API só é alcançada através do `web` | — |
 
 Variáveis que existem no `.env.example` mas **não entram aqui por enquanto**: `VAPID_SUBJECT`

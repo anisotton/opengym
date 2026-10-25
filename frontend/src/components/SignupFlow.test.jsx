@@ -3,6 +3,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SignupFlow from './SignupFlow.jsx'
+import { LEGAL_VERSION } from '../legal/version.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -68,10 +69,10 @@ describe('SignupFlow terms checkbox', () => {
     act(() => host.querySelector('input[name="terms"]').click())
     act(() => button(host, 'Create passkey').click())
     await settle()
-    expect(mocks.passkeyRegister).toHaveBeenCalledWith('Ana', '', 'ana@example.com', '1990-05-05', '2026-10-18')
+    expect(mocks.passkeyRegister).toHaveBeenCalledWith('Ana', '', 'ana@example.com', '1990-05-05', LEGAL_VERSION)
     // Settings shows the acceptance date straight away, not only after the next /api/me.
     const u = onCreated.mock.calls[0][0]
-    expect(u).toMatchObject({ id: 'u1', termsVersion: '2026-10-18', needsTerms: false })
+    expect(u).toMatchObject({ id: 'u1', termsVersion: LEGAL_VERSION, needsTerms: false })
     expect(Number.isNaN(Date.parse(u.termsAcceptedAt))).toBe(false)
   })
 

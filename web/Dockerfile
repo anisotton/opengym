@@ -46,7 +46,6 @@ LABEL maintainer="Duarte Santos https://gitlab.com/DuarteSantos8" \
 
 COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
-# exercise media (img/gif) is mounted at runtime from the media volume
 
 # Substitutes __APP_URL__ in the served index.html at start-up — nginx.conf.template's own
 # envsubst (20-envsubst-on-templates.sh, part of this base image) only covers /etc/nginx/templates,

@@ -51,10 +51,6 @@ variables:
   DOCKER_IMAGE: "docker:28-cli"
   DOCKER_DIND_IMAGE: "docker:28-dind"
   TRIVY_IMAGE: "aquasec/trivy:0.74.0"
-  # The demo build has no backend and no local media: the exercise images/GIFs (~140 MB)
-  # are never committed, so it points at the upstream dataset on jsDelivr, pinned to a
-  # commit so the CDN can cache it forever.
-  DATASET: "https://cdn.jsdelivr.net/gh/hasaneyldrm/exercises-dataset@7455efae41b330c265e7cd4b78dfa848e7ce5ebd"
   GIT_DEPTH: "50"
   # npm's own progress bars and funding notices are noise in a job log.
   npm_config_fund: "false"
@@ -530,7 +526,7 @@ build:apk:
       cd frontend
       npm ci
       # VITE_MOBILE build + `cap sync` into android/. The mobile flavor talks to no
-      # backend at all: no sign-in, no sync, media straight from the CDN.
+      # backend at all: no sign-in, no sync.
       npm run build:mobile
       VER="$(node -p "require('./package.json').version")"
       cd android
@@ -702,7 +698,6 @@ verify:stack:
           pull_policy: always
       EOF
       docker compose -f docker-compose.yml -f ci-images.override.yml config --quiet
-      # --no-deps skips the `media` service (a 140 MB clone the smoke test does not need).
       docker compose -f docker-compose.yml -f ci-images.override.yml up -d --no-deps --no-build api web
       NET="$(docker network ls --filter name=opengym --format '{{.Name}}' | head -1)"
       curl() { docker run --rm --network "$NET" curlimages/curl:8.12.1 "$@"; }
@@ -805,7 +800,7 @@ pages:
   script:
     - cd frontend
     - npm ci --cache .npm --prefer-offline --ignore-scripts
-    - VITE_IMG_BASE="$DATASET/images/" VITE_GIF_BASE="$DATASET/videos/" npm run build
+    - npm run build
     - cd ..
     - rm -rf public && mv frontend/dist public
   artifacts:

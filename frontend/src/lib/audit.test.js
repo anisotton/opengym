@@ -80,14 +80,16 @@ describe('auditLine', () => {
     expect(auditLine({ ev: 'auth.passkey.fail', ok: false, name: 'Ana', msg: 'credential-exists' }).sub).not.toMatch(/credential-exists/)
   })
 
-  it('reads the sign-in e-mail events, whose line carries only a masked address', () => {
+  it('reads the account e-mail events, whose line carries only a masked address', () => {
     // set/change are picked by a ternary the extraction above cannot read, like password set/change.
-    expect(EVENTS).toEqual(expect.arrayContaining(['auth.email.remove', 'auth.email.fail']))
+    expect(EVENTS).toEqual(expect.arrayContaining(['auth.email.fail', 'auth.recover.password']))
     expect(SERVER).toContain("first ? 'auth.email.set' : 'auth.email.change'")
-    expect(auditLabel('auth.email.change')).toBe('Changed their sign-in e-mail')
-    expect(auditLine({ ev: 'auth.email.set', ok: true, name: 'Ana', msg: 'passkey · a…@e…' })).toEqual({ title: 'Added a sign-in e-mail', sub: 'Ana · passkey · a…@e…' })
+    expect(auditLabel('auth.email.change')).toBe('Changed their e-mail')
+    expect(auditLine({ ev: 'auth.email.set', ok: true, name: 'Ana', msg: 'passkey · a…@e…' })).toEqual({ title: 'Added their e-mail', sub: 'Ana · passkey · a…@e…' })
     expect(auditLine({ ev: 'auth.email.fail', ok: false, name: 'Ana', msg: 'email-taken' }).sub).toBe('Ana · another profile already uses that e-mail')
     expect(auditLine({ ev: 'auth.password.fail', ok: false, msg: 'unknown-email' }).sub).toBe('unknown caller · no profile with a password has that e-mail')
+    // ISO-1596: recover/redeem with a new password instead of a device-link code.
+    expect(auditLine({ ev: 'auth.recover.password', ok: true, name: 'Ana' })).toEqual({ title: 'Reset their password with a recovery link', sub: 'Ana' })
   })
 
   it('names the person who did it', () => {
@@ -178,7 +180,7 @@ describe('a failed proof of ownership', () => {
   })
   it('reads as the change, not as a sign-in', () => {
     expect(auditLine({ ev: 'auth.proof.fail', ok: false, name: 'Ana', act: 'email', msg: 'bad-current' }))
-      .toEqual({ title: 'Confirming a change failed', sub: 'Ana · changing the sign-in e-mail · wrong current password' })
+      .toEqual({ title: 'Confirming a change failed', sub: 'Ana · changing their e-mail · wrong current password' })
     expect(auditLine({ ev: 'auth.proof.fail', ok: false, name: 'Ana', act: 'passkey-remove', msg: 'step-up-failed' }).sub)
       .toBe('Ana · removing a passkey · the passkey confirming the change was rejected')
   })

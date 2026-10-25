@@ -16,7 +16,6 @@ docker compose pull   # prebuilt images from GitLab's registry (amd64 + arm64; t
 docker compose up -d
 ```
 
-- First start downloads the exercise images/GIFs (~140 MB) once into `media/img` and `media/gif`.
 - Open **http://localhost:8080** and create a profile with a passkey.
 - Rather build from source than pull prebuilt images? Skip `docker compose pull` and run
   `docker compose up -d --build` instead — no Node needed locally either way.
@@ -272,25 +271,32 @@ the same one the links in the mail open. To look at the three templates without 
   arrived). Single-use, valid 24 hours. An unconfirmed address does not block using the app, only
   the subscription that comes with Phase 3.
 - **Recovery ("Perdi meu acesso" / "I lost my access")** on the sign-in screen — a single-use
-  link, valid 15 minutes, that opens the same device-link ceremony a second device already uses to
-  add itself (`Settings → Account → Pair another device`): it creates a fresh passkey on whichever
-  device opens it and signs that device in. Existing passkeys are left exactly as they were; their
-  owner removes any they no longer trust in Settings afterwards. Requesting one never reveals
-  whether the address has an account — the answer is the same either way — so it cannot be used to
-  check who has signed up.
+  link, valid 15 minutes. By default it opens the same device-link ceremony a second device
+  already uses to add itself (`Settings → Account → Pair another device`): it creates a fresh
+  passkey on whichever device opens it and signs that device in. With `PASSWORD_LOGIN=1`
+  (ISO-1596), redeeming the link with a new password (`POST /api/recover/redeem` with a
+  `password`, instead of just a `token`) sets that password directly and signs the account in —
+  "forgot my password" without an admin handing out a one-time code. Either way the link is
+  single-use; existing passkeys are left exactly as they were, and every other session ends the
+  same way a password change always ends them. Requesting one never reveals whether the address
+  has an account — the answer is the same either way — so it cannot be used to check who has
+  signed up.
 
 Both links are stored only as a SHA-256 of the token actually mailed out, the same reasoning as an
 admin's password-reset code. Wrong or replayed tokens pause the caller's address (20 free, then 30
 seconds doubling to 15 minutes), the same shape as every other guess here. Audited as
 `auth.register.ok`, `auth.email.verify.ok` / `fail`, `auth.email.resend`, `auth.email.set` /
-`fail`, and `auth.recover.request` / `ok` / `fail`.
+`fail`, and `auth.recover.request` / `ok` / `fail` / `password` (the last only for a redeem that
+set a password instead of pairing a device).
 
 ### Password sign-in (optional)
 
 Passkeys are the default and stay the recommended way in. Some people cannot use them: a browser
 on a plain `http://` LAN address (passkeys need HTTPS or `localhost`), a Firefox setup that only
 offers a hardware key, a passkey on a phone that will not move to the desktop. For them there is
-an optional name-and-password sign-in, off unless you ask for it:
+an optional e-mail/name-and-password sign-in — **on by default for this fork's `.env.example`**,
+off by default in the code itself (an instance started with no `PASSWORD_LOGIN` at all gets
+passkey-only sign-in, the upstream default):
 
 ```bash
 PASSWORD_LOGIN=1
@@ -299,22 +305,24 @@ PASSWORD_LOGIN=1
 What changes when it is on:
 
 - The sign-in screen offers **Sign in with password**, and **Create new profile** can use a
-  password instead of a passkey — in browsers without passkey support too. With `INVITE_ONLY=1`
-  it asks for the invite code exactly like passkey signup does.
+  password instead of a passkey — in browsers without passkey support too. Either way needs the
+  same verified e-mail every passkey signup already requires (ISO-1397, see above) — confirmed by
+  the same mailed link — and, with `INVITE_ONLY=1`, the same invite code passkey signup asks for.
 - Settings → Account gets a **Password** row. Nobody has a password until they set one there.
   Setting a first password asks for the profile's passkey; changing it asks for the current
   password (or the passkey, if it was forgotten). Either signs the profile out everywhere else,
   and paired phones have to be paired again. Removing it asks for the password or the passkey
   too — a session on its own may be a copied cookie.
-- People sign in with their **profile name** — case and surrounding spaces do not matter — and the
-  password. Two profiles with a password cannot share a name; Settings says so when a name is
-  already taken that way.
-- Optionally with an **e-mail address** instead of the name: see *Signing in with an e-mail*
-  below.
+- People sign in with their account's **e-mail** — the one verified address every profile has,
+  confirmed or not — or, for a profile from before e-mail was required (ISO-1397), its **profile
+  name**. Case and surrounding spaces do not matter for either. Signing in with an unconfirmed
+  address still works — the password is the proof here, not the confirmation link — only the
+  "confirm your e-mail" banner is unaffected by it. Two profiles with a password cannot share a
+  name; Settings says so when a name is already taken that way.
 - A password cannot be removed while it is the profile's only way in (a profile made with a
   password has no passkey).
 - The password also confirms the changes that need proof — adding or removing a passkey, making
-  a code for another device — but only while `PASSWORD_LOGIN=1`.
+  a code for another device, changing the account's e-mail — but only while `PASSWORD_LOGIN=1`.
 
 **Switching it off again** turns every password route off, and a password kept from before no
 longer confirms anything either: an old or reused one must not be enough to add a passkey. A
@@ -323,54 +331,36 @@ browser that is still signed in. Before you switch it off, have those profiles a
 (**Settings → Account → Passkeys → Add a passkey**, confirmed with their password); the admin
 dashboard marks every profile that has a password.
 
-**Signing in with an e-mail.** Settings → Account also gets a **Sign-in e-mail** row, right under
-the password, and **Create new profile** with a password has an optional e-mail field. Whoever
-adds an address can type it at **Sign in with password** instead of their profile name (case and
-spaces do not matter). This is a different, older feature than the *verified* e-mail every new
-profile now has (see *Verified e-mail and recovering access* above) — and, while `PASSWORD_LOGIN`
-is on, it is the one `POST /api/account/email` answers: **nothing is ever mailed to this address**
-— no confirmation, no reset mail — a forgotten password is still reset with the admin's code
-below, which can be redeemed with the name or the e-mail. So the address is not proven to belong
-to anyone; it is only a second name that points at the account, and the password still opens it.
+**The account's e-mail is the one from *Verified e-mail and recovering access* above** — ISO-1596
+removed the second, unverified "sign-in e-mail" this section used to describe, which lived at the
+same `POST /api/account/email` route and the same `email` column under a different, older feature
+(#118) with different rules (nothing ever mailed, no `/api/me`, visible only to the owner and
+admins). The two collided — an instance with `PASSWORD_LOGIN=1` lost the verified address from
+`/api/me` and the confirmation mail entirely — which is exactly what ISO-1596 fixed: one `email`,
+one route, the same proof (`proveOwner`: current password or a passkey) and the same confirmation
+mail, whichever way an instance signs people in. An address an older deploy saved under the
+retired feature is not lost — it reads back as this account's e-mail, simply unconfirmed until its
+owner confirms it (or changes it, which asks for a fresh confirmation the normal way).
 
-- Adding, changing and removing it asks for the same proof as setting a password (the current
-  password or a passkey of the profile) — a session on its own may be a copied cookie.
-- An address belongs to one profile only, and can never be another password profile's name.
-  Taking one that is in use is refused ("Another profile already uses this e-mail address") — see
-  *What an e-mail gives away* below for what that says and how it is limited.
-- Wrong passwords count against the **account**, whether it was named by its name or its e-mail,
-  so switching between the two does not get around the pause.
-- Only the owner (in Settings) and admins (the user list and the user's page in the admin
-  dashboard) ever see the address. It is not written to the activity log (entries show it masked,
-  `a…@e…`) or the container log, is not part of what the Coach, the MCP server or plan sharing
-  see, and is not in `/api/me`. It is stored in PostgreSQL as `email` on the user, lower-cased.
-- With `PASSWORD_LOGIN` off, the row and the field are hidden and the address is not used; it
-  stays in the database for when the flag comes back.
+**Resetting a password.** Two ways, neither needing the forgotten password:
 
-**What an e-mail gives away.** A profile trying to take an address already in use is told so,
-which says "some profile on this instance uses this address" — never which one. The alternative,
-accepting it silently, would leave someone who typed their address on a second profile believing
-it worked. So the answer is made expensive instead: in Settings it comes only after the proof (a
-passkey prompt or a password check per try). Signing up with a password needs no proof, so there
-the answer costs less: it comes after the new password is hashed and, with `INVITE_ONLY=1`, only
-to someone with a valid invite code (a refusal leaves the code unused); on an open instance
-anyone can ask. Every such refusal — in Settings or on signup — counts against the visitor's
-address (and in Settings the account): 20 are free, then a pause of 30 seconds doubling to 15
-minutes. That leaves a few tries an hour, comparable to what the
-name-taken answer already says about names. The other thing to know: once someone has paused an
-account by wrong passwords under its name, trying a guessed address shows the same pause, which
-ties that address to that name — the price of not letting a switch to the e-mail skip the pause.
+- **Self-serve, no admin (ISO-1596).** The same **Recovery** link described above
+  (*Verified e-mail and recovering access*), redeemed with a new password instead of pairing a
+  device: single-use, valid 15 minutes, signs the account in with the new password and ends every
+  other session the way a password change always does.
+- **Admin-issued code.** In the admin dashboard open the user and choose **Reset password**. You
+  get a one-time code such as `K7WQ-2MZP-4HXA` to hand over in person or by message: it is shown
+  once, works once, is valid for 24 hours and is stored only as a hash. Issuing it removes their
+  current password and signs them out everywhere at once — their passkeys keep working. They
+  enter their e-mail (or their profile name, for an account from before e-mail was required), the
+  code and a new password under **Sign in with password → Have a reset code?**. The same code
+  gets someone back in who lost their only passkey (#219). Admin accounts cannot be reset from the
+  dashboard, so one admin cannot take over another's login; an admin sets their own password in
+  Settings.
 
-**Resetting a password.** There is no e-mail. In the admin dashboard open the user and choose
-**Reset password**. You get a one-time code such as `K7WQ-2MZP-4HXA` to hand over in person or
-by message: it is shown once, works once, is valid for 24 hours and is stored only as a hash.
-Issuing it removes their current password and signs them out everywhere at once — their passkeys
-keep working. They enter their name (or their sign-in e-mail), the code and a new password under **Sign in with password →
-Have a reset code?**. The same code gets someone back in who lost their only passkey (#219).
-Admin accounts cannot be reset from the dashboard, so one admin cannot take over another's login;
-an admin sets their own password in Settings. Every step is in the activity log
-(`admin.password.reset`, `auth.password.reset`, `auth.password.ok` / `fail` / `locked`, and
-`auth.email.set` / `change` / `remove` / `fail` for the sign-in e-mail).
+Every step is in the activity log (`admin.password.reset`, `auth.password.reset`,
+`auth.password.ok` / `fail` / `locked`, `auth.recover.password`, and `auth.email.set` / `change` /
+`fail` for the account's e-mail).
 
 **On a plain-HTTP LAN**, set `ORIGIN` to exactly the address people type, for example
 `ORIGIN=http://192.168.1.20:8080`. Browsers do not send `Sec-Fetch-Site` to plain-http addresses,
@@ -765,8 +755,8 @@ git pull
 docker compose up -d --build
 ```
 
-The app shell is versioned (`?v=N`) so clients pick up changes on next load. Your `./data` and the
-downloaded media are untouched.
+The app shell is versioned (`?v=N`) so clients pick up changes on next load. Your `./data` is
+untouched.
 
 ## Passkeys fail even though `RP_ID` looks right
 
@@ -886,7 +876,6 @@ browser (see section 2).
 |---|---|
 | No passkey prompt on my phone | You're on `http://` or an IP, not HTTPS. Set up a domain (section 3). |
 | "verification failed" on login | `RP_ID`/`ORIGIN` don't match the URL in the address bar. See the section above — start with what the server logged on startup. |
-| Media didn't download | `docker compose logs media`. Re-run `docker compose up -d`, or run `./scripts/fetch-media.sh`. |
 | Port 8080 already used | Set `WEB_PORT=9090` in `.env` (and update `ORIGIN` for local testing). |
 | A photo or video will not upload ("refused as too large", or it stops partway) | A proxy in front caps the body or cuts the request off: see [Photos and videos](#photos-and-videos-of-custom-exercises) for the body size and timeouts it needs. |
 | No "Notifications" option in Settings | Requires a signed-in profile and HTTPS (or `localhost`) — guest mode and plain HTTP over LAN can't subscribe. |
@@ -897,8 +886,6 @@ browser (see section 2).
 | The app says the server "answered with something other than openGym (HTTP 200)" | Something other than the API answered `/api/*` with a success page — an auth proxy's sign-in page, or a catch-all route serving `index.html`. Every API answer is JSON; forward `/api/*` to the API unchanged. |
 | The app says "Your server answered with an error (HTTP …)" | The code is what the server or its proxy sent: 502/504 usually means the API container is down or unreachable from `web`, 413 that the proxy's upload limit is too small. Changes stay on the device and go through once the server answers. |
 | `docker compose pull` fails with "denied" / "unauthorized" | The prebuilt images aren't published yet, or need to be, or the GHCR package is still private — build from source instead (`docker compose up -d --build`). |
-| Exercise images/GIFs blank when a routine is open | Fixed in current images (issue #79). On an older build, see the note below. |
-| An exercise shows a plain tile instead of its animation when offline | The web app installed on the home screen keeps the media of every exercise in your plan and your current workout, fetched in the background once the app has settled (not on a cellular or Data Saver connection, where the browser says so), plus everything it has shown you, up to 150 MB, across updates. In an ordinary browser tab nothing is fetched ahead: only what it has shown you is kept. An exercise outside your plan that was never shown while online has nothing to show offline. The phone app loads media from a CDN and is not covered by this. |
 
 ### `VITE_IMG_BASE` / `VITE_GIF_BASE` are build-time, not run-time
 

@@ -81,7 +81,7 @@ async function startServer(t, { env = {}, users = [] } = {}) {
     // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
     // server-terms.test.js's subject, not this file's. ISO-1521: same idea for the now-required
     // birthDate — an adult one, since the under-18 refusal is server-age-gate.test.js's subject.
-    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-18' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-25' };
     if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
@@ -188,7 +188,7 @@ test('GET /api/me reports email/emailVerified/needsEmail; confirming the link se
   // ISO-1390's terms fields ride along; their own values are server-terms.test.js's subject.
   assert.equal(typeof me1.body.termsAcceptedAt, 'string');
   assert.deepEqual(me1.body, { user, email: 'ada@example.com', emailVerified: false, needsEmail: false,
-    termsVersion: '2026-10-18', termsAcceptedAt: me1.body.termsAcceptedAt, needsTerms: false });
+    termsVersion: '2026-10-25', termsAcceptedAt: me1.body.termsAcceptedAt, needsTerms: false });
 
   const { token } = h.mailedLink('verificar-email');
   const v = await h.req('POST', '/api/account/email/verify', { body: { token }, ip });
@@ -362,4 +362,93 @@ test('recover/request sends nothing for a disabled account; a token already in h
   const before = h.log.length;
   await h.req('POST', '/api/recover/request', { body: { email: 'ada@example.com' }, ip });
   assert.equal(h.log.slice(before).includes('Recupere seu acesso'), false);
+});
+
+/* ------------------------------------------------------------------ ISO-1596: password ------- */
+
+const GOOD = 'correct horse battery staple';
+
+test('with PASSWORD_LOGIN on, register/password requires and mails the same confirmation, and GET /api/me always carries the fields', async t => {
+  const h = await startServer(t, { env: { PASSWORD_LOGIN: '1' } });
+  const ip = '198.51.100.90';
+  assert.deepEqual(
+    (await h.req('POST', '/api/register/password', { body: { name: 'Ada', password: GOOD }, ip })).body,
+    { error: 'that is not an e-mail address', code: 'email-invalid' }
+  );
+  const r = await h.req('POST', '/api/register/password', { body: { name: 'Ada', password: GOOD, email: 'Ada@Example.com' }, ip });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.cookie);
+  assert.equal((await h.user(r.body.user.id)).email, 'ada@example.com');
+  assert.equal((await h.user(r.body.user.id)).email_verified_at, null);
+
+  const me1 = await h.req('GET', '/api/me', { cookie: r.cookie, ip });
+  assert.deepEqual(me1.body.user, r.body.user);
+  assert.equal(me1.body.email, 'ada@example.com');
+  assert.equal(me1.body.emailVerified, false);
+  assert.equal(me1.body.needsEmail, false);
+
+  // The same confirmation link a passkey signup gets (register/verify) — not a second, unmailed
+  // address (the retired #118 feature).
+  const { token } = h.mailedLink('verificar-email');
+  const v = await h.req('POST', '/api/account/email/verify', { body: { token }, ip });
+  assert.equal(v.status, 200);
+  const me2 = await h.req('GET', '/api/me', { cookie: r.cookie, ip });
+  assert.equal(me2.body.emailVerified, true);
+
+  // Signs in by that e-mail — unconfirmed would have worked too, the password is the proof.
+  const signedIn = await h.req('POST', '/api/login/password', { body: { identifier: 'ADA@example.com', password: GOOD }, ip: '198.51.100.91' });
+  assert.equal(signedIn.status, 200);
+  const wrong = await h.req('POST', '/api/login/password', { body: { identifier: 'ada@example.com', password: 'nope at all' }, ip: '198.51.100.92' });
+  assert.equal(wrong.status, 401);
+  assert.deepEqual(wrong.body, { error: 'wrong e-mail or password', code: 'bad-credentials' });
+});
+
+test('recover/redeem with a password sets it directly, ends every other session, and stays single-use; a policy-rejected password does not burn the link', async t => {
+  const h = await startServer(t, { env: { PASSWORD_LOGIN: '1' } });
+  const ip = '198.51.100.100';
+  const reg = await h.req('POST', '/api/register/password', { body: { name: 'Ada', password: GOOD, email: 'ada@example.com' }, ip });
+  assert.equal(reg.status, 200);
+  const second = await h.req('POST', '/api/login/password', { body: { identifier: 'ada@example.com', password: GOOD }, ip: '198.51.100.101' });
+  assert.equal(second.status, 200);
+
+  await h.req('POST', '/api/recover/request', { body: { email: 'ada@example.com' }, ip: '198.51.100.102' });
+  const { token } = h.mailedLink('recuperar');
+
+  // A password this instance refuses never burns an otherwise-good link.
+  const weak = await h.req('POST', '/api/recover/redeem', { body: { token, password: 'short' }, ip: '198.51.100.103' });
+  assert.equal(weak.status, 400);
+  assert.equal(weak.body.code, 'too-short');
+
+  const redeemed = await h.req('POST', '/api/recover/redeem', { body: { token, password: 'a brand new passphrase' }, ip: '198.51.100.104' });
+  assert.equal(redeemed.status, 200);
+  assert.equal(redeemed.body.user.id, reg.body.user.id);
+  assert.ok(redeemed.cookie);
+  assert.ok(h.audit().some(e => e.ev === 'auth.recover.password' && e.uid === reg.body.user.id));
+
+  // Every earlier session ended, the new one did not.
+  assert.equal((await h.req('GET', '/api/me', { cookie: reg.cookie, ip })).status, 401, 'the signup session ended');
+  assert.equal((await h.req('GET', '/api/me', { cookie: second.cookie, ip })).status, 401, 'the second session ended');
+  assert.equal((await h.req('GET', '/api/me', { cookie: redeemed.cookie, ip })).status, 200, 'the redeem session carries on');
+
+  // The old password is dead; the new one works.
+  assert.equal((await h.req('POST', '/api/login/password', { body: { identifier: 'ada@example.com', password: GOOD }, ip: '198.51.100.105' })).status, 401);
+  assert.equal((await h.req('POST', '/api/login/password', { body: { identifier: 'ada@example.com', password: 'a brand new passphrase' }, ip: '198.51.100.106' })).status, 200);
+
+  // Single-use: the same token is gone even for the device-link path.
+  const replay = await h.req('POST', '/api/recover/redeem', { body: { token, password: 'yet another passphrase' }, ip: '198.51.100.107' });
+  assert.equal(replay.status, 400);
+  assert.deepEqual(replay.body, { error: 'that link is invalid or expired', code: 'token-invalid' });
+});
+
+test('recover/redeem with a password, but PASSWORD_LOGIN off, falls back to the device-link code', async t => {
+  const h = await startServer(t);   // PASSWORD_LOGIN off by default here
+  const ip = '198.51.100.110';
+  const { user } = await h.register('Ada', 'ada@example.com', ip);
+  await h.req('POST', '/api/recover/request', { body: { email: 'ada@example.com' }, ip });
+  const { token } = h.mailedLink('recuperar');
+  const r = await h.req('POST', '/api/recover/redeem', { body: { token, password: 'a brand new passphrase' }, ip });
+  assert.equal(r.status, 200);
+  assert.equal('code' in r.body, true);
+  assert.equal('user' in r.body, false);
+  assert.ok(h.audit().some(e => e.ev === 'auth.recover.ok' && e.uid === user.id));
 });

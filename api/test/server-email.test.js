@@ -1,7 +1,10 @@
-/* The sign-in e-mail next to the profile name (password sign-in, #118): set, changed and removed
-   only with the owner's proof, unique across profiles, typed at sign-in and at a reset in place of
-   the name — with the same pause behind both — and never written out in full anywhere but the
-   owner's own account row and the admin's user list. Same harness as server-password.test.js. */
+/* Sign-in by e-mail (password sign-in): the account's one verified e-mail (ISO-1397; ISO-1596
+   unified it with the older, unrelated "sign-in e-mail" this file used to cover, see
+   "e-mail sign-in" in api/server.js) doubles as a second identifier next to the profile name.
+   Typed at sign-in and at a reset in place of the name, with the same pause behind both; set or
+   changed only with the owner's proof, mailed a confirmation link either way (ISO-1397's own
+   behaviour, now unconditional — server-email-recovery.test.js covers the mail side). Same
+   harness as server-password.test.js. */
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -75,7 +78,7 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
     // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
     // server-terms.test.js's subject, not this file's. ISO-1521: same idea for the now-required
     // birthDate — an adult one, since the under-18 refusal is server-age-gate.test.js's subject.
-    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-18' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-25' };
     if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
@@ -108,11 +111,16 @@ const withPassword = (id, name, extra = {}) => user(id, name, { pw: { h: pwHash,
 
 const signIn = (h, body, ip) => h.req('POST', '/api/login/password', { body, ip });
 const setEmail = (h, cookie, body, ip) => h.req('POST', '/api/account/email', { body, cookie, ip });
-const WRONG = { error: 'wrong name or password', code: 'bad-credentials' };
-// Nothing in the audit log, the process output or db.json's neighbours may carry the address.
+const WRONG = { error: 'wrong e-mail or password', code: 'bad-credentials' };
+// The activity log never carries the address — only the masked form (a…@e…) — whoever named the
+// account by it. The container log is a different matter since ISO-1596: register/password and
+// POST /api/account/email now mail a confirmation link the same way passkey signup always has
+// (ISO-1397), and with no MAIL_PROVIDER configured (this file's default, like every other test)
+// that mail is written to the log driver's own stdout, address included — the documented
+// fallback (docs/SELF_HOSTING.md), not a leak.
 const leaks = (h, needle) => {
   const audit = (() => { try { return fs.readFileSync(path.join(h.dataDir, 'audit.log'), 'utf8'); } catch { return ''; } })();
-  return audit.toLowerCase().includes(needle) || h.log.toLowerCase().includes(needle);
+  return audit.toLowerCase().includes(needle);
 };
 
 test('normalizeEmail folds and checks the way sign-in compares; maskEmail keeps two characters', () => {
@@ -125,27 +133,28 @@ test('normalizeEmail folds and checks the way sign-in compares; maskEmail keeps 
   assert.equal(maskEmail('ada@example.com'), 'a…@e…');
 });
 
-test('with PASSWORD_LOGIN off the e-mail routes are 404s, sign-in by e-mail too, and admins see no address', async t => {
+test('with PASSWORD_LOGIN off, sign-in by e-mail is a 404 too, but the e-mail itself stays live (ISO-1397) and admins see none', async t => {
   const h = await startServer(t, {
     env: { PASSWORD_LOGIN: '', ADMIN_UIDS: 'adm' },
     users: [user('adm', 'Root'), withPassword('u1', 'Ana', { email: 'ana@example.com' })]
   });
   const cookie = `gymsid=${mintSession('u1')}`;
-  // POST /api/account/email is not a 404 any more with PASSWORD_LOGIN off: ISO-1397 registers its
-  // own handler there (an old account confirming an address), a different route than the one this
-  // is 404 for — password sign-in's own, gated by PASSWORD_LOGIN and never sent to. Proving
-  // ownership with no passkey on this profile and no current password this instance believes in
-  // (passwordWayIn is false with the flag off) is refused the same way adding a passkey would be.
+  // POST /api/account/email is the one, unconditional ISO-1397 handler now (ISO-1596) — never a
+  // 404 — but it needs a passkey to prove ownership, and this profile (seeded with a password
+  // only) has none, so it is refused exactly like adding a passkey would be, not found-not-
+  // supported. Password sign-in itself (POST /api/login/password) is the route gated by the flag.
   assert.equal((await setEmail(h, cookie, { email: 'new@example.com', current: GOOD })).status, 403);
-  assert.equal((await h.req('DELETE', '/api/account/email', { body: { current: GOOD }, cookie })).status, 404);
   assert.equal((await signIn(h, { email: 'ana@example.com', password: GOOD })).status, 404);
   const list = await h.req('GET', '/api/admin/users', { cookie: `gymsid=${mintSession('adm')}` });
   assert.equal(list.status, 200);
   assert.ok(list.body.users.every(u => !('email' in u)));
   const one = await h.req('GET', '/api/admin/user?id=u1', { cookie: `gymsid=${mintSession('adm')}` });
   assert.equal('email' in one.body.user, false);
-  // The stored address stays where it is for when the flag comes back.
+  // The stored address stays exactly where it is, and GET /api/me still carries it (ISO-1397 is
+  // not gated by PASSWORD_LOGIN at all).
   assert.equal((await h.user('u1')).email, 'ana@example.com');
+  const me = await h.req('GET', '/api/me', { cookie });
+  assert.equal(me.body.email, 'ana@example.com');
 });
 
 test('signs in by e-mail in any of the three fields, case-insensitively; the name still works', async t => {
@@ -164,9 +173,9 @@ test('signs in by e-mail in any of the three fields, case-insensitively; the nam
   }
   // `email` means an address and nothing else: the name typed there is not looked up.
   assert.deepEqual((await signIn(h, { email: 'Ana', password: GOOD }, '198.51.100.20')).body, WRONG);
-  // The session answers carry no address.
+  // ISO-1596: GET /api/me carries the account's one verified e-mail now, PASSWORD_LOGIN on or off.
   const me = await h.req('GET', '/api/me', { cookie: (await signIn(h, { identifier: 'ana@example.com', password: GOOD }, '198.51.100.21')).cookie });
-  assert.equal(JSON.stringify(me.body).includes('example.com'), false);
+  assert.equal(me.body.email, 'ana@example.com');
 });
 
 test('a wrong password, an unknown address and an address without a password get the one answer; nothing logs the address', async t => {
@@ -220,7 +229,7 @@ test('a wrong current password given to change the address counts toward the sam
   assert.equal((await signIn(h, { identifier: 'ana@example.com', password: GOOD }, '198.51.100.110')).status, 429);
 });
 
-test('setting, changing and removing the address needs the owner’s proof, never the session alone', async t => {
+test('setting and changing the address needs the owner’s proof, never the session alone — there is no removal', async t => {
   const pk = softPasskey();
   const h = await startServer(t, {
     users: [withPassword('u1', 'Ana'), user('u2', 'Bea')],
@@ -250,14 +259,12 @@ test('setting, changing and removing the address needs the owner’s proof, neve
   assert.equal(r.status, 400); assert.equal(r.body.code, 'email-invalid');
   r = await setEmail(h, ana, { email: 'a@' + 'b'.repeat(260) + '.com', current: GOOD }, '198.51.100.126');
   assert.equal(r.body.code, 'email-invalid');
-
-  // Removing: the session alone is refused, by DELETE and by an empty address alike.
-  assert.equal((await h.req('DELETE', '/api/account/email', { body: {}, cookie: ana, ip: '198.51.100.127' })).status, 403);
-  assert.equal((await setEmail(h, ana, { email: '' }, '198.51.100.128')).status, 403);
+  // ISO-1596: an empty address is just invalid now, not a removal — there is none any more
+  // (the account's e-mail is mandatory and this instance's one way back in).
+  r = await setEmail(h, ana, { email: '' }, '198.51.100.127');
+  assert.equal(r.status, 400); assert.equal(r.body.code, 'email-invalid');
+  assert.equal((await h.req('DELETE', '/api/account/email', { body: { current: GOOD }, cookie: ana })).status, 404);
   assert.equal((await h.user('u1')).email, 'ana2@example.com');
-  r = await h.req('DELETE', '/api/account/email', { body: { current: GOOD }, cookie: ana, ip: '198.51.100.129' });
-  assert.deepEqual(r.body, { ok: true, email: null });
-  assert.equal((await h.user('u1')).email, null);
 
   // A profile with no password confirms with one of its passkeys; without one it is told to.
   r = await setEmail(h, bea, { email: 'bea@example.com' }, '198.51.100.130');
@@ -272,7 +279,6 @@ test('setting, changing and removing the address needs the owner’s proof, neve
   assert.deepEqual(evs.filter(e => e.ok).map(e => [e.ev, e.uid, e.msg]), [
     ['auth.email.set', 'u1', 'password · a…@e…'],
     ['auth.email.change', 'u1', 'password · a…@e…'],
-    ['auth.email.remove', 'u1', 'password'],
     ['auth.email.set', 'u2', 'passkey · b…@e…']
   ]);
   assert.equal(leaks(h, 'example.com'), false);
@@ -340,13 +346,15 @@ test('asking over and over whether an address is in use runs into a pause', asyn
   const h = await startServer(t, { users: [withPassword('u1', 'Ana', { email: 'ana@example.com' }), withPassword('u2', 'Bea')] });
   const bea = `gymsid=${mintSession('u2')}`;
   const ip = '203.0.113.60';
-  // Twenty answers are free; the twenty-first starts the pause for the address and the account.
+  // Twenty answers are free; the twenty-first starts the pause for the caller's address.
   for (let i = 0; i < 21; i++) assert.equal((await setEmail(h, bea, { email: 'ana@example.com', current: GOOD }, ip)).status, 409, 'try ' + i);
   let r = await setEmail(h, bea, { email: 'ana@example.com', current: GOOD }, ip);
   assert.equal(r.status, 429); assert.equal(r.body.code, 'locked');
-  // Another address of the same account is paused too, before any proof is checked.
+  // A fresh address is not paused by the first one's guesses — the throttle is per caller address
+  // (shared with register/options and register/password's own e-mail-taken checks), not per
+  // account.
   r = await setEmail(h, bea, { email: 'ana@example.com', current: GOOD }, '203.0.113.61');
-  assert.equal(r.status, 429);
+  assert.equal(r.status, 409);
   // Sign-in is not what was paused.
   assert.equal((await signIn(h, { identifier: 'bea', password: GOOD }, ip)).status, 200);
 });
