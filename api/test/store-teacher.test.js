@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { provisionTestDatabase } from './helpers.mjs';
 import { connectAndMigrate } from '../db.js';
-import { createUser, getUserById, getTeacherLink, getLinkForTeacher } from '../store.js';
+import { createUser, getUserById, getTeacherLink, getLinkForTeacher, deleteUser } from '../store.js';
 import {
   setUserRole, countStudentsOfTeacher, createTeacherInvite, listTeacherInvites, revokeTeacherInvite,
   peekTeacherInvite, acceptTeacherInvite, endLink, setShareBodyweight, listStudentsOfTeacher,
@@ -72,6 +72,28 @@ test('revoking the teacher role ends every active link, erases notes, closes the
   const history = await listAssignmentHistory(pool, studentId);
   assert.equal(history[0].endReason, 'role-revoked');
   assert.deepEqual(await listTeacherInvites(pool, teacherId), []);
+});
+
+// Deleting the account is a third way (besides unlinking and losing the role) the relationship
+// ends, and D14's own rule applies just as much here — the gap a review on this issue caught:
+// teacher_assignments.teacher_id is ON DELETE SET NULL (a student's history survives the teacher
+// being gone), not CASCADE, so without this the row would have landed with teacher_id null and
+// ended_at still null, left open forever.
+test('deleting a teacher\'s account ends the student\'s active assignment too, not just teacher_id going null', async t => {
+  const pool = await withPool(t);
+  const { teacherId, studentId } = await teacherAndStudent(pool);
+  await linkThem(pool, teacherId, studentId);
+  await assignToStudent(pool, { teacherId, studentId, kind: 'routine', payload: { name: 'A', ex: [] }, startsOn: '2026-01-01', days: null });
+
+  await deleteUser(pool, teacherId);
+
+  assert.equal(await getUserById(pool, teacherId), null);
+  assert.equal(await getActiveAssignment(pool, studentId), null, 'no longer active');
+  const history = await listAssignmentHistory(pool, studentId);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].endReason, 'role-revoked');
+  assert.ok(history[0].endedAt, 'ended_at is set, not left null with only teacher_id gone');
+  assert.equal(history[0].teacherId, null, 'the FK itself still goes to null (ON DELETE SET NULL)');
 });
 
 test('countStudentsOfTeacher counts active links only', async t => {

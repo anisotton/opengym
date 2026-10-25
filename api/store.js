@@ -318,8 +318,17 @@ export async function setLastReminder(pool, id, date) {
   );
 }
 
-// CASCADEs to user_state (and, once they move here too, passkeys/sessions/push_subscriptions).
+// CASCADEs to user_state, passkeys/sessions/push_subscriptions, and (ISO-1609) teacher_links/
+// teacher_notes/teacher_invites of a deleted teacher — but not teacher_assignments.teacher_id,
+// which is ON DELETE SET NULL rather than CASCADE (a student's assignment history has to survive
+// the teacher who made it being gone). Ending every active link first, before the row goes, is
+// what actually closes out each one's assignment (end_reason 'role-revoked') — D14's rule that
+// losing the teacher role ends the active assignment applies just as much to deleting the
+// account outright, the most permanent way that role is lost. Called with `pool` or a
+// transaction client (same duck-typing as consumeInvite/insertPasskey); deleteAccount (server.js)
+// always passes the latter, so this runs in the same transaction as the row's own delete.
 export async function deleteUser(pool, id) {
+  await endAllLinksOfTeacher(pool, id, 'role-revoked');
   await pool.query('DELETE FROM users WHERE id = $1', [id]);
 }
 
@@ -1269,9 +1278,19 @@ export async function endLink(pool, studentId, reason) {
   });
 }
 
-// Grant is a plain column flip; revoke runs endLink (reason 'role-revoked') for every student this
-// account still teaches, and drops its own invites, all in the one transaction — a half-revoked
-// teacher (still linked to students, say) is not a state this leaves on a failure partway through.
+// Every student still linked to `teacherId`, ended the same way role-revoke does. Shared by
+// setUserRole's revoke branch and deleteUser below — the two other ways (besides a student
+// unlinking themselves) a teacher/student relationship ends, and D14's own rule ("desvincular ou
+// retirar o papel encerra a ativa") makes no exception for account deletion being a third. A
+// teacher with no students at all finds zero rows and is a no-op.
+async function endAllLinksOfTeacher(client, teacherId, reason) {
+  const { rows } = await client.query('SELECT student_id FROM teacher_links WHERE teacher_id = $1', [teacherId]);
+  for (const { student_id } of rows) await endLinkTx(client, student_id, teacherId, reason);
+}
+
+// Grant is a plain column flip; revoke ends every link this account still teaches (the same
+// transaction the row flip is in) and drops its own invites — a half-revoked teacher (still
+// linked to students, say) is not a state this leaves on a failure partway through.
 export async function setUserRole(pool, id, role) {
   if (role === 'teacher') {
     await pool.query("UPDATE users SET role = 'teacher' WHERE id = $1", [id]);
@@ -1279,8 +1298,7 @@ export async function setUserRole(pool, id, role) {
   }
   await withTransaction(pool, async client => {
     await client.query("UPDATE users SET role = 'student' WHERE id = $1", [id]);
-    const { rows } = await client.query('SELECT student_id FROM teacher_links WHERE teacher_id = $1', [id]);
-    for (const { student_id } of rows) await endLinkTx(client, student_id, id, 'role-revoked');
+    await endAllLinksOfTeacher(client, id, 'role-revoked');
     await client.query('DELETE FROM teacher_invites WHERE teacher_id = $1', [id]);
   });
 }
