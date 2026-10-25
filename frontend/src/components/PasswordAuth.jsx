@@ -69,6 +69,7 @@ export function passwordError(e) {
     case 'passkey': case 'passkey-required': return t('Your passkey could not be confirmed.')
     case 'last-way-in': return t('This password is the only way into your profile, so it cannot be removed.')
     case 'reset-invalid': return t('That reset code is wrong or has expired — ask your admin for a new one.')
+    case 'token-invalid': return t('That link is invalid or expired.')
     case 'disabled': return t('This account has been disabled.')
     case 'busy': return t('The server is busy — try again in a moment.')
     // ISO-1390: a signup the server refused over the terms. This bundle always sends its own

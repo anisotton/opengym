@@ -158,13 +158,15 @@ describe('RecoverAccess — password_login on (ISO-1596): nothing is spent until
   })
 
   it('a token already spent by a concurrent tab is shown in words, on the same form', async () => {
-    mocks.redeem.mockRejectedValue(Object.assign(new Error('bad'), { status: 400, data: { code: 'token-invalid' } }))
+    // The real server error (api/server.js): { error: 'that link is invalid or expired', code: 'token-invalid' }.
+    mocks.redeem.mockRejectedValue(Object.assign(new Error('that link is invalid or expired'), { status: 400, data: { code: 'token-invalid' } }))
     await render()
     act(() => button('Set a new password').click())
     type(byPlaceholder('New password'), 'correct horse battery')
     type(byPlaceholder('Repeat the password'), 'correct horse battery')
     await submit()
-    expect(host.textContent).not.toContain('invalid or expired')   // still the form, not the generic state
+    expect(alertText()).toBe('That link is invalid or expired.')   // translated, not the raw English server text
+    expect(byPlaceholder('New password')).toBeTruthy()   // still the form, not the generic full-page state
     expect(mocks.setUser).not.toHaveBeenCalled()
   })
 
