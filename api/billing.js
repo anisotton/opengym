@@ -21,7 +21,7 @@ import Stripe from 'stripe';
 import { withTransaction } from './db.js';
 import {
   setStripeCustomerId, getUserIdByStripeCustomer, hasEverSubscribed, getUserById,
-  upsertSubscription, getSubscriptionById, getLatestSubscription, getSubscriptionsForUser,
+  upsertSubscription, getSubscriptionById, getSubscriptionsForUser,
   getSubscriptionsDueForFirstPeriodNotice,
   getStripeCleanupDue, deleteStripeCleanup, bumpStripeCleanupFailure,
   isBillingCatalogSeeded, getCatalogPlan, getPriceById, getPlanIdForPrice, getCurrentIntroPrice,
@@ -228,8 +228,23 @@ export function canWrite(subscription) {
   return WRITABLE_STATUSES.has(subscription?.status) && !subscription?.pauseCollection;
 }
 
+// ISO-1625 (Oráculo review, T2b): the row every write-gate reads — never simply "whichever row
+// was touched most recently" (getLatestSubscription), which a duplicate's own cancellation can
+// make true even while the account's real, still-writable subscription sits untouched:
+// markDuplicateSubscriptions clears the canceled duplicate's own duplicateOf, bumping exactly
+// that row's updated_at, so getLatestSubscription would hand back the just-canceled duplicate
+// instead of the primary subscription the account is actually paying for. Prefers the oldest
+// writable row — the same "primary" markDuplicateSubscriptions itself settled on — and falls
+// back to whichever row was touched most recently only when none is writable at all (so a fully
+// cancelled/no-subscription account still reads the most relevant row for billingStatus to show).
+export async function getAccountSubscription(pool, userId) {
+  const rows = await getSubscriptionsForUser(pool, userId);
+  const writable = rows.filter(canWrite).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  return writable[0] || rows[0] || null;
+}
+
 export async function hasActiveAccess(pool, userId) {
-  return canWrite(await getLatestSubscription(pool, userId));
+  return canWrite(await getAccountSubscription(pool, userId));
 }
 
 // Resolves to the owning account's id from whatever a webhook event's object carries. Every
@@ -461,12 +476,14 @@ export async function applyStripeEvent(pool, event) {
       break;
     }
 
-    // ISO-1625 (T2b): the schedule's own lifecycle, mirrored onto whichever subscription it
-    // drives — `updated` keeps scheduleId/scheduledPriceId in step with a phase change (changePlan,
-    // cancelAtPeriodEnd, resumeCancellation, or a Dashboard edit); `released` (the schedule reached
-    // its last phase and let go — the subscription goes back to being a plain one) and `canceled`
-    // (the whole thing ends together — customer.subscription.deleted carries the rest) both clear
-    // them. `released_subscription` is where Stripe puts the id once `subscription` itself has
+    // ISO-1625 (T2b, then Oráculo review): the schedule's own lifecycle, mirrored onto whichever
+    // subscription it drives — fetch-latest here too, same reasoning as customer.subscription.*
+    // above: a delayed `updated` arriving after a `released`/`canceled` already landed must not
+    // resurrect scheduleId/scheduledPriceId onto a subscription this schedule no longer governs.
+    // "Still governs" is decided by the schedule's own current `status` (`not_started`/`active`
+    // mean it does; `released`/`canceled`/`completed` mean it doesn't) — never by which event
+    // type happened to arrive, which only says a change happened, not what the latest one left
+    // behind. `released_subscription` is where Stripe puts the id once `subscription` itself has
     // already gone back to null on release.
     case 'subscription_schedule.updated':
     case 'subscription_schedule.released':
@@ -476,10 +493,11 @@ export async function applyStripeEvent(pool, event) {
       if (!subId) break;
       const existing = await getSubscriptionById(pool, subId);
       if (!existing) break;
-      const stillGoverning = event.type === 'subscription_schedule.updated';
+      const live = await getStripe().subscriptionSchedules.retrieve(obj.id);
+      const stillGoverning = live.status === 'active' || live.status === 'not_started';
       await upsertSubscription(pool, subId, existing.userId, {
-        scheduleId: stillGoverning ? obj.id : null,
-        scheduledPriceId: stillGoverning ? (lastPhaseOf(obj).items[0]?.price ?? null) : null
+        scheduleId: stillGoverning ? live.id : null,
+        scheduledPriceId: stillGoverning ? (lastPhaseOf(live).items[0]?.price ?? null) : null
       });
       break;
     }
@@ -583,8 +601,11 @@ export async function createCheckoutSession(pool, user, plan, { successUrl, canc
   // backstop for the race that slips past this, not a replacement for refusing it here first.
   // canWrite's own pauseCollection check (T2b) already covers "paused, not actually free to
   // re-subscribe" — a suspended account still counts as "already subscribed" here.
-  const last = await getLatestSubscription(pool, user.id);
-  if (last && canWrite(last)) return { error: 'already subscribed', code: 'already-subscribed' };
+  // getAccountSubscription (Oráculo review), not getLatestSubscription: a duplicate already
+  // cancelled is the most recently touched row, but the account's still-writable primary is the
+  // one that actually means "already subscribed".
+  const existing = await getAccountSubscription(pool, user.id);
+  if (existing && canWrite(existing)) return { error: 'already subscribed', code: 'already-subscribed' };
   const customerId = await ensureStripeCustomer(pool, user);
   const firstTime = !(await hasEverSubscribed(pool, user.id));
   const introPrice = await resolveIntroPriceId(pool);
@@ -666,7 +687,9 @@ export async function planSummaryForMail(pool, planId) {
 // `customer.subscription.deleted` lands, so a `canceled`+`'failed'` pair means the cancellation
 // came from a payment failure, not someone cancelling on purpose.
 export async function billingStatus(pool, userId) {
-  const sub = await getLatestSubscription(pool, userId);
+  // getAccountSubscription (Oráculo review): a cancelled duplicate must never eclipse the
+  // account's own still-active primary just because it was the row most recently touched.
+  const sub = await getAccountSubscription(pool, userId);
   if (!sub) return { enabled: true, status: 'none', active: false, firstPeriod: false };
   return {
     enabled: true,
@@ -825,6 +848,27 @@ export async function createOffer(pool, { id, display, interval, intervalCount, 
   });
 }
 
+// Shared by setPlanAvailability's and publishPriceVersion's own `stale-after-stripe` handling
+// below (Oráculo review): a losing CAS never inverts *this* action's own write — that is only
+// correct when this write was the only thing touching Stripe, and it is wrong the moment the
+// winner was another instance of the *same* action. Two deactivates (or two activates) racing the
+// same plan would have one revert the other's own correct write right back; two publishes racing
+// the same plan (sharing the same `oldPriceId`) would have the loser reactivate the Price the
+// winner just correctly retired. Converging to the fresh row instead is safe precisely because
+// the winner's own Stripe write already landed before its own CAS could succeed — by the time
+// this action's CAS has lost, there is nothing left in flight to race against, only the plan's
+// current, settled state to read and match: whichever Price this action touched is `active` only
+// if it is still the plan's `currentPriceId`, and only if that plan is itself `available` — every
+// other Price this action touched is `active:false`, unconditionally.
+async function convergeToCurrentPlanState(stripe, pool, planId, touchedPriceIds, idempotencyKey) {
+  const plan = await getCatalogPlan(pool, planId);
+  for (const priceId of new Set(touchedPriceIds.filter(Boolean))) {
+    const shouldBeActive = !!plan && priceId === plan.currentPriceId && plan.available;
+    await stripe.prices.update(priceId, { active: shouldBeActive }, { idempotencyKey: `${idempotencyKey}:converge:${priceId}` })
+      .catch(e => console.error('billing: stale-after-stripe convergence failed for', priceId, e.message));
+  }
+}
+
 // "Ativar/desativar plano": Stripe's own `prices.update active` on the plan's *current* Price,
 // then the DB compare-and-set (store.js's setPlanAvailabilityRow) — in that order, so a version
 // race lost after Stripe already flipped is reported as `stale-after-stripe`, never silently
@@ -838,16 +882,17 @@ export async function setPlanAvailability(pool, { id, version, available, actor,
     if (!plan) return { error: 'no such plan', code: 'not-found' };
     if (plan.version !== version) return { error: 'changed since you loaded it', code: 'stale', current: plan };
     if (!plan.currentPriceId) return { error: 'this plan has no published price yet', code: 'no-current-price' };
-    await getStripe().prices.update(plan.currentPriceId, { active: available }, { idempotencyKey });
+    const stripe = getStripe();
+    await stripe.prices.update(plan.currentPriceId, { active: available }, { idempotencyKey });
     const result = await setPlanAvailabilityRow(pool, id, version, available);
     if (result.error) {
-      // ISO-1625 (T1b review): Stripe already flipped `active` above — by the time this CAS can
-      // fail, there is no path left where it didn't — so a lost race here used to leave the Price
-      // disagreeing with what the DB still believed, with nothing to notice or fix it. Reverting
-      // is the compensation the plan's own invariant #2 demands: current_price_id must never end
-      // up pointing at a Price whose `active` flag says otherwise.
-      await getStripe().prices.update(plan.currentPriceId, { active: !available }, { idempotencyKey: `${idempotencyKey}:revert` })
-        .catch(e => console.error('billing: stale-after-stripe revert failed for', plan.currentPriceId, e.message));
+      // ISO-1625 (T1b review, then Oráculo review): Stripe already flipped `active` above — by
+      // the time this CAS can fail, there is no path left where it didn't — so a lost race here
+      // used to leave the Price disagreeing with what the DB still believed, with nothing to
+      // notice or fix it. current_price_id must never end up pointing at a Price whose `active`
+      // flag says otherwise — converged to the plan's actual, fresh state, never a blind revert
+      // of this action's own write (see convergeToCurrentPlanState's own comment for why).
+      await convergeToCurrentPlanState(stripe, pool, id, [plan.currentPriceId], idempotencyKey);
       return { ...result, stripeIds: { priceId: plan.currentPriceId } };
     }
     return { ok: true, after: { plan: result.plan }, before: plan, stripeIds: { priceId: plan.currentPriceId } };
@@ -904,14 +949,13 @@ export async function publishPriceVersion(pool, { planId, newPriceId, version, a
     if (oldPriceId) await stripe.prices.update(oldPriceId, { active: false }, { idempotencyKey: `${idempotencyKey}:deactivate` });
     const result = await publishPriceVersionRows(pool, { planId, version, newPriceId, oldPriceId });
     if (result.error) {
-      // Same compensation as setPlanAvailability above, for the same reason — store.js's own
-      // `code: 'stale-after-stripe'` on this exact path is what the review comment named.
-      await stripe.prices.update(newPriceId, { active: false }, { idempotencyKey: `${idempotencyKey}:revert-activate` })
-        .catch(e => console.error('billing: stale-after-stripe revert failed for', newPriceId, e.message));
-      if (oldPriceId) {
-        await stripe.prices.update(oldPriceId, { active: true }, { idempotencyKey: `${idempotencyKey}:revert-deactivate` })
-          .catch(e => console.error('billing: stale-after-stripe revert failed for', oldPriceId, e.message));
-      }
+      // Same convergence as setPlanAvailability above, for the same reason — store.js's own
+      // `code: 'stale-after-stripe'` on this exact path is what the review comment named. Two
+      // publishes racing the same plan share this same `oldPriceId`; blindly reactivating it (the
+      // original fix) would undo whichever of them actually won and correctly retired it —
+      // converging both touched Prices to the plan's fresh state never does, since it reads what
+      // actually won rather than assuming this action's own write was the only one in flight.
+      await convergeToCurrentPlanState(stripe, pool, planId, [newPriceId, oldPriceId], idempotencyKey);
       return { ...result, stripeIds: { newPriceId, oldPriceId } };
     }
     return { ok: true, after: { plan: result.plan }, before: plan, stripeIds: { newPriceId, oldPriceId } };

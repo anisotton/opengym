@@ -127,6 +127,21 @@ async function sql(databaseUrl, text, params) {
   finally { await pool.end(); }
 }
 
+// Polls `calls` (the mock's own request log — appended the instant a request's body is fully
+// received, before `mockDelay` holds its response) for a match, instead of a fixed sleep guessing
+// how long proveOwner's own scrypt verification plus however many DB round trips will take. A
+// fixed-sleep race against a concurrent request fired at some point part way through this delayed
+// one has flaked under full-suite load (CPU contention pushes scrypt well past a sleep tuned for
+// an idle machine); waiting for the actual Stripe call to land is exact regardless of load.
+async function waitForCall(calls, match, { timeoutMs = 5000, intervalMs = 5 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (calls.some(match)) return;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  throw new Error('timed out waiting for the expected Stripe call to land');
+}
+
 // `seeded: true` (the default) boots with STRIPE_PRICE_MONTHLY/QUARTERLY/YEARLY/INTRO set against
 // the mock, so the catalog seeds at boot — needed by every test that publishes, prices a new
 // version, or reconciles against the existing product. `seeded: false` + `apiKey: 'sk_live_...'`
@@ -361,6 +376,72 @@ test('ativar/desativar: a losing race after Stripe already flipped reverts the P
   assert.equal(priceRow.active, winner.body.plan.available, 'Stripe converges on the winner — the loser\'s write was reverted, never left standing');
 });
 
+test('ativar/desativar: a same-direction race never reactivates a Price the winner correctly left in the requested state (Oráculo review)', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const plan0 = await h.row1('SELECT current_price_id FROM billing_plans WHERE id = $1', ['monthly']);
+  // Both requests deactivate the same plan/version — a blind "invert my own write" compensation
+  // (the original fix) would have the loser reactivate exactly what the winner correctly turned
+  // off. `mockDelay` holds the first request's own Stripe call open; `waitForCall` fires the
+  // second only once that call has actually landed (never a fixed sleep guessing how long
+  // proveOwner's own scrypt verification takes — that guess flaked under full-suite load), so the
+  // first always reaches its own DB CAS before the second even starts its own Stripe call.
+  h.mockDelay.ms = 200;
+  const body = { id: 'monthly', version: 1, available: false, reason: 'pulling this plan off sale', ...proof };
+  const first = h.req('POST', '/api/admin/billing/catalog/plan/availability', { cookie: adminCookie, headers: { 'Idempotency-Key': idemp() }, body });
+  await waitForCall(h.calls, c => c.method === 'POST' && c.url === `/v1/prices/${plan0.current_price_id}`);
+  const second = await h.req('POST', '/api/admin/billing/catalog/plan/availability', { cookie: adminCookie, headers: { 'Idempotency-Key': idemp() }, body });
+  const firstResolved = await first;
+  const [winner, loser] = firstResolved.status === 200 ? [firstResolved, second] : [second, firstResolved];
+  assert.equal(winner.status, 200, 'the request started first wins the race');
+  assert.equal(loser.status, 409);
+  assert.equal(loser.body.code, 'stale', 'the loser did reach Stripe first — this is the post-Stripe CAS loss, store.js just never names it stale-after-stripe for this route');
+
+  const plan = await h.row1('SELECT * FROM billing_plans WHERE id = $1', ['monthly']);
+  assert.equal(plan.available, false);
+  assert.equal(h.prices[plan.current_price_id].active, false, 'still correctly inactive — the loser\'s convergence did not reactivate what the winner turned off');
+});
+
+test('publicar versão: two concurrent publishes for the same plan — the loser never reactivates the shared old Price the winner just retired', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const draftA = await h.req('POST', '/api/admin/billing/catalog/plan/price', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { planId: 'monthly', unitAmount: 9900, reason: 'candidate version A', ...proof }
+  });
+  const draftB = await h.req('POST', '/api/admin/billing/catalog/plan/price', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { planId: 'monthly', unitAmount: 10900, reason: 'candidate version B', ...proof }
+  });
+  const priceA = draftA.body.price.id;
+  const priceB = draftB.body.price.id;
+
+  // Same determinism trick as the same-direction availability race above: `waitForCall` fires the
+  // second publish only once the first's own activate call has actually landed, so the first
+  // always reaches its own `SELECT ... FOR UPDATE` transaction (which also naturally serializes
+  // the second behind it either way) before the second even starts its own Stripe calls.
+  h.mockDelay.ms = 200;
+  const first = h.req('POST', '/api/admin/billing/catalog/plan/publish', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { planId: 'monthly', priceId: priceA, version: 1, reason: 'publishing candidate A', ...proof }
+  });
+  await waitForCall(h.calls, c => c.method === 'POST' && c.url === `/v1/prices/${priceA}`);
+  const second = await h.req('POST', '/api/admin/billing/catalog/plan/publish', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { planId: 'monthly', priceId: priceB, version: 1, reason: 'publishing candidate B', ...proof }
+  });
+  const firstResolved = await first;
+  const [winner, loser, winnerPriceId, loserPriceId] = firstResolved.status === 200
+    ? [firstResolved, second, priceA, priceB] : [second, firstResolved, priceB, priceA];
+  assert.equal(winner.status, 200, 'the request started first wins the race');
+  assert.equal(loser.status, 409);
+  assert.equal(loser.body.code, 'stale-after-stripe');
+
+  assert.equal(h.prices[winnerPriceId].active, true, 'the winner\'s own Price stays active — the current one');
+  assert.equal(h.prices[loserPriceId].active, false, 'the loser\'s own Price is deactivated — it never became current');
+  assert.equal(h.prices.price_monthly_test.active, false, 'the shared old Price stays retired — the loser must not reactivate what the winner correctly retired');
+  const plan = await h.row1('SELECT * FROM billing_plans WHERE id = $1', ['monthly']);
+  assert.equal(plan.current_price_id, winnerPriceId);
+});
+
 test('publicar versão: a version bumped by an unrelated concurrent edit after Stripe already wrote is reverted (stale-after-stripe)', async t => {
   const h = await startServer(t, { users: [admin()] });
   const draft = await h.req('POST', '/api/admin/billing/catalog/plan/price', {
@@ -369,18 +450,18 @@ test('publicar versão: a version bumped by an unrelated concurrent edit after S
   });
   const newPriceId = draft.body.price.id;
 
-  // Widens the gap between publish's own Stripe calls landing and responding (ISO-1625, T1b
-  // review), and waits out proveOwner's own deliberately slow scrypt verification (password.js:
-  // ~50-150ms/attempt) before firing the unrelated edit — without both, the race is too fast and
-  // too timing-dependent on a local mock to land reliably inside the one window this test needs:
-  // after publish's own version check already passed and Stripe already activated/deactivated the
-  // Prices, but before publish's own DB transaction re-checks the version.
+  // Widens the gap between publish's own activate call landing and its response (ISO-1625, T1b
+  // review): `waitForCall` fires the unrelated edit only once that call has actually landed, so
+  // this lands inside the one window this test needs — after publish's own version check already
+  // passed and Stripe already activated the new Price, but before publish's own DB transaction
+  // re-checks the version — regardless of how long proveOwner's own scrypt verification took
+  // (a fixed sleep guessing that has flaked under full-suite load).
   h.mockDelay.ms = 300;
   const publishPromise = h.req('POST', '/api/admin/billing/catalog/plan/publish', {
     cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
     body: { planId: 'monthly', priceId: newPriceId, version: 1, reason: 'publishing the new monthly price', ...proof }
   });
-  await new Promise(resolve => setTimeout(resolve, 250));
+  await waitForCall(h.calls, c => c.method === 'POST' && c.url === `/v1/prices/${newPriceId}`);
   const displayEdit = await h.req('POST', '/api/admin/billing/catalog/plan/display', {
     cookie: adminCookie, body: { id: 'monthly', version: 1, display: { 'pt-BR': { name: 'Mensal (editado)' } } }
   });

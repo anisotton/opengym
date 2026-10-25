@@ -488,6 +488,17 @@ test('webhook: a second live subscription for the same account is marked duplica
   await postWebhook(h, stripeEvent('customer.subscription.deleted', sub('sub_dup_b', { status: 'canceled', metadata: { userId: 'u_bill_14', plan: 'monthly' } })));
   const rowB2 = await sql(h.databaseUrl, "SELECT data->>'duplicateOf' AS d FROM subscriptions WHERE id = 'sub_dup_b'").then(r => r.rows[0]);
   assert.equal(rowB2.d, null, 'no longer live — no longer marked a duplicate of anything');
+
+  // ISO-1625 (Oráculo review): cancelling sub_dup_b is the very row the webhook just touched —
+  // getAccountSubscription (not "whichever row has the newest updated_at") must still answer with
+  // sub_dup_a, the account's own still-active primary, or this paying account would be refused
+  // its own writes the moment its duplicate is cleaned up.
+  const statusAfter = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_14') }).then(r => r.json());
+  assert.equal(statusAfter.active, true, 'the primary subscription still grants access after the duplicate is cancelled');
+  const put = await fetch(`${h.api}/api/data`, {
+    method: 'PUT', headers: headers('u_bill_14'), body: JSON.stringify({ state: { workouts: [{ id: 'w1' }], routines: [] } })
+  });
+  assert.equal(put.status, 200, 'PUT /api/data still writes for the primary subscription holder');
 });
 
 test('webhook: subscription_schedule.updated/released keep scheduleId/scheduledPriceId on the subscription in step', async t => {
@@ -495,8 +506,10 @@ test('webhook: subscription_schedule.updated/released keep scheduleId/scheduledP
   const h = await startServer(t, { users });
   await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_sched_evt', { metadata: { userId: 'u_bill_15', plan: 'monthly' } })));
 
+  // `status` is what fetch-latest actually decides "still governs" by (ISO-1625, Oráculo review)
+  // — not which event type arrived — so the fixture carries it explicitly in both phases below.
   const schedule = {
-    id: 'sched_evt_1', object: 'subscription_schedule', subscription: 'sub_sched_evt',
+    id: 'sched_evt_1', object: 'subscription_schedule', subscription: 'sub_sched_evt', status: 'active',
     phases: [{ start_date: 1700000000, end_date: null, items: [{ price: MONTHLY_PRICE }] }]
   };
   let r = await postWebhook(h, stripeEvent('subscription_schedule.updated', schedule));
@@ -508,11 +521,39 @@ test('webhook: subscription_schedule.updated/released keep scheduleId/scheduledP
   // `released` — the schedule let go; `released_subscription` is where the id lives once
   // `subscription` itself has already gone back to null.
   r = await postWebhook(h, stripeEvent('subscription_schedule.released', {
-    ...schedule, subscription: null, released_subscription: 'sub_sched_evt'
+    ...schedule, subscription: null, released_subscription: 'sub_sched_evt', status: 'released'
   }));
   assert.equal(r.status, 200);
   row = await sql(h.databaseUrl, "SELECT data->>'scheduleId' AS s, data->>'scheduledPriceId' AS p FROM subscriptions WHERE id = 'sub_sched_evt'").then(r => r.rows[0]);
   assert.equal(row.s, null);
+  assert.equal(row.p, null);
+});
+
+test('webhook: a delayed subscription_schedule.updated arriving after release does not resurrect scheduleId (fetch-latest, not event type)', async t => {
+  const users = [{ id: 'u_bill_17', name: 'Seventeen', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+  await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_sched_order', { metadata: { userId: 'u_bill_17', plan: 'monthly' } })));
+
+  // The schedule is really already released by the time this delivery arrives — registered
+  // directly as the mock's live truth, same pattern as the out-of-order subscription test above.
+  h.mock.schedules.sched_order_1 = {
+    id: 'sched_order_1', object: 'subscription_schedule', subscription: null,
+    released_subscription: 'sub_sched_order', status: 'released',
+    phases: [{ start_date: 1700000000, end_date: null, items: [{ price: MONTHLY_PRICE }] }]
+  };
+
+  // This event's own payload is stale — an `updated` from before the release, still claiming to
+  // govern. A pre-fetch-latest handler (or one that trusted the event type instead of the live
+  // status) would have resurrected scheduleId on a subscription this schedule no longer drives.
+  const staleEvent = stripeEvent('subscription_schedule.updated', {
+    id: 'sched_order_1', object: 'subscription_schedule', subscription: 'sub_sched_order', status: 'active',
+    phases: [{ start_date: 1700000000, end_date: null, items: [{ price: MONTHLY_PRICE }] }]
+  });
+  const r = await postWebhook(h, staleEvent, { registerLive: false });
+  assert.equal(r.status, 200);
+
+  const row = await sql(h.databaseUrl, "SELECT data->>'scheduleId' AS s, data->>'scheduledPriceId' AS p FROM subscriptions WHERE id = 'sub_sched_order'").then(r => r.rows[0]);
+  assert.equal(row.s, null, 'converged on the live (released) schedule, not the stale event payload');
   assert.equal(row.p, null);
 });
 
@@ -537,4 +578,35 @@ test('webhook: price.created/price.updated adopt an unknown bf_plan-tagged Price
   assert.equal(r.status, 200);
   row = await sql(h.databaseUrl, 'SELECT * FROM billing_prices WHERE id = $1', ['price_unrelated']).then(r => r.rows[0]);
   assert.equal(row, undefined);
+});
+
+test('webhook: price.updated on an already-known Price never changes its stored value (immutable once known)', async t => {
+  const users = [{ id: 'u_bill_18', name: 'Eighteen', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+  // This file's env never seeds the full catalog (no STRIPE_PRICE_QUARTERLY/YEARLY) — a plan and
+  // its current Price are inserted directly, just enough for reconcilePriceFromStripe's own
+  // getCatalogPlan/getPriceById lookups to find something already known. Price before plan (its
+  // own plan_id FK would otherwise have nothing to point at yet), plan's current_price_id set
+  // last once the price row it references actually exists.
+  await sql(h.databaseUrl, `INSERT INTO billing_plans (id, display, interval, interval_count, available) VALUES ('monthly', '{"pt-BR":{"name":"Mensal"}}', 'month', 1, true)`);
+  await sql(h.databaseUrl,
+    `INSERT INTO billing_prices (id, plan_id, kind, unit_amount, currency, interval, interval_count, livemode, stripe_product_id, state)
+     VALUES ($1, 'monthly', 'recurring', 8900, 'brl', 'month', 1, false, 'prod_1', 'current')`, [MONTHLY_PRICE]);
+  await sql(h.databaseUrl, `UPDATE billing_plans SET current_price_id = $1 WHERE id = 'monthly'`, [MONTHLY_PRICE]);
+  const before = await sql(h.databaseUrl, 'SELECT unit_amount FROM billing_prices WHERE id = $1', [MONTHLY_PRICE]).then(r => r.rows[0]);
+  assert.equal(Number(before.unit_amount), 8900, 'the thing this test is about to try to disturb');
+
+  // A Price this catalog already knows about, reported back with a different amount — Stripe
+  // itself would never actually do this (a Price's own amount is immutable on Stripe's side too),
+  // but an operator error or a malformed delivery is exactly what "só active/metadata, nunca
+  // valor" (plan §3) exists to shrug off.
+  const tampered = {
+    id: MONTHLY_PRICE, object: 'price', unit_amount: 999999, currency: 'brl',
+    recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1',
+    metadata: { bf_plan: 'monthly' }
+  };
+  const r = await postWebhook(h, stripeEvent('price.updated', tampered));
+  assert.equal(r.status, 200);
+  const after = await sql(h.databaseUrl, 'SELECT unit_amount FROM billing_prices WHERE id = $1', [MONTHLY_PRICE]).then(r => r.rows[0]);
+  assert.equal(Number(after.unit_amount), 8900, 'the stored amount never moved — an already-known row is never touched by this event');
 });
