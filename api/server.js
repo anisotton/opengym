@@ -31,7 +31,7 @@ import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE, sniffM
 import { connectAndMigrate, withTransaction } from './db.js';
 import {
   getUserState, getUserStateRev, putUserState,
-  getUserById, getAllUsers, createUser, setPassword, removePassword, rehashPassword,
+  getUserById, getAllUsers, createUser, setPassword, removePasswordUnlessLast, rehashPassword,
   setPasswordReset, bumpSessionVersion, setEmail, markEmailVerified, setDisabled, touchLastPull,
   setLastReminder, deleteUser, upsertUser, backfillPasswordResetBy, setTermsAccepted,
   createSession, getSession, revokeSession,
@@ -1500,14 +1500,14 @@ const passwordRoutes = {
     const proof = await proveOwner(req, res, user, body, 'password-remove');
     if (!proof) return;
     // Everything above awaited: the session may have ended, and the profile's last passkey may
-    // have been removed by a request that ran alongside this one. Checked again against fresh
-    // data (sessionStillValid's return), not the snapshot from before those awaits.
+    // have been removed by a request that ran alongside this one. sessionStillValid re-checks the
+    // session itself; removePasswordUnlessLast re-checks (and acts on) the password/passkey count
+    // atomically, under the same per-account lock a concurrent passkey removal takes (ISO-1592) —
+    // the two checks above are only a cheap pre-proof filter, not the real decision.
     const fresh = await sessionStillValid(req, user);
     if (!fresh) return json(res, 401, { error: 'not signed in' });
-    if (!hasPassword(fresh)) return json(res, 200, { ok: true });
-    if (!(await passkeyCount(fresh))) return lastWayIn();
-    delete fresh.pw;
-    await removePassword(pool, fresh.id);
+    const r = await removePasswordUnlessLast(pool, fresh.id);
+    if (r.error) return lastWayIn();
     audit(req, 'auth.password.remove', { user: fresh });
     json(res, 200, { ok: true });
   },
@@ -1764,11 +1764,17 @@ const passkeyRoutes = {
 
   // `?id=` — the credential id from the list; the body carries the same proof adding one takes
   // (proveOwner), asked only once the removal could go ahead, so a refusal the list already
-  // decides spends no passkey prompt and no password check. The last one is never removed
-  // (removePasskeyRecord), checked again after the proof, since a request running alongside may
-  // have removed another passkey or the password meanwhile. An unused device code goes with it: a
-  // passkey is removed because it is lost or not trusted, and a code made with it just before — by
-  // whoever holds it — would otherwise add a fresh one right after.
+  // decides spends no passkey prompt and no password check — passwordWayIn(user) here is only
+  // that cheap pre-proof filter, safe to read from the pre-proof snapshot since a stale answer
+  // costs at most an unnecessary prompt. The last one is never removed: removePasskey decides
+  // again after the proof, atomically and against live data (PASSWORD_LOGIN is config, not
+  // account data, so it's passed straight through; whether a password currently exists is read
+  // fresh inside the lock) — a request running alongside may have removed the password or another
+  // passkey meanwhile (ISO-1592), and passing passwordWayIn(user)'s pre-proof answer in here
+  // instead was exactly that bug: a snapshot taken before proveOwner's await, which can run long
+  // enough for a concurrent password removal to land in the gap. An unused device code goes with
+  // it: a passkey is removed because it is lost or not trusted, and a code made with it just
+  // before — by whoever holds it — would otherwise add a fresh one right after.
   'DELETE /api/account/passkeys': async (req, res) => {
     const user = await readSession(req);
     if (!user) return notSignedIn(res);
@@ -1779,12 +1785,13 @@ const passkeyRoutes = {
     if (refused) return refuse(refused);
     const proof = await proveOwner(req, res, user, body, 'passkey-remove');
     if (!proof) return;
-    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
-    const r = await removePasskey(pool, user.id, id, passwordWayIn(user) ? 1 : 0);
+    const fresh = await sessionStillValid(req, user);
+    if (!fresh) return notSignedIn(res);
+    const r = await removePasskey(pool, fresh.id, id, PASSWORD_LOGIN);
     if (r.error) return refuse(r);
-    await dropDeviceLinks(pool, user.id);
-    audit(req, 'auth.passkey.remove', { user, msg: r.row.name || null });
-    json(res, 200, { ok: true, ...(await passkeyState(user)) });
+    await dropDeviceLinks(pool, fresh.id);
+    audit(req, 'auth.passkey.remove', { user: fresh, msg: r.row.name || null });
+    json(res, 200, { ok: true, ...(await passkeyState(fresh)) });
   },
 
   // Makes the code another device redeems below. Same proof as adding a passkey here, because the

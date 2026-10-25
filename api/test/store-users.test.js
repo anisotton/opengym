@@ -8,9 +8,9 @@ import assert from 'node:assert/strict';
 import { provisionTestDatabase } from './helpers.mjs';
 import { connectAndMigrate } from '../db.js';
 import {
-  createUser, getUserById, getAllUsers, setPassword, removePassword, setPasswordReset,
-  bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder, deleteUser,
-  upsertUser, backfillPasswordResetBy
+  createUser, getUserById, getAllUsers, setPassword, removePassword, removePasswordUnlessLast,
+  setPasswordReset, bumpSessionVersion, setEmail, setDisabled, touchLastPull, setLastReminder,
+  deleteUser, upsertUser, backfillPasswordResetBy, insertPasskey
 } from '../store.js';
 
 async function withPool(t) {
@@ -95,6 +95,28 @@ test('removePassword drops the record; the user may still have no way in left to
   await createUser(pool, { id: 'u1', name: 'Ana', created: iso(), pw: { h: 'h', set: iso() } });
   await removePassword(pool, 'u1');
   assert.equal('pw' in (await getUserById(pool, 'u1')), false);
+});
+
+test('removePasswordUnlessLast: drops the password while a passkey still signs the profile in', async t => {
+  const pool = await withPool(t);
+  await createUser(pool, { id: 'u1', name: 'Ana', created: iso(), pw: { h: 'h', set: iso() } });
+  await insertPasskey(pool, 'u1', { id: 'hello', publicKey: 'pk', counter: 0 });
+  assert.deepEqual(await removePasswordUnlessLast(pool, 'u1'), { ok: true });
+  assert.equal('pw' in (await getUserById(pool, 'u1')), false);
+});
+
+test('removePasswordUnlessLast: refuses when the password is the only way in', async t => {
+  const pool = await withPool(t);
+  await createUser(pool, { id: 'u1', name: 'Ana', created: iso(), pw: { h: 'h', set: iso() } });
+  assert.deepEqual(await removePasswordUnlessLast(pool, 'u1'),
+    { error: 'the password is the only way into this profile', code: 'last-way-in' });
+  assert.equal('pw' in (await getUserById(pool, 'u1')), true);
+});
+
+test('removePasswordUnlessLast: a no-op, not a refusal, when there was never a password', async t => {
+  const pool = await withPool(t);
+  await createUser(pool, { id: 'u1', name: 'Ana', created: iso() });
+  assert.deepEqual(await removePasswordUnlessLast(pool, 'u1'), { ok: true });
 });
 
 test('setPasswordReset drops any live password; exp round-trips as the same epoch ms', async t => {

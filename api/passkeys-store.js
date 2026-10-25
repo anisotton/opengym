@@ -7,9 +7,12 @@
  * Just the pure shaping rules here — which fields a name/transports list may keep — kept out of
  * server.js so they can be tested without a WebAuthn ceremony. The rows themselves are
  * PostgreSQL's `passkeys` table now (store.js, ISO-1403), including the rule that matters most —
- * a profile never loses its last way in (`passkeyRemovalRefused`, store.js — `otherWays` is how
- * many ways besides its passkeys can still sign the profile in, a password on an instance with
- * password sign-in on; server.js decides that, store.js only counts). */
+ * a profile never loses its last way in. `passkeyRemovalRefused`'s `otherWays` is how many ways
+ * besides its passkeys can still sign the profile in — a password, on an instance with password
+ * sign-in on — for the cheap pre-proof check in server.js, which may read it from a stale
+ * snapshot since a wrong answer there costs at most a prompt. `removePasskey`, the removal that
+ * actually happens, decides for itself instead (ISO-1592): whether a password currently exists is
+ * account data it reads fresh, under its own lock, not a flag handed in from before the proof. */
 
 // Far above anyone's real use — a phone, a laptop, a security key or two.
 export const MAX_PASSKEYS = 20;
