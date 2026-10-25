@@ -153,6 +153,10 @@ test('a reminder 20 minutes past is not delivered late, and a day already traine
   await seedUserState(h.databaseUrl, 'u_test_1', goodState(late.hhmm, { workouts: [{ id: 'w1', d: today }] }));
   await wait(1500);
   assert.equal(firings(h.log), 0, `a trained day must stay silent:\n${h.log}`);
+  // inside the window, nothing logged, but today carries a day note (#261): excused, silent
+  await seedUserState(h.databaseUrl, 'u_test_1', goodState(late.hhmm, { dayNotes: { [today]: { tag: 'sick', _ts: 1 } } }));
+  await wait(1500);
+  assert.equal(firings(h.log), 0, `a day noted as sick must stay silent:\n${h.log}`);
 });
 
 /* A null entry inside an otherwise fine list is not a shape the tick can refuse at the door:

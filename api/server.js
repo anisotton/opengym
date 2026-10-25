@@ -66,7 +66,7 @@ import {
 import { effectiveRoutineId } from './queue.js';
 import { stampPut } from './sync-stamps.js';
 import { atomicWrite as durableWrite } from './durable.js';
-import { nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
+import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -255,8 +255,33 @@ const PUSH_TIMEOUT_MS = 10000;
 const PUSH_CONCURRENCY = 6;
 const MAX_SUBS_PER_USER = 20;
 
+function parseAllowedPrivateIps(raw) {
+  const list = new net.BlockList();
+  for (const entry of String(raw || '').split(/[\s,]+/).filter(Boolean)) {
+    const [from, to] = entry.split('-');
+    const [addr, prefix] = entry.split('/');
+    const family = net.isIPv6(addr) || net.isIPv6(from) ? 'ipv6' : 'ipv4';
+    try {
+      if (to !== undefined) list.addRange(from, to, family);
+      else if (prefix !== undefined && /^\d{1,3}$/.test(prefix)) list.addSubnet(addr, +prefix, family);
+      else if (net.isIP(entry)) list.addAddress(entry, family);
+      else throw new Error('not an address, range or CIDR block');
+    } catch {
+      console.warn(`ALLOWED_PRIVATE_IPS entry "${entry.slice(0, 60)}" is not a valid address, range or CIDR block — ignored`);
+    }
+  }
+  return list;
+}
+const ALLOWED_PRIVATE_IPS = parseAllowedPrivateIps(process.env.ALLOWED_PRIVATE_IPS);
+
+function isAllowedPrivateAddr(v) {
+  const family = net.isIPv6(v) ? 'ipv6' : net.isIPv4(v) ? 'ipv4' : null;
+  return family !== null && ALLOWED_PRIVATE_IPS.check(v.replace(/%.*$/, ''), family);
+}
+
 function isPrivateAddr(ip) {
   const v = String(ip).toLowerCase();
+  if (isAllowedPrivateAddr(v)) return false;
   const m4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v);
   if (m4) {
     const a = +m4[1], b = +m4[2];
@@ -485,6 +510,7 @@ setInterval(async () => {
       if (!(late >= 0 && late <= REMINDER_WINDOW_MIN)) continue;
       if (user.lastReminder === now.date) continue;
       if ((S.workouts || []).some(w => w?.d === now.date)) continue;
+      if (excusedOn(S, now.date)) continue; // noted as sick, away, … (nudge.js excusedOn)
       const rid = effectiveRoutineId(S, now.date);
       if (!rid) continue; // rest day — nothing planned
       const routine = (S.routines || []).find(r => r?.id === rid);
@@ -860,15 +886,28 @@ const b64uToBuf = s => Buffer.from(s, 'base64url');
 /* ---------- live presence (in-memory) ---------- */
 // Clients heartbeat /api/activity while a workout is on screen; the admin dashboard reads who's
 // live. Purely ephemeral — never persisted. Expires shortly after the last ping.
-const presence = new Map();               // uid -> { name, exIdx, exTotal, setsDone, setsTotal, startedAt, updatedAt }
+const presence = new Map();               // uid -> { name, exIdx, exTotal, setsDone, setsTotal, startedAt, updatedAt, hiddenAt? }
 const PRESENCE_TTL = 70000;               // ~3.5× the 20s client heartbeat
+// A "left" signal with reason `hidden` (the workout page went to the background) marks the row
+// away at that moment instead of dropping it. A phone locked between sets keeps the page running
+// and heartbeating, and the next heartbeat clears the mark, so the athlete never blinks off the
+// dashboard; an iOS home-screen app swiped away sends `hidden` and nothing after it, so it is gone
+// this long after instead of the full TTL. Two heartbeat intervals and 5 s: browsers throttle a
+// hidden page's timers, so its first heartbeat after the hide can run late, and one late
+// heartbeat must not take a locked phone off the list.
+const PRESENCE_HIDDEN_GRACE = 45000;
+// Whether a row counts as "training now". The one place that decides it: the admin list and the
+// sweep below both ask here.
+const presenceListed = (p, now) =>
+  now - p.updatedAt < PRESENCE_TTL && (p.hiddenAt === undefined || now - p.hiddenAt < PRESENCE_HIDDEN_GRACE);
 function livePresence(uid) {
   const p = presence.get(uid);
   if (!p) return null;
-  if (Date.now() - p.updatedAt > PRESENCE_TTL) { presence.delete(uid); return null; }
-  return p;
+  if (!presenceListed(p, Date.now())) { presence.delete(uid); return null; }
+  const { hiddenAt: _away, ...live } = p;   // the mark is bookkeeping; the dashboard gets the row it always did
+  return live;
 }
-setInterval(() => { for (const [k, v] of presence) if (Date.now() - v.updatedAt > PRESENCE_TTL) presence.delete(k); }, 30000).unref();
+setInterval(() => { const now = Date.now(); for (const [k, v] of presence) if (!presenceListed(v, now)) presence.delete(k); }, 30000).unref();
 
 /* ---------- audit log ---------- */
 // Who signed in, who tried and failed, and what an admin changed. One JSON object per line in
@@ -2447,20 +2486,55 @@ if (BILLING_ON) setInterval(() => {
 
 /* ---------- routes ---------- */
 // Public, unauthenticated, and polled by an external uptime monitor (ISO-1400) — so it stays
-// cheap (a bare SELECT 1, bounded by HEALTH_DB_TIMEOUT_MS) and never reports the account count
-// the old response did; a health probe is not a place to leak how many users an instance has.
+// cheap and never reports the account count the old response did; a health probe is not a
+// place to leak how many users an instance has. Two things are asserted: the database answers
+// (a bare SELECT 1, bounded by HEALTH_DB_TIMEOUT_MS) and the data directory can be written.
 const HEALTH_DB_TIMEOUT_MS = 2000;
+// A health check that only proves the port answers is the one that lies on the day it matters:
+// a full disk, or a bind mount that came back read-only, leaves every write path that still
+// goes to DATA (uploads, the Coach's files, the audit log) broken while the process sits there
+// perfectly alive and the container stays "healthy". So the check writes: one empty file under
+// DATA, removed again. One probe per window, not one per request: this route is unauthenticated,
+// so a create and an unlink on every call is a disk write anyone who can reach the port may ask
+// for as fast as they like. The container polls every five minutes (api/Dockerfile), so a
+// five-second window is free to the check that matters and caps a flood at one probe per five
+// seconds. The cost is that a poll can be up to five seconds stale.
+const DATA_PROBE_MS = 5000;
+let dataProbe = { at: 0, ok: false };
+function dataWritable() {
+  const now = Date.now();
+  if (dataProbe.at && now - dataProbe.at < DATA_PROBE_MS) return dataProbe.ok;
+  const probe = path.join(DATA, '.health-' + process.pid);
+  let ok;
+  try {
+    fs.writeFileSync(probe, '');
+    ok = true;
+  } catch (e) {
+    console.error('health: cannot write to', DATA + ':', e.message);
+    ok = false;
+  } finally {
+    try { fs.unlinkSync(probe); } catch { /* never got created */ }
+  }
+  dataProbe = { at: now, ok };
+  return ok;
+}
+
 const routes = {
+  // 503 rather than a flag in a 200: the container healthcheck is `wget --spider`, which reads
+  // the status and nothing else, and an instance that cannot write its data directory, or cannot
+  // reach its database, is exactly what "unhealthy" is for.
   'GET /api/health': async (req, res) => {
+    const writable = dataWritable();
     try {
       await Promise.race([
         pool.query('SELECT 1'),
         new Promise((_, reject) => setTimeout(() => reject(new Error('db ping timed out')), HEALTH_DB_TIMEOUT_MS))
       ]);
-      json(res, 200, { ok: true, db: 'ok' });
+      if (!writable) return json(res, 503, { ok: false, db: 'ok', writable: false });
+      json(res, 200, { ok: true, db: 'ok', writable: true });
     } catch (e) {
       console.error('health: db ping failed', e.message);
-      json(res, 503, { ok: false, db: 'down' });
+      json(res, 503, { ok: false, db: 'down', writable });
     }
   },
 
@@ -3058,12 +3132,15 @@ const routes = {
     json(res, 200, { ok: true });
   },
 
-  // Live-workout heartbeat: client pings while a workout is on screen; { active:false } drops it.
+  // Live-workout heartbeat: client pings while a workout is on screen; { active:false } drops it,
+  // except with reason `hidden`, which marks it away (see PRESENCE_HIDDEN_GRACE). `navigated`,
+  // `closed`, and no reason at all (older clients), drop it at once.
   'POST /api/activity': async (req, res) => {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     if (body.active) {
+      // a fresh row, which also clears any hidden mark
       presence.set(user.id, {
         name: text(body.name).slice(0, 60),
         exIdx: +body.exIdx || 0, exTotal: +body.exTotal || 0,
@@ -3071,6 +3148,10 @@ const routes = {
         startedAt: +body.startedAt || Date.now(),
         updatedAt: Date.now()
       });
+    } else if (body.reason === 'hidden') {
+      // The first mark stands: a repeat without a heartbeat between cannot stretch the grace.
+      const p = presence.get(user.id);
+      if (p && p.hiddenAt === undefined) p.hiddenAt = Date.now();
     } else presence.delete(user.id);
     json(res, 200, { ok: true });
   },
@@ -3645,7 +3726,9 @@ const server = http.createServer(async (req, res) => {
       && APP_ORIGINS.has(origin);
     res.writeHead(204, {
       'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      // The CF-Access-* pair: a phone's Cloudflare Access service token (frontend lib/cf-access.js),
+      // for an Access application that passes OPTIONS through to the origin.
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, CF-Access-Client-Id, CF-Access-Client-Secret',
       'Access-Control-Max-Age': '86400',
       ...(pna ? { 'Access-Control-Allow-Private-Network': 'true' } : {})
     });

@@ -657,3 +657,38 @@ test('a job refused by the privilege gate does not bind the instance credential'
     cfg.save({ provider: prev.provider, authMode: prev.authMode, boundUid: prev.boundUid, auth: prev.auth });
   }
 });
+
+test('a job sends the admin\'s configured output cap, so a reasoning model is not cut off', async () => {
+  // Same shape as the note-length test: a local server on the Chat Completions wire, so the
+  // exact ceiling that reached the provider can be read back out of the request body.
+  const http = await import('node:http');
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      seen.push(JSON.parse(body || '{}'));
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"coach_contract":1,"nochange":true,"reading":"ok"}' } }] }));
+    });
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const uid = 'u-max-output';
+  await seedProfile(uid, sampleState());
+  cfg.save({
+    enabled: true, provider: 'compatible', providerOptions: { compatible: { baseUrl: base } },
+    models: { compatible: 'local-model' }, maxOutputTokens: 48000
+  });
+  forcePrivilegeVerdict({ ok: false, dropped: false, why: 'no `coach` user exists in this image' });
+  try {
+    await jobs.enqueue(uid, { kind: 'review' });
+    await settle(uid);
+    assert.equal(seen[0].max_tokens, 48000, 'the configured ceiling rode on the request');
+  } finally {
+    forcePrivilegeVerdict({ ok: true, dropped: false, why: 'pinned by the test suite' });
+    cfg.save({ provider: 'fixture', maxOutputTokens: 16000 });
+    server.close();
+  }
+});

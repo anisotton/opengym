@@ -19,11 +19,12 @@ const EMAIL_DISMISS_KEY = 'brilhart_email_banner_dismissed'
 
 /* The connection, always in view while the app is not connected to a server: offline, the server
    unreachable or answering with an error (its HTTP code, for whoever runs it), a server that no
-   longer accepts this device, an answer that is not Brilhart Fitness's, and no server at all — a phone
-   kept local, a guest in a browser. It cannot be dismissed; it goes when the condition does — or
-   when Settings → "Show connection status" is off, and then a dot on Home says a problem is there.
-   The first ones say what is wrong and that the changes are kept here, with the one thing to do
-   about it (retry, pair again, sign in); the deliberate local setup only says so, quietly.
+   longer accepts this device, an answer that is not Brilhart Fitness's, and a guest in a browser. A
+   problem cannot be dismissed; it goes when the condition does — or when Settings → "Show
+   connection status" is off, and then a dot on Home says a problem is there. The guest line alone
+   has an ×, which hides it for good (#454): no server is a choice there, not a fault. A phone kept
+   local never sees any of it. The others say what is wrong and that the changes are kept here,
+   with the one thing to do about it (retry, pair again, sign in).
 
    Pinned under the status bar, above the page and the pinned workout and chat headers, below the
    tab bar, the timer and every sheet. Its height goes into --conn on the root, which the page's
@@ -58,6 +59,11 @@ function useConnection() {
 // goes — but a sync that is stuck still has to be noticed somewhere.
 export const showsConnection = S => S?.connStatus !== false
 
+// The quiet "no server" line (#454): a phone kept local or a guest has chosen that, and a line
+// saying so on every screen, for good, is a nag. Its × sets this off; offline, an error or a
+// refusal still show, since only the 'quiet' tone is ever hidden by it.
+export const showsLocalLine = S => S?.connLocal !== false
+
 /* True while the banner is switched off and the connection has a problem worth seeing: offline,
    the server unreachable or answering with an error, refusing this device, a sign-in question
    still open, or changes waiting past the grace period. Never for a device with no server at all
@@ -72,6 +78,8 @@ export function useConnectionTrouble() {
 export default function SyncBanner() {
   const nav = useNavigate()
   const on = useStore(s => showsConnection(s.S))
+  const local = useStore(s => showsLocalLine(s.S))
+  const update = useStore(s => s.update)
   const conn = useConnection()
   const { view, user, status, guest, onboarding } = conn
   const [emailDismissed, setEmailDismissed] = useState(
@@ -80,7 +88,8 @@ export default function SyncBanner() {
   // One resend per showing: the row says "Sent" afterwards instead of inviting a second tap —
   // Settings' own button (AccountEmail.jsx) keeps the timed cooldown for anyone who needs more.
   const [emailSent, setEmailSent] = useState(false)
-  const showConn = conn.show && on
+  const quiet = view?.tone === 'quiet'
+  const showConn = conn.show && on && (!quiet || local)
   // ISO-1397/1398: a quieter reminder for an unconfirmed e-mail — only when the connection has
   // nothing more urgent to say (one fixed banner at a time, spec section 2: a connection problem
   // outranks this, shown or switched off). Dismissible for the session; Settings' own row stays
@@ -145,6 +154,8 @@ export default function SyncBanner() {
   return <div className={'conn-bar ' + view.tone}>
     <div className="conn-row" ref={row} role="status" aria-live="polite">
       {act ? <button className="conn" onClick={act}>{inner}</button> : <div className="conn">{inner}</div>}
+      {/* Connecting or signing in is still in Settings, so hiding the line takes nothing away. */}
+      {quiet && <button type="button" className="conn-x" aria-label={t('Close')} onClick={() => update(s => { s.connLocal = false })}><Icon name="xmark" /></button>}
     </div>
   </div>
 }

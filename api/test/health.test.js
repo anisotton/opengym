@@ -12,7 +12,7 @@ test('GET /api/health reports db:"ok" and never the account count', async t => {
   const res = await fetch(`${api}/api/health`);
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.deepEqual(body, { ok: true, db: 'ok' });
+  assert.deepEqual(body, { ok: true, db: 'ok', writable: true });
   assert.ok(!('users' in body), 'the account count must not be in the public health response');
 });
 
@@ -21,5 +21,5 @@ test('GET /api/health answers 503 once the database is gone', async t => {
   await dropDatabase();
   const res = await fetch(`${api}/api/health`);
   assert.equal(res.status, 503);
-  assert.deepEqual(await res.json(), { ok: false, db: 'down' });
+  assert.deepEqual(await res.json(), { ok: false, db: 'down', writable: true });
 });

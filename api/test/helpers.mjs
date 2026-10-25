@@ -63,13 +63,15 @@ export function tempData() {
  * `dataDir`, if omitted, is a fresh tempData() — most callers only care about DATABASE_URL being
  * there; a handful seed their own db.json first and pass the directory in.
  */
-export async function spawnApi(t, { dataDir, env = {} } = {}) {
+export async function spawnApi(t, { dataDir, env = {}, nodeArgs = [], ipc = false } = {}) {
   const dir = dataDir || tempData();
   const { databaseUrl, cleanup } = await provisionTestDatabase();
   t.after(cleanup);
   const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
+  // `nodeArgs` go before server.js (server-presence.test.js preloads a fake clock with --import);
+  // `ipc` adds the channel such a preload is driven through (child.send / 'message').
+  const child = spawn(process.execPath, [...nodeArgs, 'server.js'], {
+    cwd: API, stdio: ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
     env: {
       ...process.env, PORT: '0', DATA_DIR: dir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost',
       DATABASE_URL: databaseUrl, ...env
