@@ -5,7 +5,8 @@ import { workoutControls } from '../lib/workout-controls.js'
 import { speedUnitOf } from '../lib/speed.js'
 import { copyText } from '../lib/clipboard.js'
 import { useUI } from '../store/useUI.js'
-import { todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate } from '../lib/format.js'
+import { todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate, fmtDate } from '../lib/format.js'
+import { scopeItems } from '../lib/teacher.js'
 import { inventoryFor, ownsPlates } from '../lib/plates.js'
 import { effortOf } from '../lib/history.js'
 import { unlock, playOnSilentSupported, vibrateSupported } from '../lib/sound.js'
@@ -316,6 +317,7 @@ export default function Settings() {
           accessory="chevron" onClick={() => nav('/configuracoes')} />}
         <PasskeysRow state={passkeys.st} changed={credsChanged} />
         <DeviceLinkRow state={passkeys.st} />
+        <MyTeacherRow />
         {/* ISO-1397's own POST /api/account/email is a different handler, registered only while
             PASSWORD_LOGIN is off — on, that path is PasswordRow's legacy sign-in address (#118),
             which this row has nothing to do with. */}
@@ -890,6 +892,56 @@ function AccountIdRow({ id }) {
   if (!id) return null
   const copy = async () => { if (await copyText(id)) toast(t('Account ID copied')) }
   return <Row icon="person" iconTint="var(--grey)" title={t('Account ID')} subtitle={<span className="acct-id">{id}</span>} onClick={copy} />
+}
+
+// ISO-1594/ISO-1610 — Tela 5: "Meu professor". Row absent (not "None") until GET
+// /api/account/teacher answers with one — same absence convention as every other conditional
+// row in this file. `scopeItems()` is the exact text the invite-accept screen (Tela 4) showed
+// before this account accepted — same source, so the two never read differently (critério de
+// aceite).
+function MyTeacherSheet({ link, close, onChanged }) {
+  const toast = useUI(s => s.toast)
+  const [share, setShare] = useState(link.shareBodyweight)
+  const scope = scopeItems()
+  const setShareOnServer = async v => {
+    try { await api('/api/account/teacher/bodyweight', { method: 'POST', body: JSON.stringify({ share: v }) }); setShare(v) }
+    catch { toast(t('Could not save. Try again.')) }
+  }
+  // Turning it off reduces what the teacher sees — no friction. Turning it on is a positive
+  // consent, same as the Tela 4 checkbox, so it gets the same short confirmation.
+  const onToggleShare = v => v
+    ? confirmSheet({
+        title: t('Share body weight?'), message: t('{0} will be able to see your body-weight progress. You can turn it off anytime.', link.teacher.name),
+        confirmText: t('Share'), onConfirm: () => setShareOnServer(true)
+      })
+    : setShareOnServer(false)
+  const unlink = () => confirmSheet({
+    title: t('Unlink from {0}?', link.teacher.name),
+    message: t('They stop seeing your workouts immediately. Routines they assigned stay with you.'),
+    confirmText: t('Unlink'), danger: true,
+    onConfirm: () => api('/api/account/teacher', { method: 'DELETE' })
+      .then(() => { close(); toast(t('Unlinked.')); onChanged() })
+      .catch(e => toast(e.status === 404 ? t('This link no longer exists.') : t('Could not unlink. Try again.')))
+  })
+  return <>
+    <h3>{t('My teacher')}</h3>
+    <div style={{ fontWeight: 600 }}>{link.teacher.name}</div>
+    <div className="muted small" style={{ marginBottom: 14 }}>{t('Since {0}', fmtDate(link.acceptedAt.slice(0, 10), true))}</div>
+    <div className="small" style={{ fontWeight: 600, margin: '10px 0 4px' }}>{t('{0} can see:', link.teacher.name)}</div>
+    <ul className="scope-list">{scope.sees.map((s, i) => <li key={i}>✓ {s}</li>)}</ul>
+    <Row title={t('Share body weight')}><Switch checked={share} onChange={onToggleShare} /></Row>
+    <div style={{ height: 10 }} />
+    <Button variant="danger" onClick={unlink}>{t('Unlink')}</Button>
+  </>
+}
+
+function MyTeacherRow() {
+  const [link, setLink] = useState(undefined) // undefined = not loaded yet, null = none, object = linked
+  const load = () => api('/api/account/teacher').then(d => setLink(d.teacher ? d : null)).catch(() => setLink(null))
+  useEffect(() => { load() }, [])
+  if (!link) return null
+  return <Row icon="person" iconTint="var(--teal)" title={t('My teacher')} value={link.teacher.name} accessory="chevron"
+    onClick={() => useUI.getState().openSheet(close => <MyTeacherSheet link={link} close={close} onChanged={load} />)} />
 }
 
 // Lets the mobile app's "connect to my server" mode (lib/remote.js) authenticate without a

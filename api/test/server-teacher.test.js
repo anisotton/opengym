@@ -105,7 +105,9 @@ const STUDENT_SESSION_ROUTES = [
   { method: 'POST', path: '/api/account/teacher/bodyweight', body: { share: true } },
   { method: 'DELETE', path: '/api/account/teacher' },
   { method: 'GET', path: '/api/account/assignments' },
-  { method: 'POST', path: '/api/account/assignments/ack', body: { id: 'x' } }
+  { method: 'POST', path: '/api/account/assignments/ack', body: { id: 'x' } },
+  { method: 'GET', path: '/api/account/program?id=x' },
+  { method: 'GET', path: '/api/account/program/cover?id=x' }
 ];
 
 test('every /api/teacher/* and account/teacher* route refuses an anonymous caller with 401', async t => {
@@ -430,4 +432,48 @@ test('GET /api/me reports role for both a teacher and a student', async t => {
   assert.equal(teacherMe.body.user.role, 'teacher');
   const studentMe = await h.get('/api/me', { uid: STUDENT });
   assert.equal(studentMe.body.user.role, 'student');
+});
+
+/* ---------------------------------------------------------------- GET /api/account/program(/cover), ISO-1610 */
+// S.teacherProgram only ever carries a programId — this is what fills in the card's own
+// title/description/cover. Any signed-in account, not only a student who was actually
+// recommended this one: same boundary as GET /api/teacher/programs (published is the gate).
+
+async function makeProgram(h, over = {}) {
+  const id = 'prog_' + crypto.randomBytes(6).toString('hex');
+  // Title is unique while deleted_at is null (programs_title_active_idx) — each call gets its
+  // own unless the test explicitly wants a collision, so two programs in the same test (one
+  // trashed, one not) never trip the constraint before the trash UPDATE even runs.
+  await h.sql(
+    'INSERT INTO programs (id, title, description, category, difficulty, session_minutes, status) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    [id, over.title ?? ('Hypertrophy — Phase 2 ' + id), over.description ?? 'Four weeks of upper/lower splits.',
+      over.category ?? 'hypertrophy', over.difficulty ?? 'intermediate', over.sessionMinutes ?? 45, over.status ?? 'published']
+  );
+  return id;
+}
+
+test('a student (not just a teacher) can read a published Program\'s own metadata', async t => {
+  const h = await startServer(t);
+  const id = await makeProgram(h, { title: 'Hypertrophy — Phase 2' });
+  const res = await h.get(`/api/account/program?id=${id}`, { uid: STUDENT });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.program.title, 'Hypertrophy — Phase 2');
+  assert.equal(res.body.program.hasCover, false);
+});
+
+test('GET /api/account/program answers 404 for a draft, a trashed, or an unknown id', async t => {
+  const h = await startServer(t);
+  const draft = await makeProgram(h, { status: 'draft' });
+  assert.equal((await h.get(`/api/account/program?id=${draft}`, { uid: STUDENT })).status, 404);
+  const trashed = await makeProgram(h);
+  await h.sql('UPDATE programs SET deleted_at = now() WHERE id = $1', [trashed]);
+  assert.equal((await h.get(`/api/account/program?id=${trashed}`, { uid: STUDENT })).status, 404);
+  assert.equal((await h.get('/api/account/program?id=never-existed', { uid: STUDENT })).status, 404);
+});
+
+test('GET /api/account/program/cover answers 404 for a published Program with no cover set', async t => {
+  const h = await startServer(t);
+  const id = await makeProgram(h);
+  const res = await h.get(`/api/account/program/cover?id=${id}`, { uid: STUDENT });
+  assert.equal(res.status, 404);
 });

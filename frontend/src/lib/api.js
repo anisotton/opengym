@@ -393,3 +393,21 @@ export async function billingCheckout(plan) {
 export async function billingPortal() {
   return post('/api/billing/portal', {})
 }
+
+/* -------------------------------------------- teacher assignments (ISO-1594/ISO-1610) --------
+   The student's side of a teacher's pull — see store/useStore.js's refreshTeacherAssignments
+   (piggybacked on the same cadence as fetchBillingStatus above) and lib/teacher.js
+   (importAssignment/endAssignment, which turn the answer into state). */
+export async function fetchTeacherAssignments() {
+  return api('/api/account/assignments')
+}
+export async function ackTeacherAssignment(id) {
+  return post('/api/account/assignments/ack', { id })
+}
+// S.teacherProgram only carries `programId` — this fills in the title/description/cover flag
+// the recommended-Program card (Home.jsx) needs to render. The cover image itself is a plain
+// <img src>, built with programCoverUrl below rather than fetched through api().
+export async function fetchAccountProgram(id) {
+  return api('/api/account/program?id=' + encodeURIComponent(id))
+}
+export const programCoverUrl = id => appBase().replace(/\/$/, '') + '/api/account/program/cover?id=' + encodeURIComponent(id)
