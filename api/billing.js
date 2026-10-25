@@ -21,7 +21,9 @@ import Stripe from 'stripe';
 import {
   setStripeCustomerId, getUserIdByStripeCustomer, hasEverSubscribed, getUserById,
   upsertSubscription, getSubscriptionById, getLatestSubscription, getSubscriptionsDueForFirstPeriodNotice,
-  getStripeCleanupDue, deleteStripeCleanup, bumpStripeCleanupFailure
+  getStripeCleanupDue, deleteStripeCleanup, bumpStripeCleanupFailure,
+  isBillingCatalogSeeded, getCatalogPlan, getPriceById, getPlanIdForPrice, getCurrentIntroPrice,
+  getCurrentPriceAmountForPlan, getAvailablePlans, seedBillingCatalog
 } from './store.js';
 
 const STRIPE_API_VERSION = '2026-08-26.dahlia';
@@ -66,12 +68,108 @@ export function planPriceId(plan) {
   return envName ? process.env[envName] || null : null;
 }
 
-export function planFromPrice(priceId) {
+// Catalog-first, env as a fallback that only ever fires for a row the catalog has never heard of
+// (an instance that hasn't seeded yet, per ISO-1623 §6.2 — "deploy is safe even before the seed
+// runs"). Deliberately NOT narrowed to `state = 'current'`: a subscription billed off a Price
+// that has since been retired must keep showing its plan's name forever (ISO-1619 principle #2).
+export async function planFromPrice(pool, priceId) {
   if (!priceId) return null;
+  const catalogPlan = await getPlanIdForPrice(pool, priceId);
+  if (catalogPlan) return catalogPlan;
   for (const [plan, envName] of Object.entries(PLAN_PRICE_ENV)) {
     if (process.env[envName] === priceId) return plan;
   }
   return null;
+}
+
+// Checkout's own gate (ISO-1623 §4): a plan the catalog knows about may only be sold while it is
+// `available` AND its linked Price is still `current` — the Stripe side enforces the same thing
+// independently (an `active:false` Price is refused by a new Checkout Session), this is just the
+// app's own check so a disabled plan answers with a clean 400 rather than a raw Stripe error.
+// Falls back to the legacy env lookup only when the catalog has no row for this slug at all —
+// once it's seeded, an existing slug with `available:false` is refused even if the env var it
+// used to read from is still set.
+async function resolvePlanForCheckout(pool, plan) {
+  const row = await getCatalogPlan(pool, plan);
+  if (row) {
+    if (!row.available || !row.currentPriceId) return null;
+    const price = await getPriceById(pool, row.currentPriceId);
+    return price?.state === 'current' ? price.id : null;
+  }
+  return planPriceId(plan);
+}
+
+// The once-per-account first-period Price (R$1,99): the catalog's shared `current` intro Price
+// once seeded, the env var before that.
+async function resolveIntroPriceId(pool) {
+  if (await isBillingCatalogSeeded(pool)) return (await getCurrentIntroPrice(pool))?.id || null;
+  return process.env.STRIPE_PRICE_INTRO || null;
+}
+
+const SEED_PLAN_ORDER = ['monthly', 'quarterly', 'yearly'];
+const SEED_DISPLAY_NAME = { monthly: 'Mensal', quarterly: 'Trimestral', yearly: 'Anual' };
+
+function seedPriceProblem(price, label) {
+  if (price.currency !== 'brl') return `${label}: currency is ${price.currency}, expected brl`;
+  if (!price.recurring) return `${label}: not a recurring Price`;
+  if (!['month', 'year'].includes(price.recurring.interval)) return `${label}: unexpected interval ${price.recurring.interval}`;
+  if (![1, 3, 6, 12].includes(price.recurring.interval_count)) return `${label}: unexpected interval_count ${price.recurring.interval_count}`;
+  return null;
+}
+
+const productIdOf = price => (typeof price.product === 'string' ? price.product : price.product.id);
+
+// Boot-time, idempotent (ISO-1623 §3): fills billing_plans/billing_prices from the env's own
+// STRIPE_PRICE_* the very first time an instance boots with the catalog migration applied — never
+// again after that (isBillingCatalogSeeded short-circuits above), so a later admin edit is never
+// clobbered by a redeploy. Any divergence (wrong currency, an interval the catalog doesn't
+// expect, a missing env var) aborts the WHOLE seed instead of half-filling the catalog — billing
+// simply keeps reading PLAN_PRICE_ENV/PLAN_AMOUNT_CENTS until whoever's deploying fixes the env
+// and the next boot tries again. The four STRIPE_PRICE_* vars stay mandatory either way (§6.3,
+// rollback): this seed is additive, never a replacement for them.
+export async function seedCatalogFromEnv(pool) {
+  if (!BILLING_ON) return;
+  if (await isBillingCatalogSeeded(pool)) return;
+  const introId = process.env.STRIPE_PRICE_INTRO;
+  const planIds = SEED_PLAN_ORDER.map(slug => [slug, process.env[PLAN_PRICE_ENV[slug]]]);
+  if (!introId || planIds.some(([, id]) => !id)) {
+    console.error('billing: catalog seed skipped — STRIPE_PRICE_MONTHLY/QUARTERLY/YEARLY/INTRO must all be set');
+    return;
+  }
+  const stripe = getStripe();
+  let introPrice;
+  const plans = [];
+  try {
+    introPrice = await stripe.prices.retrieve(introId);
+    const introProblem = seedPriceProblem(introPrice, 'STRIPE_PRICE_INTRO');
+    if (introProblem) throw new Error(introProblem);
+    for (const [slug, priceId] of planIds) {
+      const price = await stripe.prices.retrieve(priceId);
+      const problem = seedPriceProblem(price, slug);
+      if (problem) throw new Error(problem);
+      plans.push({
+        id: slug,
+        display: { 'pt-BR': { name: SEED_DISPLAY_NAME[slug] } },
+        price: {
+          id: price.id, unitAmount: price.unit_amount, currency: price.currency,
+          interval: price.recurring.interval, intervalCount: price.recurring.interval_count,
+          livemode: price.livemode, stripeProductId: productIdOf(price)
+        }
+      });
+    }
+  } catch (e) {
+    console.error('billing: catalog seed skipped —', e.message);
+    return;
+  }
+  await seedBillingCatalog(pool, {
+    intro: {
+      id: introPrice.id, unitAmount: introPrice.unit_amount, currency: introPrice.currency,
+      interval: introPrice.recurring.interval, intervalCount: introPrice.recurring.interval_count,
+      livemode: introPrice.livemode, stripeProductId: productIdOf(introPrice)
+    },
+    plans
+  });
+  console.log('billing: catalog seeded from env (monthly/quarterly/yearly + intro)');
 }
 
 // The one place that decides whether an account may write (Oráculo, ISO-1393 comment thread,
@@ -188,7 +286,7 @@ export async function applyStripeEvent(pool, event) {
       const firstPeriod = priceId != null && priceId === process.env.STRIPE_PRICE_INTRO;
       await upsertSubscription(pool, obj.id, userId, {
         status: obj.status,
-        plan: planFromPrice(priceId) || obj.metadata?.plan || null,
+        plan: (await planFromPrice(pool, priceId)) || obj.metadata?.plan || null,
         priceId,
         priceAmount,
         customerId: obj.customer,
@@ -295,11 +393,16 @@ export async function ensureStripeCustomer(pool, user) {
 // once-per-account rule) skips the intro Price and schedule entirely: Checkout sells the chosen
 // plan's Price directly, full price from the start.
 export async function createCheckoutSession(pool, user, plan, { successUrl, cancelUrl }) {
-  const priceId = planPriceId(plan);
+  const priceId = await resolvePlanForCheckout(pool, plan);
   if (!priceId) return { error: 'invalid plan' };
+  // ISO-1623 §5.4: two tabs completing Checkout at once must not end up with two live
+  // subscriptions charged in parallel — the webhook's own `duplicateOf` handling (T2b) is the
+  // backstop for the race that slips past this, not a replacement for refusing it here first.
+  const last = await getLatestSubscription(pool, user.id);
+  if (last && (canWrite(last) || last.pauseCollection)) return { error: 'already subscribed', code: 'already-subscribed' };
   const customerId = await ensureStripeCustomer(pool, user);
   const firstTime = !(await hasEverSubscribed(pool, user.id));
-  const introPrice = process.env.STRIPE_PRICE_INTRO;
+  const introPrice = await resolveIntroPriceId(pool);
   const useIntro = firstTime && !!introPrice;
   const lineItems = [{ price: useIntro ? introPrice : priceId, quantity: 1 }];
   const subscriptionData = { metadata: { userId: user.id, plan, ...(useIntro ? { scheduleTo: priceId } : {}) } };
@@ -328,8 +431,10 @@ export async function createPortalSession(pool, user, { returnUrl }) {
 // Price), otherwise it's simply the price already on the subscription. Shared by billingStatus and
 // server.js's first-period-ending mail hook, so the two never state a different number for the
 // same account.
-export function nextChargeAmountCents(sub) {
-  return sub?.firstPeriod ? (PLAN_AMOUNT_CENTS[sub.plan] ?? null) : (sub?.priceAmount ?? null);
+export async function nextChargeAmountCents(pool, sub) {
+  if (!sub?.firstPeriod) return sub?.priceAmount ?? null;
+  const catalogAmount = await getCurrentPriceAmountForPlan(pool, sub.plan);
+  return catalogAmount ?? (PLAN_AMOUNT_CENTS[sub.plan] ?? null);
 }
 
 // The exact app-facing contract from ISO-1392's spec (item 1 / "Ponto em aberto"): `status` is
@@ -351,7 +456,7 @@ export async function billingStatus(pool, userId) {
     firstPeriod: !!sub.firstPeriod,
     since: sub.createdAt || null,
     nextChargeDate: sub.currentPeriodEnd || null,
-    nextChargeAmount: nextChargeAmountCents(sub),
+    nextChargeAmount: await nextChargeAmountCents(pool, sub),
     cancelAtPeriodEnd: !!sub.cancelAtPeriodEnd,
     firstFullCharge: sub.firstFullCharge || null,
     lastInvoiceStatus: sub.lastInvoiceStatus || null

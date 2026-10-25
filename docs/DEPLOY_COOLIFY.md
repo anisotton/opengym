@@ -114,6 +114,16 @@ etapa valer a pena documentar agora, não depois:
    evento. O próprio Dashboard Stripe também mostra, por evento, se a entrega teve 200 ou erro,
    e deixa reenviar manualmente.
 
+### Catálogo de planos (migração `010_billing_catalog.sql`, ISO-1623)
+
+A migração só cria tabelas novas (`billing_plans`/`billing_prices`/`billing_admin_actions`) —
+nenhuma tabela existente é tocada, então o redeploy é seguro mesmo antes de qualquer semeadura
+rodar. No boot seguinte com billing ligado, `seedCatalogFromEnv` (`api/billing.js`) lê os quatro
+`STRIPE_PRICE_*` da Stripe e preenche o catálogo uma única vez; se a validação falhar (moeda
+diferente de BRL, intervalo inesperado), o catálogo fica vazio e o billing continua lendo
+`STRIPE_PRICE_*` direto, exatamente como antes desta migração — nada quebra, só o catálogo não
+aparece. Detalhes e rollback: `docs/SELF_HOSTING.md` §7 ("The catalog").
+
 ## 5. Monitoramento
 
 1. **Coolify:** ative a notificação nativa (e-mail, Discord, Slack — o que o Coolify oferecer)

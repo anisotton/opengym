@@ -983,6 +983,124 @@ export async function bumpStripeCleanupFailure(pool, id, errorMessage) {
   );
 }
 
+/* ---------- billing catalog (ISO-1623) ----------
+ * The admin-facing mirror of Stripe's Prices (migrations/010_billing_catalog.sql). Reads here
+ * never trust `process.env.STRIPE_PRICE_*` — that's billing.js's own legacy fallback, kept only
+ * for an instance whose catalog hasn't been seeded yet (plan §6.2). A price row is returned in
+ * whatever `state` it's in; callers that need "sellable right now" filter for `state = 'current'`
+ * themselves (billing.js's resolvePlanForCheckout), while a lookup for a subscription already on
+ * the books (planFromPrice, nextChargeAmountCents) deliberately does not — a `retired` Price must
+ * stay legible for whoever is still being billed off it.
+ */
+function rowToBillingPrice(row) {
+  return {
+    id: row.id, planId: row.plan_id, kind: row.kind, unitAmount: row.unit_amount, currency: row.currency,
+    interval: row.interval, intervalCount: row.interval_count, livemode: row.livemode,
+    stripeProductId: row.stripe_product_id, state: row.state, createdBy: row.created_by,
+    createdAt: row.created_at, publishedAt: row.published_at, retiredAt: row.retired_at, decisionRef: row.decision_ref
+  };
+}
+function rowToBillingPlan(row) {
+  return {
+    id: row.id, display: row.display, interval: row.interval, intervalCount: row.interval_count,
+    sortOrder: row.sort_order, available: row.available, currentPriceId: row.current_price_id,
+    introPriceId: row.intro_price_id, version: row.version, createdAt: row.created_at, updatedAt: row.updated_at
+  };
+}
+
+export async function isBillingCatalogSeeded(pool) {
+  const { rows } = await pool.query('SELECT 1 FROM billing_plans LIMIT 1');
+  return rows.length > 0;
+}
+
+export async function getPriceById(pool, id) {
+  if (!id) return null;
+  const { rows } = await pool.query('SELECT * FROM billing_prices WHERE id = $1', [id]);
+  return rows.length ? rowToBillingPrice(rows[0]) : null;
+}
+
+// Any state — see the module comment on why a retired Price still answers here.
+export async function getPlanIdForPrice(pool, priceId) {
+  if (!priceId) return null;
+  const { rows } = await pool.query(
+    "SELECT plan_id FROM billing_prices WHERE id = $1 AND kind = 'recurring' AND plan_id IS NOT NULL", [priceId]
+  );
+  return rows.length ? rows[0].plan_id : null;
+}
+
+// The shared first-period Price, whichever plan's Checkout is about to use it — there is exactly
+// one `current` intro Price at a time (seedBillingCatalog below never creates a second).
+export async function getCurrentIntroPrice(pool) {
+  const { rows } = await pool.query("SELECT * FROM billing_prices WHERE kind = 'intro' AND state = 'current' LIMIT 1");
+  return rows.length ? rowToBillingPrice(rows[0]) : null;
+}
+
+// The upcoming full-plan charge during a first period (billing.js's nextChargeAmountCents): the
+// plan's *current* recurring Price, never the intro Price the subscription's own item still is.
+export async function getCurrentPriceAmountForPlan(pool, planId) {
+  const { rows } = await pool.query(
+    "SELECT bpr.unit_amount FROM billing_plans bpl JOIN billing_prices bpr ON bpr.id = bpl.current_price_id WHERE bpl.id = $1",
+    [planId]
+  );
+  return rows.length ? rows[0].unit_amount : null;
+}
+
+// Checkout's own gate (plan §4): a plan the catalog knows about, regardless of `available` — the
+// caller decides what "sellable" means from `available` and the linked Price's own `state`.
+export async function getCatalogPlan(pool, id) {
+  if (!id) return null;
+  const { rows } = await pool.query('SELECT * FROM billing_plans WHERE id = $1', [id]);
+  return rows.length ? rowToBillingPlan(rows[0]) : null;
+}
+
+// GET /api/billing/plans: only `available` plans, each with its current Price's amount (and the
+// intro Price's amount, if this plan offers one) already resolved in centavos — the one query the
+// route needs, rather than N follow-up lookups.
+export async function getAvailablePlans(pool) {
+  const { rows } = await pool.query(`
+    SELECT p.*, cp.unit_amount AS amount_cents, ip.unit_amount AS intro_amount_cents
+    FROM billing_plans p
+    JOIN billing_prices cp ON cp.id = p.current_price_id
+    LEFT JOIN billing_prices ip ON ip.id = p.intro_price_id
+    WHERE p.available = true
+    ORDER BY p.sort_order
+  `);
+  return rows.map(r => ({ ...rowToBillingPlan(r), amountCents: r.amount_cents, introAmountCents: r.intro_amount_cents }));
+}
+
+// The once-at-boot seed (billing.js's seedCatalogFromEnv) — called only when isBillingCatalogSeeded
+// is still false, so this never runs against a catalog an admin has already started editing.
+// `plans` is ordered (sort_order = its index + 1); each entry's own Price and the one shared
+// `intro` Price are inserted `current` right away — unlike every later Price (T1b's "nova versão
+// de valor"), there is no draft step here: these are exactly the Prices already live in Stripe via
+// the env vars, not something this boot step is creating.
+export async function seedBillingCatalog(pool, { plans, intro }) {
+  return withTransaction(pool, async client => {
+    let introId = null;
+    if (intro) {
+      await client.query(
+        `INSERT INTO billing_prices (id, plan_id, kind, unit_amount, currency, interval, interval_count, livemode, stripe_product_id, state, published_at)
+         VALUES ($1, NULL, 'intro', $2, $3, $4, $5, $6, $7, 'current', now())`,
+        [intro.id, intro.unitAmount, intro.currency, intro.interval, intro.intervalCount, intro.livemode, intro.stripeProductId]
+      );
+      introId = intro.id;
+    }
+    for (const [i, plan] of plans.entries()) {
+      await client.query(
+        `INSERT INTO billing_plans (id, display, interval, interval_count, sort_order, available, intro_price_id)
+         VALUES ($1, $2, $3, $4, $5, true, $6)`,
+        [plan.id, plan.display, plan.price.interval, plan.price.intervalCount, i + 1, introId]
+      );
+      await client.query(
+        `INSERT INTO billing_prices (id, plan_id, kind, unit_amount, currency, interval, interval_count, livemode, stripe_product_id, state, published_at)
+         VALUES ($1, $2, 'recurring', $3, $4, $5, $6, $7, $8, 'current', now())`,
+        [plan.price.id, plan.id, plan.price.unitAmount, plan.price.currency, plan.price.interval, plan.price.intervalCount, plan.price.livemode, plan.price.stripeProductId]
+      );
+      await client.query('UPDATE billing_plans SET current_price_id = $1 WHERE id = $2', [plan.price.id, plan.id]);
+    }
+  });
+}
+
 /* ---------- programs (ISO-1485) ----------
  * The admin-curated catalog — not a user's own training data, see docs/ADMIN_PROGRAMS.md §1.
  * `rev` is the same optimistic-concurrency shape as user_state.rev: every mutator below reads the

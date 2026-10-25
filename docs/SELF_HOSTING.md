@@ -712,8 +712,12 @@ own Price after that cycle, so the only statuses an account ever reports are `ac
 
 What each route does:
 
+- `GET /api/billing/plans` — the sellable catalog (see "The catalog" below): id, display text,
+  interval and amount in centavos for each plan that is `available`, in the order to show them.
 - `POST /api/billing/checkout` — requires a signed-in, e-mail-verified profile (Phase 2) and a
-  `plan` (`monthly`/`quarterly`/`yearly`) in the body; returns the Checkout Session's hosted URL.
+  `plan` (`monthly`/`quarterly`/`yearly`, or a later addition) in the body; returns the Checkout
+  Session's hosted URL, or 409 `already-subscribed` if the account's last subscription is still
+  `active`/`past_due` — two tabs completing Checkout at once must not end up billed twice.
 - `POST /api/billing/portal` — the Stripe Customer Portal, for changing the plan, the card on file,
   or cancelling. Cancelling there is always "at period end", no proration: access continues until
   `current_period_end`, and the account only goes read-only once that date passes and the
@@ -740,6 +744,35 @@ Whether an account may write at all is one function, `canWrite(subscription)` in
 
 Forms of payment are configured once in the Dashboard (Settings → Payment methods), never in
 code — Checkout never names them, so nothing here needs changing to add or remove one.
+
+### The catalog (ISO-1623)
+
+The plan catalog — names, prices, which plan is on sale — lives in PostgreSQL
+(`billing_plans`/`billing_prices`, migration `010_billing_catalog.sql`), mirrored from Stripe
+rather than hard-coded by env. The migration itself only creates the two tables (plus
+`billing_admin_actions`, unused until the admin UI that manages this catalog lands); filling them
+is a separate, idempotent boot step (`seedCatalogFromEnv` in `api/billing.js`):
+
+- Runs once, automatically, the first time an instance boots with billing on (`STRIPE_API_KEY` and
+  `STRIPE_WEBHOOK_SECRET` both set) and the catalog is still empty — never again after that, so a
+  later edit to the catalog is never clobbered by a redeploy.
+- Reads the four `STRIPE_PRICE_*` Prices from Stripe and validates each one (BRL, a recurring
+  interval the catalog expects) before writing anything; any divergence skips the **whole** seed
+  (logged, nothing partial) and billing keeps working exactly as it did before this migration —
+  reading `STRIPE_PRICE_*` directly, the same as every build before ISO-1623. The four env vars
+  stay mandatory either way; they're the seed's only source, and the rollback path below depends
+  on them still being there.
+- A Price, once in the catalog, is immutable (enforced by a trigger, not just convention) —
+  changing a value means minting a new Stripe Price and publishing it as the plan's new `current`
+  one; the old row stays forever, `retired`, so a subscription still billed off it keeps showing
+  the exact name and amount it was sold at. There is no admin UI for that yet (ISO-1623 is the
+  read path only — `GET /api/billing/plans`, Checkout and the webhook read from this catalog, but
+  nothing writes to it besides the boot seed); it lands in a follow-up task.
+
+**Rollback:** reverting the code means `STRIPE_PRICE_*` drive billing again, unchanged — nothing
+about the legacy path was removed. The two new tables can be left in place (inert) or dropped —
+`DROP TABLE billing_admin_actions, billing_plans, billing_prices` — neither touches any existing
+table. Nothing in Stripe needs undoing: the seed only ever reads Prices, never creates one.
 
 ### Account deletion and Stripe (ISO-1447, Phase 4 — LGPD)
 

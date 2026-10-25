@@ -2241,6 +2241,41 @@ paths:
               example: { enabled: true, status: "active", active: true, plan: "monthly", firstPeriod: true, nextChargeDate: "2026-10-31T00:00:00.000Z", nextChargeAmount: 8900, cancelAtPeriodEnd: false, firstFullCharge: null }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /api/billing/plans:
+    get:
+      tags: [billing]
+      operationId: getBillingPlans
+      summary: The catalog of sellable plans (ISO-1623) — what SettingsPlan renders
+      description: |
+        Only `available` plans, each with its `current` Price's amount already resolved to
+        centavos — no plan name, interval or price is hard-coded on the client. A plan the admin
+        has taken off sale, or whose Price has no `current` version yet, is simply absent from
+        this list; `POST /api/billing/checkout` enforces the same `available` + `current` gate
+        independently, so a stale cached list can't be used to buy a plan no longer on sale.
+      responses:
+        '200':
+          description: The sellable catalog, in display order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, example: monthly }
+                        display: { type: object, description: 'Per-locale name/description/badge, keyed by locale (pt-BR is always present).' }
+                        interval: { type: string, enum: [month, year] }
+                        intervalCount: { type: integer, enum: [1, 3, 6, 12] }
+                        sortOrder: { type: integer }
+                        amountCents: { type: integer, description: Centavos. }
+                        introAmountCents: { oneOf: [{ type: integer, description: Centavos. }, { type: 'null' }] }
+              example: { plans: [{ id: "monthly", display: { "pt-BR": { name: "Mensal" } }, interval: "month", intervalCount: 1, sortOrder: 1, amountCents: 8900, introAmountCents: 199 }] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+
   /api/billing/checkout:
     post:
       tags: [billing]
@@ -2299,6 +2334,12 @@ paths:
                 termsRequired: { value: { error: "accept the current terms first", code: "terms-required" } }
                 emailUnverified: { value: { error: "e-mail not verified", code: "email-unverified" } }
         '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: 'ISO-1623 §5.4: the account''s last subscription is still `active`/`past_due`/paused — two tabs completing Checkout must not end up billed twice. Send the user to `POST /api/billing/portal` instead.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "you already have an active subscription", code: "already-subscribed" }
 
   /api/billing/portal:
     post:

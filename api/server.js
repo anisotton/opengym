@@ -50,7 +50,8 @@ import {
   setUserRole, countStudentsOfTeacher, createTeacherInvite, listTeacherInvites, revokeTeacherInvite,
   peekTeacherInvite, acceptTeacherInvite, getTeacherLink, getLinkForTeacher, listStudentsOfTeacher,
   endLink, setShareBodyweight, assignToStudent, getActiveAssignment, endAssignment, listAssignmentHistory,
-  getPendingAndEndedAssignments, ackAssignment, listNotes, createNote, updateNote, deleteNote
+  getPendingAndEndedAssignments, ackAssignment, listNotes, createNote, updateNote, deleteNote,
+  getAvailablePlans
 } from './store.js';
 import {
   CATEGORIES as PROGRAM_CATEGORIES, DIFFICULTIES as PROGRAM_DIFFICULTIES,
@@ -74,7 +75,7 @@ import { renderPreChargeNotice } from './mail-templates/pre-charge-notice.js';
 import {
   BILLING_ON, getStripe, hasActiveAccess, createCheckoutSession, createPortalSession,
   billingStatus, applyStripeEvent, setFirstPeriodNoticeHook, tickFirstPeriodNotices, nextChargeAmountCents,
-  attemptStripeCleanup, tickStripeCleanup
+  attemptStripeCleanup, tickStripeCleanup, seedCatalogFromEnv
 } from './billing.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -3842,6 +3843,22 @@ const routes = {
     if (!BILLING_ON) return json(res, 200, { enabled: false });
     json(res, 200, await billingStatus(pool, user.id));
   },
+  // ISO-1623: the app's own catalog, mirrored from Stripe — no plan name, interval or price is
+  // ever hard-coded on the client after this. Only `available` plans, each with its current
+  // Price's amount already resolved to centavos (store.js's getAvailablePlans), so SettingsPlan
+  // (T3) never has to know what a Price even is.
+  'GET /api/billing/plans': async (req, res) => {
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const plans = await getAvailablePlans(pool);
+    json(res, 200, {
+      plans: plans.map(p => ({
+        id: p.id, display: p.display, interval: p.interval, intervalCount: p.intervalCount,
+        sortOrder: p.sortOrder, amountCents: p.amountCents, introAmountCents: p.introAmountCents ?? null
+      }))
+    });
+  },
   'POST /api/billing/checkout': async (req, res) => {
     if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
     const user = await readSession(req);
@@ -3860,6 +3877,9 @@ const routes = {
       successUrl: `${APP_URL}/#/configuracoes?billing=sucesso`,
       cancelUrl: `${APP_URL}/#/configuracoes?billing=cancelado`
     });
+    // already-subscribed (ISO-1623 §5.4) is a 409, not the 400 every other createCheckoutSession
+    // failure (an unknown/unavailable plan) answers with.
+    if (result.code === 'already-subscribed') return json(res, 409, { error: 'you already have an active subscription', code: 'already-subscribed' });
     if (result.error) return json(res, 400, { error: result.error, code: 'invalid-plan' });
     audit(req, 'billing.checkout', { user, msg: text(body.plan) });
     json(res, 200, { url: result.url });
@@ -4266,7 +4286,7 @@ startWarmup();
 setFirstPeriodNoticeHook(async (uid, sub) => {
   const user = await getUserById(pool, uid);
   if (!user?.email) return; // nothing mailed an account with no address to mail
-  const cents = nextChargeAmountCents(sub);
+  const cents = await nextChargeAmountCents(pool, sub);
   const amount = cents != null
     ? (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
     : 'o valor do seu plano';
@@ -4389,6 +4409,10 @@ async function listen() {
     console.error('postgres connection/migration failed:', e.message);
     process.exit(1);
   }
+  // ISO-1623: a no-op once the catalog is seeded, or whenever billing isn't configured at all —
+  // never fatal, since a divergence here just means billing keeps reading STRIPE_PRICE_* by env
+  // (seedCatalogFromEnv's own comment) rather than stop the whole instance from booting.
+  if (BILLING_ON) await seedCatalogFromEnv(pool).catch(e => console.error('billing: catalog seed crashed', e.message));
   // One-time migration of whatever db.json still holds from before this boot (an instance
   // upgrading from a pre-1403 build, or a test fixture that seeds db.json directly) — every
   // collection it ever held, into PostgreSQL. Read once into a local `db`, not the module-level
