@@ -8,7 +8,7 @@ import { rememberDefaultLang } from '../lib/default-lang.js'
 import { guestAllowed } from '../lib/guest.js'
 import { MOBILE, initReminderSync, nativeLoad, nativeSave, onAppActive, readJsonFile, syncReminder, writeAutoBackup, writeJsonFile } from '../lib/mobile.js'
 import { mergeStates, localExtras, stampRoutines, stampCustomEx, stampTeacherLibrary, inUnitOf, keepReset, resetIdsOf, mergeResetIds, entryKey } from '../lib/sync-merge.js'
-import { importAssignment, endAssignment } from '../lib/teacher.js'
+import { applyAssignments } from '../lib/teacher.js'
 import { convertStateUnit } from '../lib/units.js'
 import { pendingRefCount, settleMedia, loadPending } from '../lib/media-owed.js'
 import { referencedHashes } from '../lib/media-refs.js'
@@ -1166,12 +1166,20 @@ export const useStore = create((set, get) => {
 
     // GET /api/account/assignments (ISO-1594/ISO-1610): a teacher's routine/Program assignment,
     // or the end of one, pulled the same way billing status is — piggybacked on checkRev's
-    // cadence rather than a timer of its own. Applies every pending/ended entry through
-    // lib/teacher.js (pure, idempotent), lets the ordinary debounced push carry the result to the
-    // server, then acks each one so it is not redelivered next poll. Acks go out best-effort and
-    // one at a time to keep the account's own `rev` check (above) simple — a failed ack just means
-    // the next poll sees that entry again and applies it once more (importAssignment/endAssignment
-    // are idempotent, so that costs nothing but a wasted round trip).
+    // cadence rather than a timer of its own. Applies the whole pending+ended batch in one go
+    // through lib/teacher.js's applyAssignments (pure, idempotent, and the one place that knows
+    // a `kind: 'program'` ending has to clear S.teacherProgram rather than leave it — replacing
+    // the draft's relevant fields outright, never Object.assign-merging a partial result onto
+    // it, which would silently keep a stale value for any key the result omits).
+    //
+    // The ack only goes out once the push that carried this exact change is confirmed by the
+    // server (`await get().pushState()`, then `owes()` — not just "scheduled" via the ordinary
+    // debounce): acking first and pushing after would let the server drop this assignment from
+    // `pending`/`ended` before this device's copy of it ever reached the server, so a crash, a
+    // sign-out, or the mobile build's storage being evicted between the two could lose it for
+    // good — nothing would ever hand it to this account again. A push that fails (offline,
+    // refused) leaves `owes()` true: the ack is skipped and the next poll just sees the same
+    // pending/ended entries and re-applies them — free, since applyAssignments is idempotent.
     async refreshTeacherAssignments() {
       if (!get().user) return
       let data
@@ -1179,10 +1187,9 @@ export const useStore = create((set, get) => {
       catch { return } // offline, refused — the next poll tries again
       const pending = data?.pending || [], ended = data?.ended || []
       if (!pending.length && !ended.length) return
-      get().update(s => {
-        for (const a of pending) Object.assign(s, importAssignment(s, a))
-        for (const a of ended) Object.assign(s, endAssignment(s, a.id, a.endedAt))
-      })
+      get().update(s => { Object.assign(s, applyAssignments(s, { pending, ended })) })
+      await get().pushState()
+      if (owes()) return // the push did not land — ack nothing; the next poll retries from the server's own copy
       if (pending.length) {
         import('./useUI.js').then(({ useUI }) => useUI.getState().toast(t('New routine from your teacher'))).catch(() => {})
       }

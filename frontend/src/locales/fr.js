@@ -1930,4 +1930,6 @@ export default {
   '{0} will be able to see your body-weight progress. You can turn it off anytime.': '{0} pourra voir ta progression de poids corporel. Tu peux désactiver ça à tout moment.',
   '{0} will be able to see:': '{0} pourra voir :',
   '{0} workouts this week': '{0} séances cette semaine',
+  // ISO-1594/ISO-1610 — teacher/student area
+  'Recommended by your teacher': 'Recommandé par ton professeur',
 }

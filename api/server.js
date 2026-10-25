@@ -3719,6 +3719,47 @@ const routes = {
     json(res, 200, { ok: true });
   },
 
+  // ISO-1610: the recommended-Program card (S.teacherProgram) only ever carries `programId` —
+  // nothing else about it is copied into the student's own state (D16/D7: a Program is a
+  // recommendation the student opts into, never content pulled into the plan at import time).
+  // The card still needs a title/description/cover to render, so any signed-in account — same
+  // boundary GET /api/teacher/programs already uses — can read a *published* program's own
+  // metadata here. Not scoped to "only a program this account was actually recommended": once
+  // published, a Program is catalog content, not private data; the same gate as the teacher's own
+  // route, just without requiring the teacher role.
+  'GET /api/account/program': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const program = await getProgram(pool, id);
+    if (!program || program.deletedAt || program.status !== 'published') return json(res, 404, { error: 'no such program' });
+    json(res, 200, {
+      program: {
+        id: program.id, title: program.title, description: program.description,
+        category: program.category, difficulty: program.difficulty, hasCover: !!program.coverFile
+      }
+    });
+  },
+
+  // Streamed the same way GET /api/teacher/program/cover is, minus the teacher-role guard — see
+  // the route above for why a published cover is not gated further.
+  'GET /api/account/program/cover': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const program = await getProgram(pool, id);
+    if (!program || program.deletedAt || program.status !== 'published' || !program.coverFile) return json(res, 404, { error: 'no such cover' });
+    let fd;
+    try { fd = fs.openSync(programCoverPath(program.coverFile), 'r'); }
+    catch { return json(res, 404, { error: 'no such cover' }); }
+    const size = fs.fstatSync(fd).size;
+    res.writeHead(200, {
+      'Content-Type': program.coverMime, 'Content-Length': String(size),
+      'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff'
+    });
+    try { await pipeline(fs.createReadStream(null, { fd }), res); } catch { res.destroy(); }
+  },
+
   /* ---------- photos & videos ---------- */
   // Absent, not refusing, when MEDIA_UPLOADS=0: a 404 is what a server from before the feature
   // answers, and the client already treats that as "this server does not store them".

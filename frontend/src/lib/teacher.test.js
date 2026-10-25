@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { endAssignment, importAssignment, scopeItems, TEACHER_SCOPE_VERSION } from './teacher.js'
+import { applyAssignments, endAssignment, importAssignment, scopeItems, TEACHER_SCOPE_VERSION } from './teacher.js'
 
 const base = (over = {}) => ({ routines: [], customEx: [], week: {}, ...over })
 const routineAssignment = (over = {}) => ({
@@ -131,11 +131,79 @@ describe('endAssignment', () => {
     expect(JSON.stringify(imported)).toBe(before)
   })
 
-  it('clears teacherProgram for an ended program recommendation', () => {
+  it('clears teacherProgram to null (not an omitted key) for an ended program recommendation', () => {
     const a = { id: 'asg2', kind: 'program', payload: { programId: 'prog1' } }
     const imported = importAssignment(base(), a)
     const ended = endAssignment(imported, 'asg2', 1)
-    expect(ended.teacherProgram).toBeUndefined()
+    // Not toBeUndefined(): an omitted key reads as undefined too, but store/useStore.js merges
+    // this onto a live draft with Object.assign, which only overwrites keys actually present on
+    // the source — an omitted `teacherProgram` would leave the draft's old card sitting there.
+    // Object.hasOwn below is exactly the check that distinguishes "cleared" from "never touched".
+    expect(Object.hasOwn(ended, 'teacherProgram')).toBe(true)
+    expect(ended.teacherProgram).toBeNull()
+    // The regression itself: simulating the store's own merge strategy against a draft that
+    // still has the old card must actually clear it, not leave it standing.
+    const draft = { ...imported }
+    Object.assign(draft, endAssignment(imported, 'asg2', 1))
+    expect(draft.teacherProgram).toBeNull()
+  })
+})
+
+describe('applyAssignments', () => {
+  const programAssignment = (over = {}) => ({ id: 'asgP', kind: 'program', payload: { programId: 'prog1' }, ...over })
+
+  it('applies every pending assignment, then every ended one, in order', () => {
+    const next = applyAssignments(base(), {
+      pending: [routineAssignment(), programAssignment({ id: 'asgP2' })],
+      ended: []
+    })
+    expect(next.routines).toHaveLength(1)
+    expect(next.teacherProgram).toEqual({ programId: 'prog1', assignmentId: 'asgP2', startsOn: null, days: null })
+  })
+
+  // The realistic combined pull (not a same-id-in-both-lists edge case, which the server's own
+  // delivered_at/ended_at split can't produce): a "Trocar" replaces the student's current
+  // routine with a new one in one teacher action — the next pull sees the new one as `pending`
+  // and the old, already-delivered one as `ended`, in the same response.
+  it('a switch delivered in one pull imports the new routine and marks the old one ended, not stuck on the old one', () => {
+    const was = applyAssignments(base(), { pending: [routineAssignment({ id: 'asgOld' })], ended: [] })
+    const next = applyAssignments(was, {
+      pending: [routineAssignment({ id: 'asgNew', payload: { name: 'Novo treino', ex: [{ id: '0002', sets: 3, reps: 8 }] } })],
+      ended: [{ id: 'asgOld', endedAt: 5000 }]
+    })
+    expect(next.routines).toHaveLength(2)
+    const old = next.routines.find(r => r.fromTeacher.assignmentId === 'asgOld')
+    const fresh = next.routines.find(r => r.fromTeacher.assignmentId === 'asgNew')
+    expect(old.fromTeacher.endedAt).toBe(5000)
+    expect(fresh.fromTeacher.endedAt).toBeUndefined()
+  })
+
+  it('a program recommendation withdrawn in the same pull it never got delivered in ends up cleared', () => {
+    const a = programAssignment()
+    // Defensive, not a shape the server produces (pending requires delivered_at IS NULL, ended
+    // requires it IS NOT NULL — mutually exclusive) — applyAssignments still must not get stuck
+    // half-imported if it ever did see this.
+    const next = applyAssignments(base(), { pending: [a], ended: [{ id: a.id, endedAt: 5000 }] })
+    expect(next.teacherProgram).toBeNull()
+  })
+
+  it('reapplying the exact same batch against its own result is a no-op', () => {
+    const batch = { pending: [routineAssignment(), programAssignment({ id: 'asgP2' })], ended: [] }
+    const once = applyAssignments(base(), batch)
+    const twice = applyAssignments(once, batch)
+    expect(twice).toEqual(once)
+  })
+
+  it('never mutates its input', () => {
+    const state = base()
+    const before = JSON.stringify(state)
+    applyAssignments(state, { pending: [routineAssignment()], ended: [] })
+    expect(JSON.stringify(state)).toBe(before)
+  })
+
+  it('tolerates a missing pending/ended list', () => {
+    expect(applyAssignments(base(), {})).toEqual(base())
+    expect(applyAssignments(base())).toEqual(base())
   })
 })
 

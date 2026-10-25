@@ -1930,4 +1930,6 @@ export default {
   '{0} will be able to see your body-weight progress. You can turn it off anytime.': '{0} 将能看到你的体重进度。你可以随时关闭。',
   '{0} will be able to see:': '{0} 将能看到：',
   '{0} workouts this week': '本周 {0} 次训练',
+  // ISO-1594/ISO-1610 — teacher/student area
+  'Recommended by your teacher': '由老师推荐',
 }

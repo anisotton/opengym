@@ -1932,4 +1932,6 @@ export default {
   '{0} workouts this week': '{0} treinos esta semana',
   // ISO-1594/ISO-1610 — teacher/student area
   'People under 18 should use this app with a guardian’s guidance.': 'Pessoas com menos de 18 anos devem usar esta aplicação com a orientação de um responsável.',
+  // ISO-1594/ISO-1610 — teacher/student area
+  'Recommended by your teacher': 'Recomendado pelo seu professor',
 }

@@ -158,10 +158,13 @@ export function endAssignment(state, assignmentId, endedAt) {
   const S = isObj(state) ? state : {};
   if (!assignmentId) return S;
 
-  if (S.teacherProgram?.assignmentId === assignmentId) {
-    const { teacherProgram, ...rest } = S;
-    return rest;
-  }
+  // Reached only when S.teacherProgram is truthy (its own assignmentId just matched), so this
+  // is always a real change — never a no-op null-to-null. Explicit `null`, not an omitted key
+  // (`{ ...rest }` without `teacherProgram`): store/useStore.js merges this return value onto a
+  // draft with `Object.assign`, which only ever touches keys actually present on the source
+  // object — an omitted key would leave the draft's old `teacherProgram` sitting there
+  // untouched, so the recommendation card would never clear.
+  if (S.teacherProgram?.assignmentId === assignmentId) return { ...S, teacherProgram: null };
 
   const routines = list(S.routines);
   const idx = routines.findIndex(r => r?.fromTeacher?.assignmentId === assignmentId);
@@ -179,4 +182,22 @@ export function endAssignment(state, assignmentId, endedAt) {
   }
 
   return { ...S, routines: nextRoutines, week };
+}
+
+/**
+ * The whole student-side pull in one pure call: applies every `pending` assignment
+ * (`importAssignment`) then every `ended` one (`endAssignment`), in that order — matching
+ * GET /api/account/assignments's own two lists. `state` is never mutated. Idempotent as a
+ * batch, the same way each half is on its own: reapplying the same `{ pending, ended }` against
+ * the result changes nothing, including the case `endAssignment` on its own could get wrong
+ * through a naive merge — a `kind: 'program'` entry appearing in both lists at once (assigned
+ * and already ended before the student ever pulled) correctly ends up with `teacherProgram`
+ * cleared, not re-imported then left stuck, because this always builds the next `state` by
+ * replacing it outright rather than merging partial results back onto a draft.
+ */
+export function applyAssignments(state, { pending, ended } = {}) {
+  let S = isObj(state) ? state : {};
+  for (const a of list(pending)) S = importAssignment(S, a);
+  for (const a of list(ended)) S = endAssignment(S, a.id, a.endedAt);
+  return S;
 }

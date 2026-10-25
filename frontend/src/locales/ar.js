@@ -1983,4 +1983,6 @@ export default {
   '{0} will be able to see your body-weight progress. You can turn it off anytime.': 'سيتمكن {0} من رؤية تطور وزن جسمك. يمكنك إيقاف ذلك في أي وقت.',
   '{0} will be able to see:': 'سيتمكن {0} من رؤية:',
   '{0} workouts this week': '{0} تمارين هذا الأسبوع',
+  // ISO-1594/ISO-1610 — teacher/student area
+  'Recommended by your teacher': 'موصى به من معلمك',
 }

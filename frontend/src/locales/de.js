@@ -1950,4 +1950,6 @@ export default {
   '{0} will be able to see:': '{0} wird sehen können:',
   '{0} workouts this week': '{0} Trainings diese Woche',
   'People under 18 should use this app with a guardian’s guidance.': 'Personen unter 18 Jahren sollten diese App unter Anleitung eines Erziehungsberechtigten nutzen.',
+  // ISO-1594/ISO-1610 — teacher/student area
+  'Recommended by your teacher': 'Von deinem Lehrer empfohlen',
 }

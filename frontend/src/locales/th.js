@@ -1941,4 +1941,6 @@ export default {
   '{0} will be able to see your body-weight progress. You can turn it off anytime.': '{0} จะสามารถเห็นความก้าวหน้าของน้ำหนักตัวคุณ คุณปิดได้ทุกเมื่อ',
   '{0} will be able to see:': '{0} จะสามารถเห็น:',
   '{0} workouts this week': 'ออกกำลังกาย {0} ครั้งในสัปดาห์นี้',
+  // ISO-1594/ISO-1610 — teacher/student area
+  'Recommended by your teacher': 'แนะนำโดยครูฝึกของคุณ',
 }

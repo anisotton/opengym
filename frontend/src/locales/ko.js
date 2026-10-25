@@ -1930,4 +1930,6 @@ export default {
   '{0} will be able to see your body-weight progress. You can turn it off anytime.': '{0}님이 회원님의 체중 변화를 볼 수 있게 됩니다. 언제든지 끌 수 있습니다.',
   '{0} will be able to see:': '{0}님이 볼 수 있게 될 항목:',
   '{0} workouts this week': '이번 주 운동 {0}회',
+  // ISO-1594/ISO-1610 — teacher/student area
+  'Recommended by your teacher': '선생님이 추천함',
 }

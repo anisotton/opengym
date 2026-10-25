@@ -404,3 +404,10 @@ export async function fetchTeacherAssignments() {
 export async function ackTeacherAssignment(id) {
   return post('/api/account/assignments/ack', { id })
 }
+// S.teacherProgram only carries `programId` — this fills in the title/description/cover flag
+// the recommended-Program card (Home.jsx) needs to render. The cover image itself is a plain
+// <img src>, built with programCoverUrl below rather than fetched through api().
+export async function fetchAccountProgram(id) {
+  return api('/api/account/program?id=' + encodeURIComponent(id))
+}
+export const programCoverUrl = id => appBase().replace(/\/$/, '') + '/api/account/program/cover?id=' + encodeURIComponent(id)

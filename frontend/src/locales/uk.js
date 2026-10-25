@@ -1927,4 +1927,6 @@ export default {
   '{0} will be able to see your body-weight progress. You can turn it off anytime.': '{0} зможе бачити прогрес твоєї ваги. Ти можеш вимкнути це будь-коли.',
   '{0} will be able to see:': '{0} зможе бачити:',
   '{0} workouts this week': '{0} тренувань цього тижня',
+  // ISO-1594/ISO-1610 — teacher/student area
+  'Recommended by your teacher': 'Рекомендовано вашим вчителем',
 }

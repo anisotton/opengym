@@ -4554,6 +4554,66 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/account/program:
+    get:
+      tags: [teacher]
+      operationId: accountProgram
+      summary: 'Student: a published Program''s own title/description/cover flag'
+      description: |
+        `S.teacherProgram` (the recommended-Program card, ISO-1610) only ever carries
+        `programId` — this fills in the title/description/category/difficulty/hasCover to
+        render it. Same access boundary as `GET /api/teacher/programs`: any signed-in account,
+        not only the one it was recommended to — once published, a Program is catalog content.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The Program.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  program:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      title: { type: string }
+                      description: { type: string }
+                      category: { type: string }
+                      difficulty: { type: string }
+                      hasCover: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such Program, or not published.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/account/program/cover:
+    get:
+      tags: [teacher]
+      operationId: accountProgramCover
+      summary: 'Student: a recommended Program''s cover image'
+      description: Same stream as `GET /api/teacher/program/cover`, without the teacher-role guard — see `GET /api/account/program` for why.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The image bytes.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such Program, not published, or no cover.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
 components:
   securitySchemes:
     cookieAuth:
