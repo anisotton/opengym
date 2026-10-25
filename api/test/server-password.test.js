@@ -158,7 +158,7 @@ test('a wrong password and an unknown name get the same answer, after the same w
   }
   for (const { r } of [...known, ...unknown, ...noPw]) {
     assert.equal(r.status, 401);
-    assert.deepEqual(r.body, { error: 'wrong name or password', code: 'bad-credentials' });
+    assert.deepEqual(r.body, { error: 'wrong e-mail or password', code: 'bad-credentials' });
   }
   // Both paths run scrypt; a missing one would answer in well under a tenth of the time.
   const median = xs => xs.map(x => x.ms).sort((a, b) => a - b)[1];
@@ -312,7 +312,7 @@ test('registration with a password: policy, unique names among password holders,
   assert.equal((await reg({ name: 'Cleo', password: 'Password123!', code: 'invite1' })).body.code, 'too-common');
   assert.equal((await reg({ name: 'Cleo', password: 'cleo.2024.2024', code: 'invite1' })).body.code, 'too-common');
   assert.equal((await reg({ name: 'ANA', password: GOOD, code: 'invite1' })).status, 409);
-  const r = await reg({ name: 'Cleo', password: GOOD, code: 'invite1' });
+  const r = await reg({ name: 'Cleo', password: GOOD, code: 'invite1', email: 'cleo@example.com' });
   assert.equal(r.status, 200);
   assert.ok(r.cookie);
   const db = h.db();
@@ -322,10 +322,10 @@ test('registration with a password: policy, unique names among password holders,
   assert.equal(JSON.stringify(await h.users()).includes(GOOD), false, 'the password itself is never stored, in Postgres either');
   assert.equal((await h.invite('INVITE1')).used_by, cleo.id);
   // Burned: the same code does not let anyone else in.
-  assert.equal((await reg({ name: 'Dora', password: GOOD, code: 'INVITE1' }, '198.51.100.81')).status, 403);
+  assert.equal((await reg({ name: 'Dora', password: GOOD, code: 'INVITE1', email: 'dora@example.com' }, '198.51.100.81')).status, 403);
   // A name that only a passkey profile has is free to take; the two never meet at sign-in.
   const h2 = await startServer(t, { users: [user('u2', 'Bea')] });
-  assert.equal((await h2.req('POST', '/api/register/password', { body: { name: 'bea', password: GOOD }, ip: '198.51.100.82' })).status, 200);
+  assert.equal((await h2.req('POST', '/api/register/password', { body: { name: 'bea', password: GOOD, email: 'bea@example.com' }, ip: '198.51.100.82' })).status, 200);
 });
 
 test('setting a first password needs a passkey made for it, not just a session', async t => {
@@ -604,7 +604,7 @@ test('a pending reset keeps the name: nobody can take it until the code is used 
   assert.equal((await h.users()).filter(u => u.pw && u.name.trim().toLowerCase() === 'ana').length, 1);
 
   // An expired code holds nothing: that name is free.
-  assert.equal((await h.req('POST', '/api/register/password', { body: { name: 'cleo', password: GOOD }, ip })).status, 200);
+  assert.equal((await h.req('POST', '/api/register/password', { body: { name: 'cleo', password: GOOD, email: 'cleo2@example.com' }, ip })).status, 200);
 });
 
 test('registering a name while its reset code is redeemed leaves one password holder, the reset profile', async t => {
