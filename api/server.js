@@ -43,7 +43,11 @@ import {
   createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup,
   listPrograms, getProgram, listProgramEvents, createProgram, updateProgram, trashProgram,
   restoreProgram, purgeProgram, purgeExpiredPrograms, setProgramCover, clearProgramCover,
-  coverStillReferenced, getAllCoverFiles
+  coverStillReferenced, getAllCoverFiles,
+  setUserRole, countStudentsOfTeacher, createTeacherInvite, listTeacherInvites, revokeTeacherInvite,
+  peekTeacherInvite, acceptTeacherInvite, getTeacherLink, getLinkForTeacher, listStudentsOfTeacher,
+  endLink, setShareBodyweight, assignToStudent, getActiveAssignment, endAssignment, listAssignmentHistory,
+  getPendingAndEndedAssignments, ackAssignment, listNotes, createNote, updateNote, deleteNote
 } from './store.js';
 import {
   CATEGORIES as PROGRAM_CATEGORIES, DIFFICULTIES as PROGRAM_DIFFICULTIES,
@@ -52,6 +56,12 @@ import {
   SESSION_MINUTES_MIN, SESSION_MINUTES_MAX, COVER_ALT_MIN, COVER_ALT_MAX, COVER_WIDTH_MIN, COVER_HEIGHT_MIN, COVER_DIM_MAX,
   validateProgram, validateCoverAlt, validateCoverDims, programConfig
 } from './programs.js';
+import {
+  normalizeRole, newInviteCode, hashInviteCode, INVITE_TTL_MS, MAX_ACTIVE_INVITES,
+  TEACHER_SCOPE_VERSION, TEACHER_SCOPE, TEACHER_SCOPE_OPTIONAL, TEACHER_SCOPE_NEVER, teacherView,
+  validateRoutineAssignment, validateSchedule, validateNote, MAX_NOTE_CHARS, MAX_NOTES_PER_STUDENT,
+  studentSummary, IDLE_DAYS, ADHERENCE_WINDOW_DAYS
+} from './teacher.js';
 import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
 import { sendMail } from './mail.js';
 import { LEGAL_VERSION } from './legal.js';
@@ -580,6 +590,29 @@ async function requireAdmin(req, res) {
   if (!isAdmin(user)) { audit(req, 'admin.denied', { ok: false, user }); json(res, 403, { error: 'forbidden' }); return null; }
   return user;
 }
+// Guard for /api/teacher/* (ISO-1609). Role is re-read fresh off `user` every call — there is no
+// cache of it to go stale (D10: losing the role has to cut access off at once).
+async function requireTeacher(req, res) {
+  const user = await readSession(req);
+  if (!user) { json(res, 401, { error: 'not signed in' }); return null; }
+  if (user.role !== 'teacher') { audit(req, 'teacher.denied', { ok: false, user }); json(res, 403, { error: 'forbidden' }); return null; }
+  return user;
+}
+// Every /api/teacher/student* route's own access check: a live, active link read fresh from
+// `teacher_links` on *this* request (D10) — never a cached flag, so unlinking, losing the role or
+// (for the bodyweight key) turning the opt-in off all cut access off immediately. One answer for
+// every way a student can be "not this teacher's": doesn't exist, belongs to another teacher, or
+// was once linked but isn't any more (D11) — `not-your-student`, so a teacher guessing ids learns
+// nothing from the response that differs.
+async function requireStudentOf(req, res, teacher, studentId) {
+  const link = studentId ? await getLinkForTeacher(pool, teacher.id, studentId) : null;
+  if (!link) {
+    audit(req, 'teacher.denied', { ok: false, user: teacher, msg: 'not-your-student' });
+    json(res, 403, { error: 'not your student', code: 'not-your-student' });
+    return null;
+  }
+  return link;
+}
 const expireCookie = name => `${name}=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
 async function sessionCookie(user, userAgent) {
   const fresh = `${COOKIE}=${await makeSession(user, userAgent)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
@@ -973,7 +1006,10 @@ const THROTTLED = {
   // an audit-log beacon a misbehaving or hostile page could otherwise spam without limit.
   'POST /api/client-event': null,
   // Accepting the current terms (ISO-1390): nothing to guess, so only the shared burst budget.
-  'POST /api/account/terms/accept': null
+  'POST /api/account/terms/accept': null,
+  // A teacher invite code is 60 random bits, same alphabet as a device link — wrong guesses share
+  // that pause, counted per address against both the preview and the accept (ISO-1609).
+  'POST /api/teacher-invite/preview': 'teacher-invite', 'POST /api/teacher-invite/accept': 'teacher-invite'
 };
 
 // Which address the throttle counts against. Unlike clientIp() above, which only labels a log
@@ -1154,7 +1190,11 @@ async function loginTarget(body) {
 }
 const acctKey = u => 'acct:' + u.id;
 const passkeyCount = u => countPasskeys(pool, u.id);
-const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u) });
+// `role` defaults to 'student' for the freshly-built, not-yet-persisted user object a
+// registration route answers with — the row's own NOT NULL DEFAULT (migrations/008) once it is
+// actually read back from Postgres, which this just mirrors for the one response that answers
+// before that round trip.
+const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u), role: u.role || 'student' });
 const POLICY_ERRORS = {
   'too-short': `the password needs at least ${MIN_LENGTH} characters`,
   'too-long': `the password can have at most ${MAX_LENGTH} characters`,
@@ -2292,6 +2332,39 @@ if (BILLING_ON) setInterval(() => {
   tickStripeCleanup(pool).catch(e => console.error('billing: stripe cleanup tick failed', e));
 }, 15 * 60000).unref();
 
+/* ---------- teacher/student roles, link & assignments (ISO-1594/ISO-1609) ---------- */
+// store.js's teacher functions answer `{ error, code }` on a refusal rather than throwing — this
+// is every teacher/student route's one place to turn that into the right HTTP status, same idea
+// as programError.
+const TEACHER_ERROR_STATUS = {
+  'invite-invalid': 400, 'invite-expired': 400, 'self-invite': 400,
+  'already-has-teacher': 409, 'invite-limit': 409, 'assignment-conflict': 409, 'notes-limit': 409,
+  'not-found': 404, 'no-active-assignment': 404, 'note-not-found': 404,
+  'note-empty': 400, 'note-too-long': 400
+};
+function teacherError(res, result) {
+  json(res, TEACHER_ERROR_STATUS[result.code] || 400, { error: result.error, code: result.code });
+}
+// A Program's own title when the assignment is `kind: 'program'`; the snapshot's own name when
+// it's `kind: 'routine'` — never a live read of the teacher's library (D16), which this never
+// touches at all.
+async function assignmentDisplayName(a) {
+  if (a.kind === 'program') { const p = await getProgram(pool, a.payload?.programId); return p?.title || null; }
+  return a.payload?.name || null;
+}
+async function assignmentBrief(a) {
+  return { id: a.id, kind: a.kind, startsOn: a.startsOn, days: a.days, name: await assignmentDisplayName(a) };
+}
+async function assignmentHistoryEntry(a) {
+  return { kind: a.kind, name: await assignmentDisplayName(a), startsOn: a.startsOn, endedAt: a.endedAt, endReason: a.endReason };
+}
+// The student's own pull (GET /api/account/assignments) — everything the client needs to import
+// the routine (D8) or notice it ended, with nothing looked up server-side: the payload is already
+// the exact snapshot (or `{ programId }`) a teacher assigned.
+function assignmentDelivery(a) {
+  return { id: a.id, kind: a.kind, payload: a.payload, startsOn: a.startsOn, days: a.days, endedAt: a.endedAt, endReason: a.endReason };
+}
+
 /* ---------- routes ---------- */
 // Public, unauthenticated, and polled by an external uptime monitor (ISO-1400) — so it stays
 // cheap (a bare SELECT 1, bounded by HEALTH_DB_TIMEOUT_MS) and never reports the account count
@@ -2376,7 +2449,7 @@ const routes = {
     const { user } = s;
     const renew = s.bearer && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
     json(res, 200, {
-      user: { id: user.id, name: user.name, admin: isAdmin(user) },
+      user: publicUser(user),
       // ISO-1397/ISO-1596: what the app needs to show "confirm your e-mail" or ask for one at
       // all — an account from before ISO-1397 has neither field until its owner sets one. Always
       // present now, PASSWORD_LOGIN or not: `email` is the one verified address every account has
@@ -2540,7 +2613,7 @@ const routes = {
     }
     audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? c.code : null });
     await mailVerification(user, verifyToken);
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   'POST /api/login/options': async (req, res) => {
@@ -2600,7 +2673,7 @@ const routes = {
       return json(res, 403, { error: 'this account has been disabled' });
     }
     audit(req, 'auth.login.ok', { user });
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   // Revokes the session row this cookie names (ISO-1403) — a real logout, not just clearing the
@@ -2661,7 +2734,7 @@ const routes = {
       return json(res, 400, { error: 'invalid or expired code' });
     }
     audit(req, 'auth.pair.ok', { user });
-    json(res, 200, { token: await makeSession(user, req.headers['user-agent']), user: { id: user.id, name: user.name, admin: isAdmin(user) } });
+    json(res, 200, { token: await makeSession(user, req.headers['user-agent']), user: publicUser(user) });
   },
 
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.
@@ -2876,13 +2949,16 @@ const routes = {
       const S = (await readState(u.id)) || {};
       return {
         id: u.id, name: u.name, created: u.created || null,
-        disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null,
+        disabled: !!u.disabled, admin: isAdmin(u), role: u.role, invitedBy: u.invitedBy || null,
         lastSync: lastSyncOf(u, S),
         hasPush: await hasPush(pool, u.id),
         // Was: the live routine name and set-by-set progress (livePresence(u.id)). Whether a
         // workout is in progress at all is still worth an admin seeing (FR-… "training now"); its
         // content is not.
         online: !!livePresence(u.id),
+        // A count only — ISO-1394 still holds, so an admin never sees who a teacher's students
+        // are, let alone their training (ISO-1609).
+        ...(u.role === 'teacher' ? { studentCount: await countStudentsOfTeacher(pool, u.id) } : {}),
         // `password`/`email` here are about password sign-in specifically (whether to offer a
         // reset code, which address a reset is redeemed with) — unchanged by ISO-1596 unifying
         // `email` itself; still only worth showing on an instance that takes passwords at all.
@@ -2903,7 +2979,8 @@ const routes = {
     const S = (await readState(u.id)) || {};
     json(res, 200, {
       user: {
-        id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null,
+        id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), role: u.role, invitedBy: u.invitedBy || null,
+        ...(u.role === 'teacher' ? { studentCount: await countStudentsOfTeacher(pool, u.id) } : {}),
         // Only on an instance with password sign-in: whether they have one, the address a reset
         // code is redeemed with, and until when an unused reset code is good.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {})
@@ -2928,6 +3005,23 @@ const routes = {
     if (u.disabled) await dropDeviceLinks(pool, u.id);
     audit(req, u.disabled ? 'admin.user.disable' : 'admin.user.enable', { user: admin, target: u });
     json(res, 200, { ok: true, id: u.id, disabled: u.disabled });
+  },
+
+  // Grant or revoke the teacher role (ISO-1594/ISO-1609). Revoking runs setUserRole's own
+  // cascade (store.js): every student this account still teaches is unlinked (`role-revoked`),
+  // their notes erased and their active assignment closed, and the account's own invites are
+  // dropped — all in one transaction, so a teacher losing the role is never half-disconnected
+  // from their students.
+  'POST /api/admin/user/role': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const role = normalizeRole(body.role);
+    if (!role) return json(res, 400, { error: 'role must be "student" or "teacher"' });
+    const u = await getUserById(pool, body.id);
+    if (!u) return json(res, 404, { error: 'no such user' });
+    await setUserRole(pool, u.id, role);
+    audit(req, role === 'teacher' ? 'teacher.role.grant' : 'teacher.role.revoke', { user: admin, target: u });
+    json(res, 200, { ok: true, id: u.id, role });
   },
 
   // Disable locks an account out; this removes it. The one destructive action in the app, so the
@@ -3339,6 +3433,290 @@ const routes = {
       }
     }
     json(res, 200, { ok: true, duplicate: !claimed });
+  },
+
+  /* ---------- teacher: the link, assignments & notes (ISO-1594/ISO-1609) ---------- */
+  // Every route below starts with requireTeacher. The student half follows right after.
+  'GET /api/teacher/students': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const links = await listStudentsOfTeacher(pool, teacher.id);
+    const now = new Date();
+    const students = await Promise.all(links.map(async link => {
+      const [student, assignment, { state }] = await Promise.all([
+        getUserById(pool, link.studentId), getActiveAssignment(pool, link.studentId), getUserState(pool, link.studentId)
+      ]);
+      const view = teacherView(state, { bodyweight: link.shareBodyweight });
+      return {
+        id: link.studentId, name: student?.name || null, acceptedAt: link.acceptedAt,
+        assignment: assignment ? await assignmentBrief(assignment) : null,
+        summary: studentSummary(view, assignment, now, { acceptedAt: link.acceptedAt })
+      };
+    }));
+    json(res, 200, { students });
+  },
+
+  'GET /api/teacher/student': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const link = await requireStudentOf(req, res, teacher, id); if (!link) return;
+    const [{ state }, assignment, history] = await Promise.all([
+      getUserState(pool, id), getActiveAssignment(pool, id), listAssignmentHistory(pool, id, 10)
+    ]);
+    const view = teacherView(state, { bodyweight: link.shareBodyweight });
+    const summary = studentSummary(view, assignment, new Date(), { acceptedAt: link.acceptedAt });
+    audit(req, 'teacher.student.view', { user: teacher, target: { id } });
+    json(res, 200, {
+      ...view, scopeVersion: link.scopeVersion, shareBodyweight: link.shareBodyweight, summary,
+      assignment: assignment ? await assignmentBrief(assignment) : null,
+      assignmentHistory: await Promise.all(history.map(assignmentHistoryEntry))
+    });
+  },
+
+  'POST /api/teacher/student/remove': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    await endLink(pool, body.id, 'by-teacher');
+    audit(req, 'teacher.link.end', { user: teacher, target: { id: body.id }, msg: 'by-teacher' });
+    json(res, 200, { ok: true });
+  },
+
+  // `kind: 'routine'` carries its own snapshot (validated, normalized, never a live reference to
+  // the teacher's library, D16); `kind: 'program'` only ever carries `{ programId }` of a Program
+  // that is currently published. Either way, assignToStudent (store.js) does the replace/insert
+  // in one transaction and is the real backstop against two assigns racing the same student —
+  // this route only turns its `assignment-conflict` into the 409 the matrix asks for.
+  'POST /api/teacher/student/assign': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const schedule = validateSchedule({ startsOn: body.startsOn, days: body.days });
+    if (!schedule.ok) return json(res, 400, { error: schedule.error, field: schedule.field });
+    let kind, payload;
+    if (body.kind === 'routine') {
+      const v = validateRoutineAssignment(body.routine);
+      if (!v.ok) return json(res, 400, { error: v.error, field: v.field });
+      kind = 'routine'; payload = v.value;
+    } else if (body.kind === 'program') {
+      const program = await getProgram(pool, text(body.programId));
+      if (!program || program.deletedAt || program.status !== 'published') {
+        return json(res, 400, { error: 'program is not published', field: 'programId' });
+      }
+      kind = 'program'; payload = { programId: program.id };
+    } else {
+      return json(res, 400, { error: 'kind must be "routine" or "program"', field: 'kind' });
+    }
+    const had = await getActiveAssignment(pool, body.id);
+    const result = await assignToStudent(pool, {
+      teacherId: teacher.id, studentId: body.id, kind, payload, startsOn: schedule.value.startsOn, days: schedule.value.days
+    });
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.assign', { user: teacher, target: { id: body.id }, msg: had ? 'replace' : 'new' });
+    json(res, 200, { assignment: await assignmentBrief(result.row) });
+  },
+
+  'POST /api/teacher/student/assignment/end': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const result = await endAssignment(pool, teacher.id, body.id);
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.assign.end', { user: teacher, target: { id: body.id } });
+    json(res, 200, { ok: true });
+  },
+
+  // Notes (D13): read and written only by the student's current teacher, never carried in audit —
+  // audit() below only ever records that something happened, never the note's own text.
+  'GET /api/teacher/student/notes': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const link = await requireStudentOf(req, res, teacher, id); if (!link) return;
+    json(res, 200, { notes: await listNotes(pool, teacher.id, id) });
+  },
+
+  'POST /api/teacher/student/notes': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const v = validateNote(body.body);
+    if (!v.ok) return json(res, 400, { error: v.error, code: v.code });
+    const result = await createNote(pool, teacher.id, body.id, v.value);
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.note.create', { user: teacher, target: { id: body.id } });
+    json(res, 200, { note: result.row });
+  },
+
+  'POST /api/teacher/student/notes/update': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const v = validateNote(body.body);
+    if (!v.ok) return json(res, 400, { error: v.error, code: v.code });
+    const result = await updateNote(pool, teacher.id, body.id, text(body.noteId), v.value);
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.note.update', { user: teacher, target: { id: body.id } });
+    json(res, 200, { note: result.row });
+  },
+
+  'POST /api/teacher/student/notes/delete': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const ok = await deleteNote(pool, teacher.id, body.id, text(body.noteId));
+    if (!ok) return json(res, 404, { error: 'no such note', code: 'note-not-found' });
+    audit(req, 'teacher.note.delete', { user: teacher, target: { id: body.id } });
+    json(res, 200, { ok: true });
+  },
+
+  // Published Programs only — a draft or a trashed one is not something a teacher can assign.
+  'GET /api/teacher/programs': async (req, res) => {
+    if (!(await requireTeacher(req, res))) return;
+    const programs = await listPrograms(pool, { status: 'published' });
+    json(res, 200, {
+      programs: programs.map(p => ({
+        id: p.id, title: p.title, description: p.description, category: p.category,
+        difficulty: p.difficulty, hasCover: !!p.coverFile
+      }))
+    });
+  },
+
+  // Streamed the same way GET /api/admin/program/cover is, minus the admin guard and plus the
+  // published-only check above — a teacher may only ever point a student at a Program the catalog
+  // currently offers, so a draft's or a trashed one's cover is exactly as unreachable as the
+  // program itself (Nexus: kept as its own small handler rather than widening the admin route's
+  // guard, which exists to be admin-only end to end).
+  'GET /api/teacher/program/cover': async (req, res) => {
+    if (!(await requireTeacher(req, res))) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const program = await getProgram(pool, id);
+    if (!program || program.deletedAt || program.status !== 'published' || !program.coverFile) return json(res, 404, { error: 'no such cover' });
+    let fd;
+    try { fd = fs.openSync(programCoverPath(program.coverFile), 'r'); }
+    catch { return json(res, 404, { error: 'no such cover' }); }
+    const size = fs.fstatSync(fd).size;
+    res.writeHead(200, {
+      'Content-Type': program.coverMime, 'Content-Length': String(size),
+      'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff'
+    });
+    try { await pipeline(fs.createReadStream(null, { fd }), res); } catch { res.destroy(); }
+  },
+
+  'GET /api/teacher/invites': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    json(res, 200, { invites: await listTeacherInvites(pool, teacher.id) });
+  },
+
+  'POST /api/teacher/invites/new': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const code = newInviteCode();
+    const note = text(body.note).slice(0, 60);
+    const expiresAt = Date.now() + INVITE_TTL_MS;
+    const result = await createTeacherInvite(pool, teacher.id, { hash: hashInviteCode(code), note, expiresAt });
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.invite.create', { user: teacher });
+    json(res, 200, { invite: { code, expires: expiresAt, ...(note ? { note } : {}) } });
+  },
+
+  'POST /api/teacher/invites/revoke': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const ok = await revokeTeacherInvite(pool, teacher.id, hashInviteCode(text(body.hash)));
+    if (!ok) return json(res, 404, { error: 'no such invite' });
+    audit(req, 'teacher.invite.revoke', { user: teacher });
+    json(res, 200, { ok: true });
+  },
+
+  /* ---------- student: accepting a teacher, "Meu professor", assignments (ISO-1594/ISO-1609) ----------
+   * Every route here just needs a session, same as any other /api/account/* route — being a
+   * student is the default role, not a gate of its own.
+   */
+  'POST /api/teacher-invite/preview': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    if (addressPaused(req, res, 'teacher-invite')) return;
+    const invite = await peekTeacherInvite(pool, hashInviteCode(text(body.code)));
+    if (!invite) {
+      strikeAddress(req, 'teacher-invite');
+      return json(res, 400, { error: 'invite is invalid or expired', code: 'invite-invalid' });
+    }
+    json(res, 200, {
+      teacher: { name: invite.teacherName }, scope: TEACHER_SCOPE, scopeOptional: TEACHER_SCOPE_OPTIONAL,
+      scopeNever: TEACHER_SCOPE_NEVER, scopeVersion: TEACHER_SCOPE_VERSION
+    });
+  },
+
+  'POST /api/teacher-invite/accept': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    if (addressPaused(req, res, 'teacher-invite')) return;
+    // Checked before the invite is ever touched: an outdated app must not burn a class code for
+    // a consent screen nobody actually saw (the current one).
+    if (Number(body.scopeVersion) !== TEACHER_SCOPE_VERSION) {
+      return json(res, 409, { error: 'the consent screen is out of date — reload and try again', code: 'scope-outdated' });
+    }
+    const result = await acceptTeacherInvite(pool, {
+      hash: hashInviteCode(text(body.code)), student: user, scopeVersion: TEACHER_SCOPE_VERSION, shareBodyweight: body.shareBodyweight === true
+    });
+    if (result.error) {
+      strikeAddress(req, 'teacher-invite');
+      audit(req, 'teacher.link.accept', { ok: false, user, msg: result.code });
+      return teacherError(res, result);
+    }
+    audit(req, 'teacher.link.accept', { user });
+    json(res, 200, { ok: true, teacherId: result.teacherId });
+  },
+
+  'GET /api/account/teacher': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const link = await getTeacherLink(pool, user.id);
+    if (!link) return json(res, 200, { teacher: null });
+    const teacher = await getUserById(pool, link.teacherId);
+    json(res, 200, {
+      teacher: { id: link.teacherId, name: teacher?.name || null },
+      acceptedAt: link.acceptedAt, scope: TEACHER_SCOPE, shareBodyweight: link.shareBodyweight
+    });
+  },
+
+  'POST /api/account/teacher/bodyweight': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const share = body.share === true;
+    const result = await setShareBodyweight(pool, user.id, share);
+    if (result.error) return json(res, 404, { error: result.error, code: result.code });
+    audit(req, 'teacher.link.bodyweight', { user, msg: share ? 'on' : 'off' });
+    json(res, 200, { ok: true, share });
+  },
+
+  'DELETE /api/account/teacher': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    await endLink(pool, user.id, 'by-student');
+    audit(req, 'teacher.link.end', { user, msg: 'by-student' });
+    json(res, 200, { ok: true });
+  },
+
+  // Independent of whether a link still exists (the student may have just unlinked) — the ended
+  // half of this pull has to reach them regardless, so the app can mark the imported routine
+  // accordingly even after "Meu professor" shows nobody any more.
+  'GET /api/account/assignments': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const { pending, ended } = await getPendingAndEndedAssignments(pool, user.id);
+    json(res, 200, { pending: pending.map(assignmentDelivery), ended: ended.map(assignmentDelivery) });
+  },
+
+  'POST /api/account/assignments/ack': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const result = await ackAssignment(pool, user.id, text(body.id));
+    if (result.error) return json(res, 404, { error: result.error, code: result.code });
+    json(res, 200, { ok: true });
   },
 
   /* ---------- photos & videos ---------- */

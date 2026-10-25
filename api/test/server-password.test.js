@@ -134,7 +134,7 @@ test('signs in with the right password, case-insensitively by profile name, like
   assert.equal((await h.req('GET', '/api/config')).body.password_login, true);
   const r = await login(h, '  ANA lu ', GOOD, '198.51.100.2');
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.user, { id: 'u1', name: 'Ana Lu', admin: false });
+  assert.deepEqual(r.body.user, { id: 'u1', name: 'Ana Lu', admin: false, role: 'student' });
   // Same cookie as a passkey sign-in: HttpOnly, SameSite=Lax, no Secure over plain http.
   assert.ok(r.cookie);
   const raw = r.headers.getSetCookie().find(c => c.startsWith('gymsid='));

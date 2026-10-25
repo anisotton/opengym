@@ -101,7 +101,24 @@ const LABELS = {
   'media.throttled': 'Too many photo or video requests',
   // Stripe billing (ISO-1393): `msg` carries the plan name. No chip of its own, same as media —
   // these rows show under All.
-  'billing.checkout': 'Started a Stripe checkout'
+  'billing.checkout': 'Started a Stripe checkout',
+  // Teacher/student roles, the link between them and workout assignments (ISO-1594/ISO-1609).
+  // `teacher.student.view` is logged every time, not just on refusal — it is access to another
+  // person's training data, same reasoning as any other personal-data read worth a trail.
+  'teacher.role.grant': 'Made a profile a teacher',
+  'teacher.role.revoke': 'Took away a profile’s teacher role',
+  'teacher.invite.create': 'Created a class invite code',
+  'teacher.invite.revoke': 'Revoked a class invite code',
+  'teacher.link.accept': 'Linked to a teacher',
+  'teacher.link.end': 'Ended a teacher/student link',
+  'teacher.link.bodyweight': 'Changed whether body weight is shared with their teacher',
+  'teacher.assign': 'Assigned a routine or program',
+  'teacher.assign.end': 'Ended an assignment',
+  'teacher.student.view': 'Viewed a student’s training data',
+  'teacher.note.create': 'Added a note about a student',
+  'teacher.note.update': 'Edited a note about a student',
+  'teacher.note.delete': 'Deleted a note about a student',
+  'teacher.denied': 'Blocked from the teacher dashboard'
 }
 // An unknown event is shown raw rather than dropped or rendered as "undefined": a dashboard
 // that is one version behind the server should still say *something* truthful.
@@ -136,7 +153,11 @@ const REASONS = {
   'email': 'e-mail addresses already in use',
   // What a `media.throttled` pause was for.
   'upload': 'photo and video uploads',
-  'sweep': 'clearing unused photos and videos'
+  'sweep': 'clearing unused photos and videos',
+  // teacher.link.end's reason, and teacher.denied's one uniform refusal (ISO-1609).
+  'by-student': 'the student unlinked',
+  'by-teacher': 'the teacher removed the student',
+  'not-your-student': 'not this teacher’s student'
 }
 export const auditReason = msg => REASONS[msg] || (msg ? String(msg) : '')
 

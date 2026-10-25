@@ -209,7 +209,7 @@ test('an old account (no e-mail) needs one; a wrong confirmation token is refuse
   const h = await startServer(t);
   await h.seedOldAccount('u_old', 'Grandfathered');
   const me = await h.req('GET', '/api/me', { cookie: mintSession('u_old'), ip: '198.51.100.30' });
-  assert.deepEqual(me.body, { user: { id: 'u_old', name: 'Grandfathered', admin: false }, email: null, emailVerified: false, needsEmail: true,
+  assert.deepEqual(me.body, { user: { id: 'u_old', name: 'Grandfathered', admin: false, role: 'student' }, email: null, emailVerified: false, needsEmail: true,
     termsVersion: null, termsAcceptedAt: null, needsTerms: true });
 
   const ip = '198.51.100.31';

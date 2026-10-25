@@ -165,6 +165,16 @@ tags:
     description: Live-workout presence heartbeat
   - name: admin
     description: Admin dashboard — requires an admin session (`ADMIN_UIDS` or `admin:true`)
+  - name: teacher
+    description: >-
+      Teacher/student roles, the link between them and workout assignments (ISO-1594/ISO-1609).
+      A teacher only ever reads an allowlisted projection of a student's state
+      (`GET /api/teacher/student`), never the raw document — never media, the Coach, settings,
+      or body weight unless the student has separately opted that in. A student links to a
+      teacher by redeeming a one-time class invite code; either side can end the link at any
+      time, which erases the teacher's notes about that student and closes out any active
+      assignment. The admin-only `POST /api/admin/user/role` (tag `admin`) grants or revokes the
+      role itself.
   - name: media
     description: >-
       The photo, GIF or video of a user's own custom exercise, and the photos and videos
@@ -2705,6 +2715,53 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "no such user" }
 
+  /api/admin/user/role:
+    post:
+      tags: [admin]
+      operationId: adminUserRole
+      summary: 'Admin: grant or revoke the teacher role'
+      description: |
+        `role: "teacher"` grants it. `role: "student"` revokes it, and runs the full cascade
+        (ISO-1609): every student still linked to this account is unlinked (`reason:
+        "role-revoked"`), the teacher's notes about each of them are erased, each one's active
+        assignment is closed, and the account's own outstanding class invites are deleted — all
+        in one transaction. Audited as `teacher.role.grant` / `teacher.role.revoke`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, role]
+              properties:
+                id: { type: string, description: The user id. }
+                role: { type: string, enum: [student, teacher] }
+      responses:
+        '200':
+          description: Role updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  id: { type: string }
+                  role: { type: string, enum: [student, teacher] }
+        '400':
+          description: role is neither "student" nor "teacher".
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'role must be "student" or "teacher"' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No user with that id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no such user" }
+
   /api/admin/user/delete:
     post:
       tags: [admin]
@@ -3830,6 +3887,673 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/teacher/students:
+    get:
+      tags: [teacher]
+      operationId: teacherStudents
+      summary: 'Teacher: every linked student, with a summary'
+      description: |
+        For each active link: the student's name, their current assignment if any, and a
+        summary (`lastWorkoutAt`, `workoutsThisWeek`, `adherence`, `idleDays`, `idle`) computed
+        over `teacherView`, never the raw state. Pending invites are `GET /api/teacher/invites`,
+        not this list.
+      responses:
+        '200':
+          description: The roster.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  students:
+                    type: array
+                    items: { $ref: '#/components/schemas/TeacherStudentSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/teacher/student:
+    get:
+      tags: [teacher]
+      operationId: teacherStudent
+      summary: 'Teacher: one student in detail'
+      description: |
+        `teacherView(state, { bodyweight: link.shareBodyweight })` plus the scope version the
+        student accepted, whether body weight is currently shared, the summary, the active
+        assignment and the ten most recent ended ones. The link is re-read from the database on
+        this exact request (D10): unlinking, losing the role, or the student turning off body
+        weight all cut access off immediately, not on the next cache refresh. Audited as
+        `teacher.student.view` — reading another person's training data is worth a trail.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+          description: The student's user id.
+      responses:
+        '200':
+          description: The student's allowlisted view.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TeacherStudentDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not a teacher, or not this student's teacher.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/teacher/student/remove:
+    post:
+      tags: [teacher]
+      operationId: teacherStudentRemove
+      summary: 'Teacher: end the link with a student'
+      description: |
+        Same effect as the student unlinking themselves, from the other side: the link ends, the
+        teacher's notes about them are erased, and any active assignment is closed
+        (`end_reason: "unlinked"`). The routine already imported stays with the student, marked
+        as ended by the teacher. Audited as `teacher.link.end`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: The student's user id. }
+      responses:
+        '200':
+          description: Ended.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotYourStudent' }
+
+  /api/teacher/student/assign:
+    post:
+      tags: [teacher]
+      operationId: teacherStudentAssign
+      summary: 'Teacher: assign (or replace) a routine or Program'
+      description: |
+        `kind: "routine"` carries a validated snapshot in `routine` (never a live reference to
+        the teacher's own library — editing the library afterwards never changes what the
+        student already received). `kind: "program"` carries `programId` of a currently
+        published Program. `startsOn`/`days` go through the same schedule validation either way.
+        If the student already has an active assignment, this replaces it
+        (`end_reason: "replaced"`) in the same transaction that creates the new one — at most one
+        stays active (D14), enforced by the database, so two requests racing the same student can
+        only ever leave one of them active; the other gets `assignment-conflict`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, kind, startsOn]
+              properties:
+                id: { type: string, description: The student's user id. }
+                kind: { type: string, enum: [routine, program] }
+                routine:
+                  type: object
+                  description: Required when kind is "routine". { name, ex: [...], customEx?: [...] }.
+                programId: { type: string, description: Required when kind is "program". Must be published. }
+                startsOn: { type: string, description: YYYY-MM-DD, within 7 days in the past to 60 in the future. }
+                days:
+                  oneOf: [{ type: 'null' }, { type: array, items: { type: integer, minimum: 0, maximum: 6 } }]
+                  description: Weekdays, 0 = Sunday .. 6 = Saturday (same index as S.week). Omit/null for no fixed schedule.
+            example: { id: "s_abc123", kind: "routine", routine: { name: "Full body A", ex: [{ id: "0001", sets: 3, reps: 10, weight: 20 }] }, startsOn: "2026-11-01", days: [1, 3, 5] }
+      responses:
+        '200':
+          description: The new active assignment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assignment: { $ref: '#/components/schemas/TeacherAssignmentBrief' }
+        '400':
+          description: Bad schedule, bad routine shape, or programId is not a published Program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotYourStudent' }
+        '409':
+          description: Two assigns raced the same student; this one lost.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "another assignment is already active for this student", code: "assignment-conflict" }
+
+  /api/teacher/student/assignment/end:
+    post:
+      tags: [teacher]
+      operationId: teacherStudentAssignmentEnd
+      summary: 'Teacher: end the active assignment without replacing it'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: The student's user id. }
+      responses:
+        '200':
+          description: Ended.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotYourStudent' }
+        '404':
+          description: No active assignment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no active assignment", code: "no-active-assignment" }
+
+  /api/teacher/student/notes:
+    get:
+      tags: [teacher]
+      operationId: teacherStudentNotes
+      summary: 'Teacher: the private notes about one student'
+      description: |
+        Only the student's current teacher ever reads these (D13) — not the student, not an
+        ex-teacher: ending the link erases them in the same transaction.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+          description: The student's user id.
+      responses:
+        '200':
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notes:
+                    type: array
+                    items: { $ref: '#/components/schemas/TeacherNote' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotYourStudent' }
+    post:
+      tags: [teacher]
+      operationId: teacherStudentNoteCreate
+      summary: 'Teacher: add a note about a student'
+      description: >-
+        Up to 4000 characters, up to 500 notes per student. Audited as `teacher.note.create` —
+        never the text itself.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, body]
+              properties:
+                id: { type: string, description: The student's user id. }
+                body: { type: string, maxLength: 4000 }
+      responses:
+        '200':
+          description: The note.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  note: { $ref: '#/components/schemas/TeacherNote' }
+        '400':
+          description: '`note-empty` or `note-too-long`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotYourStudent' }
+        '409':
+          description: Already at 500 notes for this student.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "a teacher can have at most 500 notes per student", code: "notes-limit" }
+
+  /api/teacher/student/notes/update:
+    post:
+      tags: [teacher]
+      operationId: teacherStudentNoteUpdate
+      summary: 'Teacher: edit a note'
+      description: >-
+        The id is scoped to this teacher *and* this student — a note id from another pair
+        answers the same `note-not-found` as one that does not exist at all.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, noteId, body]
+              properties:
+                id: { type: string, description: The student's user id. }
+                noteId: { type: string }
+                body: { type: string, maxLength: 4000 }
+      responses:
+        '200':
+          description: The updated note.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  note: { $ref: '#/components/schemas/TeacherNote' }
+        '400':
+          description: '`note-empty` or `note-too-long`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotYourStudent' }
+        '404':
+          description: No note with that id for this teacher and student.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no such note", code: "note-not-found" }
+
+  /api/teacher/student/notes/delete:
+    post:
+      tags: [teacher]
+      operationId: teacherStudentNoteDelete
+      summary: 'Teacher: delete a note'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, noteId]
+              properties:
+                id: { type: string, description: The student's user id. }
+                noteId: { type: string }
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotYourStudent' }
+        '404':
+          description: No note with that id for this teacher and student.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no such note", code: "note-not-found" }
+
+  /api/teacher/programs:
+    get:
+      tags: [teacher]
+      operationId: teacherPrograms
+      summary: 'Teacher: the published Program catalog'
+      description: Title, description, category, difficulty and whether it has a cover — to assign directly, or as a starting point in the teacher's own library (ISO-1610).
+      responses:
+        '200':
+          description: Published Programs only.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  programs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        description: { type: string }
+                        category: { type: string }
+                        difficulty: { type: string }
+                        hasCover: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/teacher/program/cover:
+    get:
+      tags: [teacher]
+      operationId: teacherProgramCover
+      summary: 'Teacher: a published Program''s cover image'
+      description: >-
+        Same stream as `GET /api/admin/program/cover`, gated to teachers instead of admins and
+        narrowed to Programs that are currently published — a draft's or a trashed one's cover
+        is exactly as unreachable here as the program itself.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The image bytes.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such Program, not published, or no cover.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/teacher/invites:
+    get:
+      tags: [teacher]
+      operationId: teacherInvites
+      summary: 'Teacher: active class invite codes'
+      description: The code itself is never stored or re-shown — only the hash, a note and when it expires. Expired codes drop off this list on their own.
+      responses:
+        '200':
+          description: Active invites.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invites:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        hash: { type: string }
+                        note: { type: string }
+                        created: { type: string }
+                        expires: { type: number }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/teacher/invites/new:
+    post:
+      tags: [teacher]
+      operationId: teacherInvitesNew
+      summary: 'Teacher: make a class invite code'
+      description: >-
+        Good for 30 days, for one student (first redeemer wins). Up to 20 active at once.
+        Audited as `teacher.invite.create`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, maxLength: 60, description: A free-text label ("Tuesday class"). }
+      responses:
+        '200':
+          description: The code, in clear, once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invite:
+                    type: object
+                    properties:
+                      code: { type: string }
+                      expires: { type: number }
+                      note: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Already at 20 active invites.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "a teacher can have at most 20 active invites", code: "invite-limit" }
+
+  /api/teacher/invites/revoke:
+    post:
+      tags: [teacher]
+      operationId: teacherInvitesRevoke
+      summary: 'Teacher: revoke an unused class invite code'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hash]
+              properties:
+                hash: { type: string }
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such invite for this teacher.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/teacher-invite/preview:
+    post:
+      tags: [teacher]
+      operationId: teacherInvitePreview
+      summary: 'Student: preview a class invite code'
+      description: |
+        Does not consume the code. Returns exactly the allowlist the accept screen shows, so
+        what is disclosed and what is actually shared can never drift apart (D5). Wrong guesses
+        share the per-address pause device-link codes use (see *Throttling*).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: What accepting this code would share.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teacher: { type: object, properties: { name: { type: string } } }
+                  scope: { type: array, items: { type: string } }
+                  scopeOptional: { type: array, items: { type: string } }
+                  scopeNever: { type: array, items: { type: string } }
+                  scopeVersion: { type: integer }
+        '400':
+          description: Wrong, used or expired code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "invite is invalid or expired", code: "invite-invalid" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/teacher-invite/accept:
+    post:
+      tags: [teacher]
+      operationId: teacherInviteAccept
+      summary: 'Student: accept a class invite code'
+      description: |
+        Claims the code atomically (of two requests racing the same one, exactly one links) and
+        records the exact scope version accepted. `shareBodyweight` is its own opt-in, off unless
+        set `true` here — a separate, specific tick, never bundled into accepting the teacher
+        itself (D12). A code already claimed, self-invited, or used by an account that already
+        has a teacher all refuse without the code having been spent on it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, scopeVersion]
+              properties:
+                code: { type: string }
+                scopeVersion: { type: integer, description: Must equal the current TEACHER_SCOPE_VERSION. }
+                shareBodyweight: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Linked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  teacherId: { type: string }
+        '400':
+          description: '`invite-invalid`, `invite-expired` or `self-invite`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: '`already-has-teacher` (code not consumed) or `scope-outdated`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "another assignment is already active for this student", code: "already-has-teacher" }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/account/teacher:
+    get:
+      tags: [teacher]
+      operationId: accountTeacher
+      summary: 'Student: the linked teacher, if any'
+      responses:
+        '200':
+          description: '`{ teacher: null }` with no link.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teacher:
+                    oneOf:
+                      - type: 'null'
+                      - type: object
+                        properties: { id: { type: string }, name: { type: string } }
+                  acceptedAt: { type: string }
+                  scope: { type: array, items: { type: string } }
+                  shareBodyweight: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [teacher]
+      operationId: accountTeacherDelete
+      summary: 'Student: unlink from the current teacher'
+      description: >-
+        Erases the teacher's notes about this student and closes out the active assignment
+        (`end_reason: "unlinked"`) — the routine already imported stays with the student, marked
+        as ended. A no-op, not an error, with no link at all. Audited as `teacher.link.end`.
+      responses:
+        '200':
+          description: Unlinked (or already was).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/account/teacher/bodyweight:
+    post:
+      tags: [teacher]
+      operationId: accountTeacherBodyweight
+      summary: 'Student: turn body-weight sharing on or off'
+      description: >-
+        The opt-in itself (D12) — on at any time from "Meu professor", independent of the base
+        scope accepted at link time. Each change is a durable event
+        (`teacher_link_events.action`), proof of consent for this one sensitive field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [share]
+              properties:
+                share: { type: boolean }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  share: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No teacher linked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no teacher linked", code: "not-found" }
+
+  /api/account/assignments:
+    get:
+      tags: [teacher]
+      operationId: accountAssignments
+      summary: 'Student: assignments waiting to be imported or acknowledged as ended'
+      description: |
+        Independent of whether a link still exists — the `ended` half still has to reach a
+        student who has since unlinked. `pending`: active, not yet imported
+        (`delivered_at IS NULL`). `ended`: was imported, now ended, not yet acknowledged
+        (D8 — the client marks the already-imported routine as ended by the teacher, then acks).
+      responses:
+        '200':
+          description: Both lists.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pending:
+                    type: array
+                    items: { $ref: '#/components/schemas/TeacherAssignmentDelivery' }
+                  ended:
+                    type: array
+                    items: { $ref: '#/components/schemas/TeacherAssignmentDelivery' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/account/assignments/ack:
+    post:
+      tags: [teacher]
+      operationId: accountAssignmentsAck
+      summary: 'Student: acknowledge an assignment (imported, or noticed it ended)'
+      description: Marks `delivered_at` if it was pending, or `end_acked_at` if it was ended. Only the assignment's own student may ack it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        '200':
+          description: Acknowledged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such assignment for this student.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
 components:
   securitySchemes:
     cookieAuth:
@@ -3986,6 +4710,15 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
           example: { error: "billing not configured" }
+    NotYourStudent:
+      description: >-
+        One uniform answer for every way a student can be "not this teacher's" — the id does not
+        exist, belongs to another teacher, or was once linked but is not any more: an unknown id
+        and a real one tell a guessing teacher nothing apart.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: "not your student", code: "not-your-student" }
 
   schemas:
     Error:
@@ -4820,3 +5553,100 @@ components:
               outcome: { type: string }
               errorClass: { oneOf: [{ type: string }, { type: 'null' }] }
               ms: { type: integer }
+
+    TeacherAssignmentBrief:
+      type: object
+      description: What a teacher sees of a student's current or past assignment — never the full payload.
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [routine, program] }
+        startsOn: { type: string }
+        days:
+          oneOf: [{ type: 'null' }, { type: array, items: { type: integer } }]
+        name:
+          oneOf: [{ type: string }, { type: 'null' }]
+          description: The routine's own name, or the Program's title.
+
+    TeacherAssignmentHistoryEntry:
+      type: object
+      properties:
+        kind: { type: string, enum: [routine, program] }
+        name: { oneOf: [{ type: string }, { type: 'null' }] }
+        startsOn: { type: string }
+        endedAt: { type: string }
+        endReason: { type: string, enum: [replaced, ended, unlinked, role-revoked] }
+
+    TeacherStudentSummary:
+      type: object
+      properties:
+        id: { type: string }
+        name: { oneOf: [{ type: string }, { type: 'null' }] }
+        acceptedAt: { type: string }
+        assignment:
+          oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/TeacherAssignmentBrief' }]
+        summary: { $ref: '#/components/schemas/StudentSummary' }
+
+    StudentSummary:
+      type: object
+      description: studentSummary() (api/teacher.js) — computed over teacherView, never the raw state.
+      properties:
+        lastWorkoutAt: { oneOf: [{ type: string }, { type: 'null' }] }
+        workoutsThisWeek: { type: integer }
+        adherence:
+          description: >-
+            null with no active assignment, a Program, or no fixed days — the UI then shows
+            only workoutsThisWeek.
+          oneOf:
+            - type: 'null'
+            - type: object
+              properties:
+                done: { type: integer }
+                expected: { type: integer }
+                ratio: { type: number }
+        idleDays: { oneOf: [{ type: integer }, { type: 'null' }] }
+        idle: { type: boolean, description: 'idleDays >= 7.' }
+
+    TeacherStudentDetail:
+      type: object
+      description: teacherView(state, opts) plus the link's own metadata, the summary and the assignment history.
+      properties:
+        unit: { type: string, enum: [kg, lb] }
+        workouts: { type: array, items: { type: object } }
+        routines: { type: array, items: { type: object } }
+        customEx: { type: array, items: { type: object } }
+        bodyweight:
+          type: array
+          description: Present only when shareBodyweight is true.
+          items: { type: object, properties: { d: { type: string }, w: { type: number } } }
+        scopeVersion: { type: integer }
+        shareBodyweight: { type: boolean }
+        summary: { $ref: '#/components/schemas/StudentSummary' }
+        assignment:
+          oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/TeacherAssignmentBrief' }]
+        assignmentHistory:
+          type: array
+          items: { $ref: '#/components/schemas/TeacherAssignmentHistoryEntry' }
+
+    TeacherNote:
+      type: object
+      properties:
+        id: { type: string }
+        body: { type: string }
+        created: { type: string }
+        updated: { type: string }
+
+    TeacherAssignmentDelivery:
+      type: object
+      description: Everything the student's own client needs to import the routine, or notice it ended (D8) — no server-side lookups.
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [routine, program] }
+        payload:
+          type: object
+          description: The validated routine snapshot (kind "routine") or { programId } (kind "program").
+        startsOn: { type: string }
+        days:
+          oneOf: [{ type: 'null' }, { type: array, items: { type: integer } }]
+        endedAt: { oneOf: [{ type: string }, { type: 'null' }] }
+        endReason:
+          oneOf: [{ type: 'null' }, { type: string, enum: [replaced, ended, unlinked, role-revoked] }]
