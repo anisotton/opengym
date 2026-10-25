@@ -10,7 +10,9 @@ forked from <https://github.com/DuarteSantos8/openGym> on 2026-09-29 and maintai
 Anderson Isotton (Isotton Corp). It remains under the **GNU AGPL v3.0**; the original copyright
 and every notice below are kept unchanged. As required by section 5(a) of the AGPL, changes made
 in this fork are recorded in its git history (commits after upstream `e88062e`), and the complete
-source of the version running on any instance is published here.
+source of the version running on any instance is published here. This fork also adds 4 exercises
+with media of its own, **© Brilhart Fitness** rather than AGPL — see "Brilhart exercise media"
+below.
 
 ## App store exception
 
@@ -20,6 +22,16 @@ Apple App Store and Google Play) whose terms of service would otherwise be incom
 with the AGPL, provided the corresponding source code remains available under the AGPL at
 the project repository. This permission applies to the distribution channel only and does
 not otherwise limit the license.
+
+## Brilhart exercise media
+
+The 4 port de bras exercises added for this fork (`frontend/src/lib/exercises-brilhart.js`, ids
+`bf01`–`bf04`) ship with their own images and animations under `frontend/public/brilhart/`.
+**© Brilhart Fitness, all rights reserved.** This media is **not** licensed under the MIT license
+that covers the 1,324 built-in exercises' text above, and **not** under openGym's AGPL — it is
+included in this repository only as an aggregate work alongside the AGPL code, per AGPL section
+5. Reuse outside this app needs Brilhart Fitness's written permission. See
+`frontend/public/brilhart/COPYRIGHT.md`.
 
 ## Body diagram geometry
 
@@ -98,11 +110,17 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Images & animations — third-party, not MIT and not AGPL
+### Images & animations — removed, third-party, never MIT nor AGPL
 
-The exercise thumbnails (180×180) and animations are **not** covered by the MIT license above and
-**not** by openGym's AGPL. Their ownership is currently **unresolved**, and openGym states this
-plainly rather than guessing:
+**Removed from this project as of this version (ISO-1601/ISO-1603).** The exercise thumbnails
+(180×180) and animations described below are no longer shipped, downloaded or referenced
+anywhere in this repository, its container images or its mobile builds — the 1,324 built-in
+exercises are text-only now (metadata and instructions, MIT, above). The history below is kept
+for provenance; it no longer describes what this project does.
+
+The thumbnails and animations were **not** covered by the MIT license above and **not** by
+openGym's AGPL. Their ownership was **unresolved**, and openGym stated this plainly rather than
+guessing:
 
 - The upstream dataset attributes them to **© [Gym visual](https://gymvisual.com/)**, redistributed
   there with that rights holder's written permission — a permission granted to *that dataset* and
@@ -112,18 +130,16 @@ plainly rather than guessing:
   commercial display, while prohibiting redistribution of the raw dataset or media as a standalone
   or competing content package.
 
-These two claims contradict each other. A clarification has been requested from AscendAPI; this
-notice will be updated once the provenance is settled.
+These two claims contradicted each other, and were never resolved before the decision above to
+remove the media entirely.
 
-**Until then, treat the media as third-party content licensed to neither openGym nor to you.**
+**openGym never redistributed it.** It was not in this repository, not in its history, and not in
+the published container images or the Android APK — a self-hosted instance downloaded it from the
+upstream source on first `docker compose up`, and the mobile and demo builds loaded it from a CDN
+at runtime. None of that happens anymore.
 
-**openGym does not redistribute it.** It is not in this repository, not in its history, and not in
-the published container images or the Android APK. A self-hosted instance downloads it from the
-upstream source on first `docker compose up`; the mobile and demo builds load it from a CDN at
-runtime.
-
-If you want to reuse the media — in openGym or anywhere else, commercially or not — **clear it with
-the rights holder first**, and keep any attribution that accompanies it intact.
+If you want to reuse the media yourself — in openGym or anywhere else, commercially or not —
+**clear it with the rights holder first**, and keep any attribution that accompanies it intact.
 
 Brazilian Portuguese exercise instructions under
 `scripts/instruction-sources/pt-BR.json` and exercise names under

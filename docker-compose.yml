@@ -1,43 +1,6 @@
 name: opengym
 
 services:
-  # One-time: download the exercise images + GIFs into ./media (skipped if already there).
-  # ~140 MB, from github.com/hasaneyldrm/exercises-dataset. That dataset is MIT for the
-  # metadata and instruction text, but the images and GIFs are © Gym visual
-  # (https://gymvisual.com/) and are used under the dataset's terms — openGym neither
-  # redistributes nor relicenses them. See NOTICE.md.
-  # Behind the `media` profile (ISO-1400): activated by COMPOSE_PROFILES=media, which
-  # .env.example sets by default so a fresh `docker compose up -d` behaves exactly as before.
-  # A deployment that may not serve this dataset commercially (see NOTICE.md) clears that
-  # variable instead — this service then never runs, ./media stays empty, and web's bind mount
-  # has nothing to serve.
-  media:
-    profiles: [media]
-    image: alpine/git
-    volumes:
-      - ./media/img:/out/img
-      - ./media/gif:/out/gif
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        if [ -z "$$(ls -A /out/img 2>/dev/null)" ]; then
-          echo "↓ Downloading exercise media (~140 MB, one time)…"
-          echo "  Source:  github.com/hasaneyldrm/exercises-dataset"
-          echo "  Metadata and instruction text: MIT."
-          echo "  Images and animations: © Gym visual — https://gymvisual.com/"
-          echo "  They are used under that dataset's terms, not openGym's AGPL, and are"
-          echo "  downloaded from upstream — openGym does not redistribute them."
-          echo "  Terms: https://gymvisual.com/content/3-terms-and-conditions-of-use"
-          echo "  Reusing this media yourself, commercially or not, needs your own licence"
-          echo "  from Gym visual. Details in NOTICE.md."
-          git clone --depth 1 https://github.com/hasaneyldrm/exercises-dataset /tmp/ds
-          cp /tmp/ds/images/*.jpg /out/img/ && cp /tmp/ds/videos/*.gif /out/gif/
-          echo "✓ Exercise media ready ($$(ls /out/img | wc -l) images)."
-        else
-          echo "✓ Exercise media already present — skipping download."
-        fi
-    restart: "no"
-
   # PostgreSQL (Phase 1, ISO-1387/1402/1403). The API connects and migrates against this at boot
   # and it is the source of truth for everything db.json and state-<uid>.json used to hold — an
   # instance upgrading from before ISO-1403 has its old ./data/db.json and state-*.json files
@@ -110,8 +73,8 @@ services:
       # needs backing up — if you lose it, sign the provider in again.
       - ./coach-auth:/coach-auth
 
-  # Builds the React frontend (multi-stage) and serves it, proxying /api → api
-  # and the exercise media from the shared volume. Single origin for passkeys.
+  # Builds the React frontend (multi-stage) and serves it, proxying /api → api.
+  # Single origin for passkeys.
   web:
     image: ghcr.io/anisotton/opengym-web:latest
     build:
@@ -123,14 +86,6 @@ services:
         BUILD_DATE: ${BUILD_DATE:-unknown}
     restart: unless-stopped
     depends_on:
-      # `required: false` (ISO-1400): media is now behind its own profile, and compose refuses
-      # to start a stack where an always-on service depends_on one that profile excluded —
-      # "service media is not running" — unless the dependency is marked optional. With the
-      # profile active this still waits for the download to finish before web starts, exactly
-      # as before; with it inactive, there is nothing to wait for and web starts immediately.
-      media:
-        condition: service_completed_successfully
-        required: false
       api:
         condition: service_started
     ports:
@@ -157,9 +112,6 @@ services:
       # The public address of this instance. The entrypoint substitutes it into the served
       # index.html's og:url/og:image tags — no rebuild per environment.
       - APP_URL=${APP_URL:-${ORIGIN}}
-    volumes:
-      - ./media/img:/usr/share/nginx/html/img:ro
-      - ./media/gif:/usr/share/nginx/html/gif:ro
 
 volumes:
   pgdata:

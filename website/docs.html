@@ -29,7 +29,7 @@
 <!-- Umami web analytics for opengym.duarte-santos.ch (self-hosted, cookieless). -->
 <script defer src="https://stats.duarte-santos.ch/script.js" data-website-id="db36019e-50f4-453c-9c56-d0588aefe233"></script>
 <script type="application/ld+json">
-{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is openGym really free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes — free as in cost and as in freedom (AGPL-3.0). No pro tier, no locked features, no ads, and the license keeps every fork open source too."}}, {"@type": "Question", "name": "Why isn't openGym on the Play Store or App Store?", "acceptedAnswer": {"@type": "Answer", "text": "By choice (and on iOS, by Apple's rules for sideloading). Store accounts cost money, impose terms that sit badly with the AGPL, and put a gatekeeper between you and an app whose whole point is that your data is yours. The signed Android APK is a direct download."}}, {"@type": "Question", "name": "Should I pick the mobile app or self-host?", "acceptedAnswer": {"@type": "Answer", "text": "To simply track your training: the mobile app. For data on your own hardware, synced across devices, with profiles for the people you train with: self-host with Docker. The backup file migrates everything between the two, or pair the app to your server."}}, {"@type": "Question", "name": "What's on the openGym roadmap?", "acceptedAnswer": {"@type": "Answer", "text": "Percentage/training-max programming (5/3/1-style), more starter plans, body measurements alongside weight, per-exercise notes and a plate calculator, more instruction languages. Community-driven — ideas and merge requests welcome."}}, {"@type": "Question", "name": "Where does the exercise database come from?", "acceptedAnswer": {"@type": "Answer", "text": "From hasaneyldrm/exercises-dataset: 1,324 exercises with animations and instructions. The metadata and instruction text are MIT; the images and animations are third-party media that openGym never redistributes — your instance downloads them from upstream on first run."}}, {"@type": "Question", "name": "What does the AGPL license mean for me?", "acceptedAnswer": {"@type": "Answer", "text": "You can self-host, use, modify and share openGym freely. Only if you run a modified version as a network service must you offer that version's source under the same license. Using or self-hosting it unmodified obliges you to nothing."}}]}
+{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is openGym really free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes — free as in cost and as in freedom (AGPL-3.0). No pro tier, no locked features, no ads, and the license keeps every fork open source too."}}, {"@type": "Question", "name": "Why isn't openGym on the Play Store or App Store?", "acceptedAnswer": {"@type": "Answer", "text": "By choice (and on iOS, by Apple's rules for sideloading). Store accounts cost money, impose terms that sit badly with the AGPL, and put a gatekeeper between you and an app whose whole point is that your data is yours. The signed Android APK is a direct download."}}, {"@type": "Question", "name": "Should I pick the mobile app or self-host?", "acceptedAnswer": {"@type": "Answer", "text": "To simply track your training: the mobile app. For data on your own hardware, synced across devices, with profiles for the people you train with: self-host with Docker. The backup file migrates everything between the two, or pair the app to your server."}}, {"@type": "Question", "name": "What's on the openGym roadmap?", "acceptedAnswer": {"@type": "Answer", "text": "Percentage/training-max programming (5/3/1-style), more starter plans, body measurements alongside weight, per-exercise notes and a plate calculator, more instruction languages. Community-driven — ideas and merge requests welcome."}}, {"@type": "Question", "name": "Where does the exercise database come from?", "acceptedAnswer": {"@type": "Answer", "text": "From hasaneyldrm/exercises-dataset: 1,324 exercises with text and instructions, MIT-licensed. The dataset's images and animations were third-party media with disputed ownership and have been removed from this project — the library is text-only."}}, {"@type": "Question", "name": "What does the AGPL license mean for me?", "acceptedAnswer": {"@type": "Answer", "text": "You can self-host, use, modify and share openGym freely. Only if you run a modified version as a network service must you offer that version's source under the same license. Using or self-hosting it unmodified obliges you to nothing."}}]}
 </script>
 </head>
 <body class="topnav">
@@ -443,9 +443,8 @@ cd openGym
 cp .env.example .env
 docker compose pull    # prebuilt images (amd64 + arm64) — skip to build from source
 docker compose up -d</code></pre>
-  <p>Open <code>http://localhost:8080</code>, tap <b>Create profile</b>, and you're in. The
-     first launch downloads the exercise media (~140&nbsp;MB) once into <code>media/img</code>
-     and <code>media/gif</code>. Check it's healthy:</p>
+  <p>Open <code>http://localhost:8080</code>, tap <b>Create profile</b>, and you're in.
+     Check it's healthy:</p>
   <pre><code>docker compose ps
 curl http://localhost:8080/api/health      # {"ok":true,...}</code></pre>
   <p>Logs: <code>docker compose logs -f</code> · stop: <code>docker compose down</code> ·
@@ -531,7 +530,7 @@ docker compose up -d   # restart alone does NOT re-read .env</code></pre>
   <pre><code>git pull                  # picks up compose/config changes
 docker compose pull       # (or: docker compose up -d --build, if building from source)
 docker compose up -d</code></pre>
-  <p>Your <code>./data</code> and the downloaded media are untouched; the app shell is
+  <p>Your <code>./data</code> is untouched; the app shell is
      versioned so clients pick up changes on next load. Releases are announced on
      <a href="https://github.com/DuarteSantos8/openGym/releases" rel="noopener">GitHub</a>
      and <a href="https://discord.gg/e62jY6fwVb" rel="noopener">Discord</a>; container images
@@ -822,10 +821,9 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
      ships everything.</p>
   <p>The exercise database comes from
      <a href="https://github.com/hasaneyldrm/exercises-dataset" rel="noopener">hasaneyldrm/exercises-dataset</a>:
-     1,324 exercises with animations and instructions. The metadata and instruction text are
-     MIT; the images and animations are third-party media that openGym never redistributes —
-     your instance downloads them from upstream on first run (see the
-     <a href="#faq">FAQ</a> for the licensing details).</p>
+     1,324 exercises with text and instructions, MIT-licensed (see the
+     <a href="#faq">FAQ</a> for the licensing details). The dataset's images and animations are
+     not used — see the FAQ for why.</p>
 
   <h2 id="build">Build it yourself</h2>
   <p>Everything on this page is built from the public repo:</p>
@@ -868,14 +866,12 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
   <table class="cfg">
     <tr><td>No passkey prompt on my phone</td><td>You're on <code>http://</code> or a bare IP. Passkeys need HTTPS or localhost — set up a domain, or use guest mode / the mobile app.</td></tr>
     <tr><td>"verification failed" on login</td><td><code>RP_ID</code>/<code>ORIGIN</code> don't match the address bar — see the checklist above, starting with what the server logged.</td></tr>
-    <tr><td>Media didn't download</td><td><code>docker compose logs media</code>, re-run <code>docker compose up -d</code>, or run <code>./scripts/fetch-media.sh</code>.</td></tr>
     <tr><td>Port 8080 already used</td><td><code>WEB_PORT=9090</code> in <code>.env</code> (and update <code>ORIGIN</code> for local testing).</td></tr>
     <tr><td>No "Notifications" option in Settings</td><td>Needs a signed-in profile and HTTPS (or localhost) — guest mode and plain HTTP over LAN can't subscribe.</td></tr>
     <tr><td>Day reminder fires at the wrong time</td><td>Toggle it off and on so it re-detects your browser's timezone (also happens on every app load).</td></tr>
     <tr><td>"Keep screen awake" shows as unsupported</td><td>The Wake Lock API needs HTTPS or localhost; iOS also refuses it in Low Power Mode.</td></tr>
     <tr><td>Want to reset a stuck login</td><td>Delete the cookie — sessions are just signed cookies. "Sign out everywhere" in Settings ends every session (and paired apps) at once.</td></tr>
     <tr><td><code>docker compose pull</code> says "denied"</td><td>Build from source instead: <code>docker compose up -d --build</code>.</td></tr>
-    <tr><td>Exercise images blank in an old build</td><td>Fixed in current images. <code>VITE_IMG_BASE</code>/<code>VITE_GIF_BASE</code> are <b>build-time</b>: they're baked into the bundle when the frontend compiles, so setting them at runtime does nothing to a prebuilt image — redirect media in your reverse proxy instead, or rebuild.</td></tr>
   </table>
   <p>Still stuck? The <a href="https://discord.gg/e62jY6fwVb" rel="noopener">Discord</a> is
      the quickest way to get an answer;
@@ -885,8 +881,8 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
   <h2 id="privacy">Privacy — the complete list</h2>
   <ul>
     <li><b>The app collects nothing.</b> No telemetry, no analytics, no crash reporting, no
-        accounts on anyone else's server. The mobile app's only network traffic is fetching
-        exercise media from a CDN; a self-hosted instance talks only to your own server.</li>
+        accounts on anyone else's server. A self-hosted instance talks only to your own
+        server.</li>
     <li><b>Passkey private keys never leave your device</b> — the server stores only public
         keys.</li>
     <li><b>The optional activity log</b> (self-hosted, admin feature) records sign-in events
@@ -926,19 +922,19 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
      <a href="https://github.com/DuarteSantos8/openGym#roadmap" rel="noopener">README</a>.</p>
   <h3>Where does the exercise database come from?</h3>
   <p>From <a href="https://github.com/hasaneyldrm/exercises-dataset" rel="noopener">hasaneyldrm/exercises-dataset</a>:
-     1,324 exercises with animations and instructions, localized in 12 of openGym's 14 UI
+     1,324 exercises with text and instructions, localized in 12 of openGym's 14 UI
      languages — including openGym's separately curated Brazilian Portuguese translation.
-     That dataset licenses the two halves differently, and so does openGym: the exercise
-     metadata and instruction text are <b>MIT</b>, while the images and animations are
-     third-party media used under the dataset's terms rather than openGym's AGPL — their
-     ownership is currently disputed between
-     <a href="https://gymvisual.com/" rel="noopener">Gym visual</a> and ExerciseDB, and a
-     clarification has been requested.</p>
-  <p>openGym does not redistribute that media — your instance downloads it from the upstream
-     source on first run. If you want to reuse it yourself, commercially or otherwise, clear
-     it with the rights holder first. Full third-party notices, including the body-diagram
-     geometry, are in
+     The exercise metadata and instruction text are <b>MIT</b>.</p>
+  <p>That dataset's images and animations were third-party media with disputed ownership
+     (between <a href="https://gymvisual.com/" rel="noopener">Gym visual</a> and ExerciseDB) that
+     openGym never redistributed — an instance used to download them from upstream on first run.
+     They have been removed from this project entirely; the exercise library is text-only now.
+     Full third-party notices, including the body-diagram geometry, are in
      <a href="https://github.com/DuarteSantos8/openGym/blob/main/NOTICE.md" rel="noopener">NOTICE.md</a>.</p>
+  <p>The Brilhart Fitness fork also ships 4 port de bras exercises with its own images and
+     animations — <b>© Brilhart Fitness, all rights reserved</b>, not MIT or AGPL, included in
+     the repository only as an aggregate work alongside the AGPL code (see
+     <code>frontend/public/brilhart/COPYRIGHT.md</code>).</p>
   <h3>What does the AGPL mean for me?</h3>
   <p>You can self-host, use, modify and share openGym freely. If you run a <i>modified</i>
      version as a network service, you must offer that version's source under the same

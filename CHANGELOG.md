@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+**Third-party exercise media removed (ISO-1601/ISO-1603)**
+
+- 🖼️ **The built-in exercise library no longer ships or downloads any Gym visual/ExerciseDB
+  image or GIF.** The 1,324 built-in exercises keep their ids, names, attributes and
+  instruction text (MIT, `hasaneyldrm/exercises-dataset`) and now show a neutral icon instead
+  of a picture — exactly like any exercise the app has never had media for.
+- 🐳 **`docker-compose.yml` dropped the `media` service** and the `web` container's `./media`
+  bind mounts; `scripts/fetch-media.sh`, the Kubernetes `media-download` init container and its
+  PVC, and the CDN build variables (`VITE_IMG_BASE`/`VITE_GIF_BASE` in `npm run build:mobile`)
+  are gone too. A fresh `docker compose up -d --build` no longer downloads anything beyond the
+  app itself.
+- 📝 Photos and videos of your own custom exercises are unaffected — that upload path
+  (`/api/media/`) never touched the third-party dataset.
+
 **Terms of Use and Privacy Policy (ISO-1390)**
 
 - 📜 **The Terms of Use and the Privacy Policy now live inside the app**, at `#/termos` and
