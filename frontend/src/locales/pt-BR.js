@@ -25,17 +25,11 @@ export const PT_BR_OVERRIDES = {
   "Read-only — subscription required": "Somente leitura — assinatura necessária",
   "This session was saved on this device, but couldn't sync because your subscription isn't active. Subscribe to sync it.": "Sua sessão foi salva neste dispositivo, mas não sincronizou porque sua assinatura não está ativa. Assine para sincronizar.",
   "Your subscription isn't active — you can view and export your history, but new workouts won't be logged.": "Sua assinatura não está ativa — você pode ver e exportar seu histórico, mas novos treinos não serão registrados.",
-  "Your first month for R$ 1.99.": "Seu primeiro mês por R$ 1,99.",
   "Then you continue on the plan you choose. Cancel anytime, right in the app.": "Depois, você segue no plano que escolher. Cancele quando quiser, direto no app.",
   "Monthly": "Mensal",
   "Quarterly": "Trimestral",
   "Yearly": "Anual",
-  "R$ 89 / month": "R$ 89 / mês",
-  "R$ 237 every 3 months": "R$ 237 a cada 3 meses",
-  "R$ 768 per year": "R$ 768 por ano",
   "Equivalent to R$ {0}/month": "Equivale a R$ {0}/mês",
-  "11% less than the monthly plan": "11% a menos que o mensal",
-  "28% less than the monthly plan": "28% a menos que o mensal",
   "Lowest price per month": "Menor preço por mês",
   "Subscribe": "Assinar",
   "Subscribe to {0}": "Assinar {0}",
@@ -48,7 +42,6 @@ export const PT_BR_OVERRIDES = {
   "Next charge": "Próxima cobrança",
   "Cancellation scheduled — your access continues until {0}, with no automatic renewal.": "Cancelamento agendado — seu acesso continua até {0}, sem renovação automática.",
   "Manage subscription": "Gerenciar assinatura",
-  "You're in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.": "Você está no primeiro mês, por R$ 1,99. A partir de {0}, a cobrança do plano {1} ({2}) começa.",
   "We couldn't charge your subscription. Update your card to avoid interruption.": "Não conseguimos cobrar sua assinatura. Atualize seu cartão para continuar sem interrupção.",
   "Update card": "Atualizar cartão",
   "Subscription canceled due to a payment failure": "Assinatura cancelada por falha de pagamento",
@@ -1300,6 +1293,9 @@ export const PT_BR_OVERRIDES = {
   "Your first month for R$ {0}.": "Seu primeiro mês por R$ {0}.",
   "{0}% less than the monthly plan": "{0}% menos que o plano mensal",
   "Includes everything Brilhart Fitness offers.": "Inclui tudo que o Brilhart Fitness oferece.",
+  // --- payment-plan catalog (ISO-1619/ISO-1627) — first-period amount parametrized ---
+  "You're in your first month, for R$ {0}. From {1}, billing for the {2} plan ({3}) begins.": "Você está no primeiro mês, por R$ {0}. A partir de {1}, a cobrança do plano {2} ({3}) começa.",
+  "You're in your first month. From {0}, billing for the {1} plan ({2}) begins.": "Você está no primeiro mês. A partir de {0}, a cobrança do plano {1} ({2}) começa.",
 }
 
 export default { ...pt, ...PT_BR_OVERRIDES }

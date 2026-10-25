@@ -92,4 +92,22 @@ describe('SettingsPlan renders from the catalog, never the old hard-coded PLANS'
     mountWith({ plans: [] })
     expect(host.textContent).toContain('No plans available right now. Check back later.')
   })
+
+  // Oráculo review (ISO-1627 item 1): the "already subscribed, first period" sentence used to
+  // bake "R$ 1.99" into the string itself — it now reads the subscribed plan's own intro price
+  // off the catalog, same as the not-yet-subscribed teaser card above already does.
+  it('the already-subscribed first-period message reads its own intro price from the catalog, never a fixed "R$ 1.99"', () => {
+    mocks.state = {
+      user: { id: 'u' }, refreshBillingPlans: vi.fn(() => Promise.resolve(true)),
+      billingPlans: CATALOG,
+      billing: { status: 'active', firstPeriod: true, plan: 'monthly', nextChargeDate: '2026-11-25T00:00:00Z', nextChargeAmount: 8900 }
+    }
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    root = createRoot(host)
+    act(() => root.render(<SettingsPlan />))
+    expect(host.textContent).not.toContain('R$ 1.99')
+    expect(host.textContent).toContain('for R$ 1,99')
+    expect(host.textContent).toContain('billing for the Mensal plan')
+  })
 })

@@ -8,7 +8,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 // Checkout refused for terms (ISO-1390): the server's `terms-required` opens the terms sheet and
 // shows no card error; `email-unverified` still opens the e-mail prompt.
 const mocks = vi.hoisted(() => ({
-  billingCheckout: null, openTermsSheet: null, openNeedsEmailPrompt: null,
+  billingCheckout: null, billingPortal: null, openTermsSheet: null, openNeedsEmailPrompt: null,
 }))
 vi.mock('../store/useStore.js', () => {
   // ISO-1627: SettingsPlan now renders its cards from the catalog cache, not a fixed PLANS
@@ -29,7 +29,7 @@ vi.mock('../store/useUI.js', () => {
   return { useUI }
 })
 vi.mock('react-router-dom', () => ({ useNavigate: () => () => {}, useLocation: () => ({ search: '' }) }))
-vi.mock('../lib/api.js', () => ({ billingCheckout: (...a) => mocks.billingCheckout(...a), billingPortal: vi.fn() }))
+vi.mock('../lib/api.js', () => ({ billingCheckout: (...a) => mocks.billingCheckout(...a), billingPortal: (...a) => mocks.billingPortal(...a) }))
 vi.mock('../components/AccountEmail.jsx', () => ({ openNeedsEmailPrompt: (...a) => mocks.openNeedsEmailPrompt(...a) }))
 vi.mock('../components/TermsSheet.jsx', () => ({ openTermsSheet: (...a) => mocks.openTermsSheet(...a) }))
 vi.mock('../components/ServerSync.jsx', () => ({ useOnline: () => true }))
@@ -40,6 +40,7 @@ let host, root
 beforeEach(() => {
   mocks.openTermsSheet = vi.fn()
   mocks.openNeedsEmailPrompt = vi.fn()
+  mocks.billingPortal = vi.fn(() => Promise.resolve({ url: 'https://billing.stripe.com/portal' }))
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -67,5 +68,17 @@ describe('SettingsPlan checkout refusals', () => {
     await subscribe()
     expect(mocks.openNeedsEmailPrompt).toHaveBeenCalledTimes(1)
     expect(mocks.openTermsSheet).not.toHaveBeenCalled()
+  })
+
+  // Oráculo review (ISO-1627 item 3): a 409 already-subscribed (two tabs, or a webhook that beat
+  // this screen's own refresh) goes to the Portal — the only place an existing subscription is
+  // actually managed — instead of the generic "Could not open payment" card error.
+  it('already-subscribed opens the Portal instead of a card error', async () => {
+    mocks.billingCheckout = vi.fn(() => Promise.reject(Object.assign(new Error('already-subscribed'), { status: 409, data: { code: 'already-subscribed' } })))
+    await subscribe()
+    expect(mocks.billingPortal).toHaveBeenCalledTimes(1)
+    expect(mocks.openTermsSheet).not.toHaveBeenCalled()
+    expect(mocks.openNeedsEmailPrompt).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('Could not open payment')
   })
 })

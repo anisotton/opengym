@@ -26,9 +26,13 @@ import { Button } from '../components/ui.jsx'
 // fixed string below.
 const nameOf = d => d?.[getLang()]?.name || d?.['pt-BR']?.name || d?.en?.name || ''
 const descOf = d => d?.[getLang()]?.description || d?.['pt-BR']?.description || d?.en?.description || null
-const periodText = p => p.interval === 'year' ? t('R$ {0} per year', (p.amountCents / 100).toFixed(2).replace('.', ','))
-  : p.intervalCount === 1 ? t('R$ {0} / month', (p.amountCents / 100).toFixed(2).replace('.', ','))
-    : t('R$ {0} every {1} months', (p.amountCents / 100).toFixed(2).replace('.', ','), p.intervalCount)
+// "89,00", never a locale-formatted number — the reais digits are the same for every reader
+// regardless of UI language (lib/billing.js's own fmtCentsBRL comment), only the words around
+// them translate.
+const centsStr = cents => (cents / 100).toFixed(2).replace('.', ',')
+const periodText = p => p.interval === 'year' ? t('R$ {0} per year', centsStr(p.amountCents))
+  : p.intervalCount === 1 ? t('R$ {0} / month', centsStr(p.amountCents))
+    : t('R$ {0} every {1} months', centsStr(p.amountCents), p.intervalCount)
 // The server answers a date as a full ISO instant (toIso, api/billing.js) — fmtDate (lib/format.js)
 // wants a bare YYYY-MM-DD, the shape every other date in this app is stored in.
 const dayOf = iso => (iso ? fmtDate(iso.slice(0, 10), true, true) : '')
@@ -62,6 +66,13 @@ export default function SettingsPlan() {
   // the `available` catalog, e.g. retired/deactivated after this account subscribed to it).
   const currentPlan = plans.find(p => p.id === billing?.plan)
   const currentPlanName = currentPlan ? nameOf(currentPlan.display) : (billing?.plan || '')
+  // The once-per-account intro price is shared across every plan that offers one (api/billing.js:
+  // "o intro compartilhado"), so this account's own first-period amount is whichever plan's own
+  // `introAmountCents` resolves — its current plan's, if that is still in the `available`
+  // catalog, else any other plan's (they all point at the same Price). `null` only on an instance
+  // whose catalog has no intro price configured at all — the firstPeriod message below still
+  // reads fine without a number in that case, never a stale or invented one.
+  const introAmountCents = currentPlan?.introAmountCents ?? introPlan?.introAmountCents ?? null
 
   // Stripe's own redirect (success_url/cancel_url, api/billing.js) — read once, then the query
   // string is dropped (nav replace) so a reload of this page never replays it.
@@ -110,6 +121,10 @@ export default function SettingsPlan() {
       // Terms changed since this account accepted: the sheet is the answer, not a card error.
       if (e?.data?.code === 'terms-required') { openTermsSheet(); return }
       if (e?.data?.code === 'email-unverified') { openNeedsEmailPrompt(); return }
+      // Two tabs, or a webhook that landed between this screen's last refresh and the click
+      // (api/server.js's own 409 `already-subscribed`, ISO-1623 §5.4): there is nothing new to
+      // sell here — the Portal is where an existing subscription is actually managed.
+      if (e?.status === 409 && e?.data?.code === 'already-subscribed') { openPortal(); return }
       setCardError(prev => ({ ...prev, [id]: t('Could not open payment. Try again.') }))
     }
   }
@@ -159,8 +174,11 @@ export default function SettingsPlan() {
         </div>
         {billing.firstPeriod ? (
           <div className="small muted" style={{ marginBottom: 14 }}>
-            {t('You\'re in your first month, for R$ 1.99. From {0}, billing for the {1} plan ({2}) begins.',
-              dayOf(billing.nextChargeDate), currentPlanName, fmtCentsBRL(billing.nextChargeAmount))}
+            {introAmountCents != null
+              ? t("You're in your first month, for R$ {0}. From {1}, billing for the {2} plan ({3}) begins.",
+                centsStr(introAmountCents), dayOf(billing.nextChargeDate), currentPlanName, fmtCentsBRL(billing.nextChargeAmount))
+              : t("You're in your first month. From {0}, billing for the {1} plan ({2}) begins.",
+                dayOf(billing.nextChargeDate), currentPlanName, fmtCentsBRL(billing.nextChargeAmount))}
           </div>
         ) : billing.cancelAtPeriodEnd ? (
           <div className="small" style={{ color: 'var(--orange)', marginBottom: 14 }}>
@@ -181,7 +199,7 @@ export default function SettingsPlan() {
         )}
         {introPlan && (
           <div className="card" style={{ marginBottom: 14 }}>
-            <div className="ttl" style={{ fontSize: 18, marginBottom: 4 }}>{t('Your first month for R$ {0}.', (introPlan.introAmountCents / 100).toFixed(2).replace('.', ','))}</div>
+            <div className="ttl" style={{ fontSize: 18, marginBottom: 4 }}>{t('Your first month for R$ {0}.', centsStr(introPlan.introAmountCents))}</div>
             <div className="small muted">{t('Then you continue on the plan you choose. Cancel anytime, right in the app.')}</div>
           </div>
         )}
@@ -204,7 +222,7 @@ export default function SettingsPlan() {
               {featured && <span className="tag acc">{t('Lowest price per month')}</span>}
             </div>
             <div style={{ fontSize: 20, fontWeight: 600 }}>{periodText(p)}</div>
-            {equivCents != null && p.id !== monthly.id && <div className="small muted">{t('Equivalent to R$ {0}/month', (equivCents / 100).toFixed(2).replace('.', ','))}</div>}
+            {equivCents != null && p.id !== monthly.id && <div className="small muted">{t('Equivalent to R$ {0}/month', centsStr(equivCents))}</div>}
             {savings != null && savings > 0 && <div className="small" style={{ color: 'var(--green)' }}>{t('{0}% less than the monthly plan', String(savings))}</div>}
             <div className="small muted" style={{ marginTop: 4 }}>{descOf(p.display) || t('Includes everything Brilhart Fitness offers.')}</div>
             <div style={{ marginTop: 10 }}>
