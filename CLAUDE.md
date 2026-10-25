@@ -19,7 +19,6 @@ web/       multi-stage Dockerfile (builds frontend → nginx) + nginx.conf.templ
 mcp/       optional MCP server — read-only stdio bridge exposing a user's workouts/1RM/muscle
            balance to LLM clients (Claude Desktop, Cursor…). Not part of the Docker build; only
            runs when an LLM client spawns it.
-media/     exercise img/gif, gitignored, fetched at runtime by the `media` compose service.
 website/   static marketing site (plain HTML/CSS/JS), deployed separately by .gitlab-ci.yml.
 docs/      SELF_HOSTING.md, MOBILE.md.
 ```
@@ -27,7 +26,7 @@ docs/      SELF_HOSTING.md, MOBILE.md.
 ## Commands
 
 ```bash
-# Local stack (api + web + media, prebuilt or built from source)
+# Local stack (api + web + db, prebuilt or built from source)
 cp .env.example .env
 docker compose up -d --build
 
@@ -45,7 +44,7 @@ cd mcp && npm test
 
 # Production build
 cd frontend && npm run build
-cd frontend && npm run build:mobile   # + cap sync, points media at the CDN dataset
+cd frontend && npm run build:mobile   # + cap sync
 ```
 
 There is no linter/formatter configured (no ESLint/Prettier config in the repo) and no
@@ -192,10 +191,9 @@ notification code; it documents the exact env-var contract (`RP_ID`, `ORIGIN`, `
 
 ### Docker / deploy
 
-`docker-compose.yml` has four services: `media` (one-shot exercise-asset downloader, gitignored
-output), `db` (`postgres:17-alpine`, named volume `pgdata`, no host port published), `api`
-(`depends_on: db: condition: service_healthy`), `web` (multi-stage build of `frontend/` served
-by nginx, which also proxies `/api` → `api` and serves the shared media volume — single origin,
+`docker-compose.yml` has three services: `db` (`postgres:17-alpine`, named volume `pgdata`, no
+host port published), `api` (`depends_on: db: condition: service_healthy`), `web` (multi-stage
+build of `frontend/` served by nginx, which also proxies `/api` → `api` — single origin,
 required for passkeys). `web/nginx.conf.template` is rendered from env vars at container start
 (`NGINX_PORT`, `BACKEND`, `PORT`), so host/port remapping works against prebuilt images without
 a rebuild.
@@ -205,6 +203,6 @@ a rebuild.
 - **Dependency-light is a hard constraint, not a preference.** Frontend: React + Router + Zustand
   and nothing else. `api/`: three dependencies total (`@simplewebauthn/server`, `web-push`, `pg`).
   New dependencies are a hard sell either side.
-- Don't commit `media/` or `data/` (gitignored).
+- Don't commit `data/` (gitignored).
 - Training-logic changes (progression, 1RM, session read-back) need a unit test in `src/lib`
   beside the code, not just manual clicking-through.

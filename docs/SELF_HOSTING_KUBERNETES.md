@@ -5,11 +5,9 @@ cert-manager. Read [SELF_HOSTING.md](SELF_HOSTING.md) first: the passkey require
 `RP_ID`, `ORIGIN`), the settings in `.env.example` and the backup advice apply here unchanged.
 
 openGym is pretty simple — a frontend and an API backend. The API keeps everything in plain JSON
-files on a volume. The Docker Compose file also has a third container that downloads the exercise
-media once; here that is an initContainer. There are only a few resources to create:
+files on a volume. There are only a few resources to create:
 
-- 2 PVCs: `opengym-data` (users, passkeys, workouts, uploads — **back this one up**) and
-  `opengym-media` (the exercise images, downloaded again if lost).
+- 1 PVC: `opengym-data` (users, passkeys, workouts, uploads — **back this one up**).
 - 1 Deployment running the API and the web container in a single pod, for simplicity. It stays at
   one replica with the `Recreate` strategy: the API's data is files on a `ReadWriteOnce` volume,
   and two API processes must never write them at once.
