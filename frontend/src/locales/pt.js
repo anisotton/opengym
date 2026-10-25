@@ -1,5 +1,19 @@
 // Portuguese UI strings. Keys are the English source strings (see lib/i18n.js).
 export default {
+  // --- legal pages (ISO-1390) ---
+  "Version {0}": "Versão {0}",
+  "Terms of Use": "Termos de Uso",
+  "Privacy Policy": "Política de Privacidade",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "Li e aceito os Termos de Uso e a Política de Privacidade.",
+  "Read the Terms of Use": "Ler os Termos de Uso",
+  "Read the Privacy Policy": "Ler a Política de Privacidade",
+  "We updated our terms": "Atualizámos os nossos termos",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Para continuar a usar o Brilhart Fitness, leia e aceite os Termos de Uso e a Política de Privacidade atuais.",
+  "You accepted version {0} on {1}.": "Aceitou a versão {0} em {1}.",
+  "Accept and continue": "Aceitar e continuar",
+  "Update the app to accept the new terms.": "Atualize a aplicação para aceitar os novos termos.",
+  "Reload": "Recarregar",
+  "Could not save your acceptance — are you online?": "Não foi possível registar a sua aceitação — está online?",
   // --- billing / subscription (ISO-1392/ISO-1395) ---
   "Read-only account": "Conta em modo de leitura",
   "Subscribe to log workouts again. Your history is still here.": "Subscreva para voltar a registar treinos. O seu histórico continua disponível.",
@@ -1710,6 +1724,8 @@ export default {
   // ISO-1398: account e-mail, confirmation, recovery.
   'Add your e-mail': 'Adicionar o seu e-mail',
   'Almost there!': 'Quase lá!',
+  // ISO-1521: minimum age to sign up.
+  'Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.': 'A Brilhart Fitness é para maiores de 18 anos. Não é possível concluir o seu registo.',
   'Change e-mail': 'Alterar e-mail',
   'Check your birth date.': 'Verifique a sua data de nascimento.',
   'Confirmation link sent to {0}.': 'Link de confirmação enviado para {0}.',
@@ -1721,7 +1737,6 @@ export default {
   'Not confirmed yet.': 'Ainda não confirmado.',
   'Open Brilhart Fitness': 'Abrir o Brilhart Fitness',
   'Pending': 'Pendente',
-  'People under 18 should use this app with a guardian’s guidance.': 'Pessoas com menos de 18 anos devem usar esta aplicação com a orientação de um responsável.',
   'Resend confirmation': 'Reenviar confirmação',
   'Resend e-mail': 'Reenviar e-mail',
   'That is already your e-mail.': 'Esse já é o seu e-mail.',
@@ -1741,6 +1756,15 @@ export default {
   'That link is invalid or expired.': 'Essa ligação é inválida ou expirou.',
   'Confirm your e-mail to keep access to your subscription.': 'Confirme o seu e-mail para não perder o acesso à subscrição.',
   'Resend': 'Reenviar',
+  'Confirm your e-mail': 'Confirme o seu e-mail',
+  'Open the link we sent to {0}.': 'Abra a ligação que enviámos para {0}.',
+  'Sent': 'Enviado',
+  'Just a moment.': 'Só um momento.',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'A sua conta está confirmada. Se um dia perder este dispositivo, é por este e-mail que volta a entrar.',
+  'Your e-mail was already confirmed.': 'O seu e-mail já estava confirmado.',
+  'This link no longer works': 'Esta ligação já não funciona',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'Expirou ou já foi usada. Peça uma nova e abra o e-mail mais recente.',
+  'Send a new link': 'Enviar nova ligação',
   // --- delete account (ISO-1394/ISO-1449) ---
   'Delete account': 'Eliminar conta',
   'Erases everything — your data, your subscription, and the account itself.': 'Elimina tudo — os seus dados, a sua subscrição e a própria conta.',

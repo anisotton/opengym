@@ -1,22 +1,21 @@
-// The passkey half of sign-up (ISO-1397/1398): name, e-mail, birth date, then the passkey
-// ceremony, then "check your e-mail". Shared by Login.jsx's RegisterSheet and Settings.jsx's
-// RegisterInline — the only two places a passkey profile is created from. The password half
-// (PasswordRegisterForm, PasswordAuth.jsx) is untouched: PASSWORD_LOGIN is off on Brilhart
-// Fitness, and its own e-mail field is the older, optional, never-sent-to sign-in address (#118),
-// unrelated to this one.
+// The passkey half of sign-up (ISO-1397/1398/1521): name, e-mail, birth date, the terms box
+// (ISO-1390), then the passkey ceremony, then "check your e-mail". Shared by Login.jsx's
+// RegisterSheet and Settings.jsx's RegisterInline — the only two places a passkey profile is
+// created from. The password half (PasswordRegisterForm, PasswordAuth.jsx) shares the terms box
+// (TermsCheckbox) and the under-18 block (ISO-1521) but is otherwise separate: PASSWORD_LOGIN is
+// off on Brilhart Fitness, and its own e-mail field is the older, optional, never-sent-to sign-in
+// address (#118), unrelated to this one.
 import { useEffect, useRef, useState } from 'react'
 import { t } from '../lib/i18n.js'
-import { ageFromBirthDate } from '../lib/age.js'
+import { ageFromBirthDate, isMinor, MIN_PLAUSIBLE_AGE } from '../lib/age.js'
 import { passkeyRegister, bio } from '../lib/api.js'
 import { looksLikeEmail, foldEmail, passwordError, webauthnOutcome } from './PasswordAuth.jsx'
-import { useMinorNotice, ResendEmailButton } from './AccountEmail.jsx'
+import { ResendEmailButton } from './AccountEmail.jsx'
 import { Button } from './ui.jsx'
+import TermsCheckbox from './TermsCheckbox.jsx'
+import { LEGAL_VERSION } from '../legal/version.js'
 
 const errStyle = { color: 'var(--red)', marginTop: 10 }
-// Below this the birth date is treated the same as a malformed field (a typo, a wrong-century
-// slip), not a reason to show the under-18 notice — ordinary input sanity, same category as "not
-// a valid e-mail", never itself a barrier the notice doesn't already clear.
-const MIN_PLAUSIBLE_AGE = 5
 
 /* name/code stay the caller's state (Login.jsx lifts them so the passkey/password Segmented
    switch keeps what was typed); email/birthDate/the two steps are this component's own. `header`
@@ -27,18 +26,19 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
   const [email, setEmail] = useState('')
   const [birthDate, setBirthDate] = useState('')
   const [step, setStep] = useState('data')   // 'data' | 'sent'
+  const [terms, setTerms] = useState(false)   // never pre-ticked: acceptance is the user's own act
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const ref = useRef(null)
   useEffect(() => { setTimeout(() => ref.current?.focus(), 250) }, [])
-  useMinorNotice(birthDate)
 
   const age = ageFromBirthDate(birthDate)
   const dateOK = !!birthDate && age != null && age >= MIN_PLAUSIBLE_AGE
-  const canSubmit = !!name.trim() && looksLikeEmail(email) && dateOK && (!inviteOnly || !!code.trim())
+  const minor = dateOK && isMinor(birthDate)
+  const canSubmit = !!name.trim() && looksLikeEmail(email) && dateOK && !minor && (!inviteOnly || !!code.trim()) && terms
 
   const go = async () => {
-    if (busy) return
+    if (busy || minor) return   // the button is disabled too, but a programmatic call must not get past this
     const n = name.trim()
     const bad = !n ? t('Enter a name')
       : !looksLikeEmail(email) ? t('That is not an e-mail address.')
@@ -46,10 +46,13 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
       : inviteOnly && !code.trim() ? t('An invite code is required')
       : null
     if (bad) { setErr(bad); return }
+    if (!terms) return   // the button is disabled too, but a programmatic call must not get past this
     setBusy(true); setErr(null)
     try {
-      const u = await passkeyRegister(n, code.trim(), foldEmail(email), birthDate)
-      await onCreated({ ...u, email: foldEmail(email), emailVerified: false, needsEmail: false })
+      const u = await passkeyRegister(n, code.trim(), foldEmail(email), birthDate, LEGAL_VERSION)
+      // The terms fields too (ISO-1390): the server recorded this acceptance in the same request,
+      // so Settings shows its date from the start, not only after the next /api/me.
+      await onCreated({ ...u, email: foldEmail(email), emailVerified: false, needsEmail: false, termsVersion: LEGAL_VERSION, termsAcceptedAt: new Date().toISOString(), needsTerms: false })
       setStep('sent')
     } catch (e) {
       const msg = webauthnOutcome(e, 'register', 'create')
@@ -82,12 +85,16 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
     <div style={{ height: 10 }} />
     <input className="input" type="date" name="bday" autoComplete="bday" aria-label={t('Date of birth')}
       value={birthDate} onChange={e => setBirthDate(e.target.value)} />
+    {minor && <div className="small" role="alert" style={errStyle}>
+      {t('Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.')}
+    </div>}
     {inviteOnly && <>
       <div style={{ height: 10 }} />
       <input className="input" placeholder={t('Invite code')} maxLength={40} value={code}
         onChange={e => setCode(e.target.value.toUpperCase())} style={{ letterSpacing: '.14em', fontWeight: 600, textAlign: 'center' }} />
       <div className="dim small" style={{ marginTop: 6 }}>{t('This app is invite-only — enter the code you were given.')}</div>
     </>}
+    <TermsCheckbox checked={terms} onChange={setTerms} />
     {err && <div className="small" role="alert" style={errStyle}>{err}</div>}
     <div style={{ height: 12 }} />
     <Button variant="primary" disabled={busy || !canSubmit} onClick={go}>{t('Create passkey')}</Button>

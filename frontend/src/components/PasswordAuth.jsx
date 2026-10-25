@@ -12,10 +12,13 @@ import { useStore, hasData } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { dateLocale } from '../lib/i18n-core.js'
+import { ageFromBirthDate, isMinor, MIN_PLAUSIBLE_AGE } from '../lib/age.js'
 import { api, webauthnOK, passkeyAssertion, passwordLogin, passwordRegister, passwordResetRedeem, reportWebauthnFailure } from '../lib/api.js'
 import { classifyWebauthnFailure, webauthnFailureText } from '../lib/webauthn-error.js'
 import { askAddDeviceData } from '../sheets.jsx'
 import { Row, Button } from './ui.jsx'
+import TermsCheckbox from './TermsCheckbox.jsx'
+import { LEGAL_VERSION } from '../legal/version.js'
 
 // The server's floor (api/password.js MIN_LENGTH), checked here first so the common mistake is
 // answered without a round trip. The server still decides.
@@ -64,6 +67,10 @@ export function passwordError(e) {
     case 'reset-invalid': return t('That reset code is wrong or has expired — ask your admin for a new one.')
     case 'disabled': return t('This account has been disabled.')
     case 'busy': return t('The server is busy — try again in a moment.')
+    // ISO-1390: a signup the server refused over the terms. This bundle always sends its own
+    // LEGAL_VERSION, so `terms-required` only reaches an older one that sends none — for both,
+    // the way forward is a newer app.
+    case 'terms-required': case 'terms-version-stale': return t('Update the app to accept the new terms.')
   }
   return e?.message || t('Sign-in failed')
 }
@@ -90,10 +97,15 @@ export function webauthnOutcome(e, flow, step) {
 }
 
 // Signed in: the same steps as a passkey sign-in (Login.jsx) — and the same account coming back
-// merges what this device kept for it (adoptProfile).
+// merges what this device kept for it (adoptProfile). That includes asking /api/me for what the
+// sign-in answer leaves out (e-mail state, ISO-1397; terms, ISO-1390): without it a password
+// sign-in would skip the "we updated our terms" sheet until the next reload. A failure still
+// signs in; the fields catch up on the next boot.
 async function signedIn(u, close) {
   const st = useStore.getState()
-  st.setUser(u, { adopt: true })
+  const me = await api('/api/me').catch(() => null)
+  // Only an answered /api/me counts as this visit's terms check (setUserFromMe, ISO-1390).
+  if (me) st.setUserFromMe(me, u, { adopt: true }); else st.setUser(u, { adopt: true })
   close()
   await st.adoptProfile(askAddDeviceData)
   toast(t('Welcome back, {0}', u.name))
@@ -173,30 +185,41 @@ export function PasswordSignInSheet({ close, onPasskey }) {
 export const openPasswordSignIn = onPasskey => ui().openSheet(close => <PasswordSignInSheet close={close} onPasskey={onPasskey} />)
 
 /* The password half of creating a profile. Name and invite code are the caller's state, so
-   switching between passkey and password on the sign-up sheet keeps what was typed. */
+   switching between passkey and password on the sign-up sheet keeps what was typed. Birth date is
+   required and under-18 blocks it outright (ISO-1521), the same rule and wording as the passkey
+   half (SignupFlow.jsx). */
 export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, setCode }) {
   const [email, setEmail] = useState('')
+  const [birthDate, setBirthDate] = useState('')
   const [pw, setPw] = useState('')
   const [again, setAgain] = useState('')
+  const [terms, setTerms] = useState(false)   // never pre-ticked: acceptance is the user's own act
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  const age = ageFromBirthDate(birthDate)
+  const dateOK = !!birthDate && age != null && age >= MIN_PLAUSIBLE_AGE
+  const minor = dateOK && isMinor(birthDate)
   const submit = async ev => {
     ev.preventDefault()
-    if (busy) return
+    if (busy || minor) return   // the button is disabled too, but an implicit submit must not get past this
     const n = name.trim()
     const mail = email.trim()
     const bad = !n ? t('Enter a name')
       : mail && !looksLikeEmail(mail) ? t('That is not an e-mail address.')
+      : !dateOK ? t('Check your birth date.')
       : inviteOnly && !code.trim() ? t('An invite code is required')
       : length(pw) < MIN_PASSWORD ? t('Use at least {0} characters.', MIN_PASSWORD)
       : pw !== again ? t('The two passwords are not the same.')
       : null
     if (bad) { setErr(bad); return }
+    if (!terms) return   // the button is disabled too, but an implicit submit must not get past this
     setBusy(true); setErr(null)
     try {
-      const u = await passwordRegister(n, pw, code.trim(), mail)
+      const u = await passwordRegister(n, pw, code.trim(), mail, birthDate, LEGAL_VERSION)
       const st = useStore.getState()
-      st.setUser(u); close()
+      // The server recorded this acceptance in the same request (ISO-1390): Settings shows its
+      // date from here on, not only after the next /api/me.
+      st.setUser({ ...u, termsVersion: LEGAL_VERSION, termsAcceptedAt: new Date().toISOString(), needsTerms: false }); close()
       if (hasData(useStore.getState().S)) { await st.pushState(); toast(t('Profile created — data from this device moved into it')) }
       else { await st.pullState(); toast(t('Welcome, {0}', u.name)) }
     } catch (e) { setErr(passwordError(e)) }
@@ -209,6 +232,12 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     <input className="input" type="email" name="email" autoComplete="email" inputMode="email" placeholder={t('E-mail (optional)')} maxLength={254}
       value={email} onChange={e => setEmail(e.target.value)} {...field} />
     <div className="dim small" style={{ marginTop: 6 }}>{t('Lets you sign in with it instead of your name. Nothing is ever sent to it.')}</div>
+    <div style={{ height: 10 }} />
+    <input className="input" type="date" name="bday" autoComplete="bday" aria-label={t('Date of birth')}
+      value={birthDate} onChange={e => setBirthDate(e.target.value)} />
+    {minor && <div className="small" role="alert" style={errStyle}>
+      {t('Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.')}
+    </div>}
     {inviteOnly && <>
       <div style={{ height: 10 }} />
       <input className="input" placeholder={t('Invite code')} maxLength={40} value={code}
@@ -222,9 +251,10 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     <input className="input" type="password" name="new-password-again" autoComplete="new-password" placeholder={t('Repeat the password')}
       value={again} onChange={e => setAgain(e.target.value)} />
     <div className="dim small" style={{ marginTop: 6 }}>{t('At least {0} characters. A few unrelated words make a good one.', MIN_PASSWORD)}</div>
+    <TermsCheckbox checked={terms} onChange={setTerms} />
     {err && <div className="small" role="alert" style={errStyle}>{err}</div>}
     <div style={{ height: 12 }} />
-    <Button type="submit" variant="primary" disabled={busy}>{t('Create profile')}</Button>
+    <Button type="submit" variant="primary" disabled={busy || !terms || minor}>{t('Create profile')}</Button>
   </form>
 }
 

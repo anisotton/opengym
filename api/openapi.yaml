@@ -188,21 +188,32 @@ paths:
       tags: [meta]
       operationId: getHealth
       summary: Health check
-      description: Always public. Also reports how many user accounts exist.
+      description: |
+        Always public. Pings the database with a short timeout (ISO-1400) — used by the
+        compose healthcheck and by external uptime monitors. Reports whether the database
+        answered, nothing about account counts.
       security: []
       responses:
         '200':
-          description: The server is up.
+          description: The server and its database are both up.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   ok: { type: boolean, const: true }
-                  users:
-                    type: integer
-                    description: Number of registered user accounts.
-              example: { ok: true, users: 7 }
+                  db: { type: string, const: ok }
+              example: { ok: true, db: ok }
+        '503':
+          description: The database did not answer in time.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: false }
+                  db: { type: string, const: down }
+              example: { ok: false, db: down }
 
   /api/config:
     get:
@@ -214,6 +225,10 @@ paths:
         environment variables on the server (`INVITE_ONLY`, `ALLOW_GUEST`), and so does
         `password_login`, which is there only when `PASSWORD_LOGIN=1`, and `default_lang`,
         which is there only when `DEFAULT_LANG` is set.
+
+        `legal_version` is always there, for everybody: the version of the Terms of Use and
+        Privacy Policy in force (ISO-1390). Signup refuses any other, so an app whose bundle
+        carries a different one knows to ask for an update.
 
         `media` is there unless the instance runs with `MEDIA_UPLOADS=0`, for everybody: the
         caps are not a secret, and its absence is how the app knows this server does not
@@ -245,6 +260,12 @@ paths:
                     description: >-
                       When false, the client hides "continue without account".
                       Guest mode is purely client-side and never calls this API.
+                  legal_version:
+                    type: string
+                    example: '2026-10-18'
+                    description: >-
+                      Always present, public. The Terms of Use / Privacy Policy version in
+                      force; `termsVersion` at signup must equal it (ISO-1390).
                   coach:
                     description: >-
                       Present for a signed-in caller and absent otherwise; `null` when this
@@ -282,15 +303,16 @@ paths:
                   media:
                     $ref: '#/components/schemas/MediaConfig'
               examples:
-                anonymous: { value: { invite_only: true, allow_guest: false } }
-                signedInNoCoach: { value: { invite_only: true, allow_guest: false, coach: null } }
+                anonymous: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-18' } }
+                signedInNoCoach: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-18', coach: null } }
                 signedIn:
                   value:
                     invite_only: true
                     allow_guest: false
+                    legal_version: '2026-10-18'
                     coach: { enabled: true, provider: compatible, providerLabel: "OpenAI-compatible endpoint", authMode: instance, community: false }
-                passwordLogin: { value: { invite_only: true, allow_guest: false, password_login: true } }
-                media: { value: { invite_only: false, allow_guest: true, media: { imageMB: 2, gifMB: 8, videoMB: 40, videoSec: 60, quotaMB: 200, workouts: true } } }
+                passwordLogin: { value: { invite_only: true, allow_guest: false, legal_version: '2026-10-18', password_login: true } }
+                media: { value: { invite_only: false, allow_guest: true, legal_version: '2026-10-18', media: { imageMB: 2, gifMB: 8, videoMB: 40, videoSec: 60, quotaMB: 200, workouts: true } } }
 
   /api/client-event:
     post:
@@ -351,6 +373,11 @@ paths:
         `email`/`emailVerified`/`needsEmail` (tag `email`) are left out entirely while
         `PASSWORD_LOGIN` is on: `email` there is the older, unrelated sign-in address
         (tag `password`), which is never part of this response.
+
+        `termsVersion`/`termsAcceptedAt`/`needsTerms` (ISO-1390) are always present,
+        `PASSWORD_LOGIN` included. `needsTerms` is true whenever the accepted version is not the
+        one in force (`legal_version` in `GET /api/config`) — an account from before ISO-1390
+        has accepted none, so it is true with both other fields `null`.
       responses:
         '200':
           description: A valid session.
@@ -363,6 +390,9 @@ paths:
                   email: { oneOf: [{ type: string }, { type: 'null' }], description: 'PASSWORD_LOGIN off only.' }
                   emailVerified: { type: boolean, description: 'PASSWORD_LOGIN off only.' }
                   needsEmail: { type: boolean, description: 'PASSWORD_LOGIN off only — an account from before ISO-1397 with no e-mail yet.' }
+                  termsVersion: { oneOf: [{ type: string }, { type: 'null' }], description: 'Always present. The Terms/Privacy version this account accepted; null if none.' }
+                  termsAcceptedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }], description: 'Always present. When that version was accepted; null if never.' }
+                  needsTerms: { type: boolean, description: 'Always present. True unless termsVersion is the version in force.' }
                   token: { type: string, description: 'Bearer sessions past half their lifetime only — the renewed token.' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -381,8 +411,17 @@ paths:
 
         `email` is required and checked for uniqueness here (case-insensitively; an
         address already in use pauses the caller's address the same way `POST
-        /api/account/email` does, tag `email`). `birthDate` is optional and never
-        blocks a signup; it is only asked for an under-18 notice the client shows.
+        /api/account/email` does, tag `email`).
+
+        `birthDate` is required (ISO-1521): missing is `400 birth-date-required`, not a date is
+        `400 birth-date-invalid`, and one that gives an age under 18 as of now is `400 underage`
+        — checked right after `termsVersion`, before the e-mail. Signup is refused outright for a
+        minor; existing accounts are unaffected.
+
+        `termsVersion` is required and must equal `legal_version` from `GET /api/config`
+        (ISO-1390): missing, not a string or blank is `400 terms-required`; any other version
+        is `400 terms-version-stale` (the app's bundled texts are out of date). It is checked
+        before the birth date and the e-mail, and recorded on the account by `/api/register/verify`.
 
         CSRF-exempt (the challenge is the credential). No session required.
       security: []
@@ -392,7 +431,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, email]
+              required: [name, email, birthDate, termsVersion]
               properties:
                 name:
                   type: string
@@ -402,15 +441,18 @@ paths:
                   type: string
                   maxLength: 254
                   description: Required, unique (case-insensitively). Confirmed by mail after step 2.
+                termsVersion:
+                  type: string
+                  description: Required. The Terms/Privacy version the person accepted; must be the one in force.
                 birthDate:
                   type: string
-                  description: 'Optional, `YYYY-MM-DD`. Not in the future, not implausibly old.'
+                  description: 'Required, `YYYY-MM-DD`. Not in the future, not implausibly old, and 18+ as of now.'
                 code:
                   type: string
                   description: >-
                     Invite code — required (and validated) only when the instance
                     runs with INVITE_ONLY. Compared case-insensitively.
-            example: { name: "Ada", email: "ada@example.com", code: "3F9C21A07B54D688" }
+            example: { name: "Ada", email: "ada@example.com", birthDate: "1990-05-05", termsVersion: "2026-10-18", code: "3F9C21A07B54D688" }
       responses:
         '200':
           description: Ceremony options.
@@ -425,14 +467,18 @@ paths:
                   options:
                     $ref: '#/components/schemas/WebAuthnRegistrationOptions'
         '400':
-          description: '`name` missing/empty, `email` missing/invalid, or `birthDate` not a date.'
+          description: '`name` missing/empty, `termsVersion` missing (`terms-required`) or not the current one (`terms-version-stale`), `birthDate` missing (`birth-date-required`), not a date (`birth-date-invalid`) or under 18 (`underage`), or `email` missing/invalid.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 name: { value: { error: "name required" } }
-                email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
+                termsRequired: { value: { error: "update the app to accept the terms", code: "terms-required" } }
+                termsStale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
+                birthDateRequired: { value: { error: "a birth date is required", code: "birth-date-required" } }
                 birthDate: { value: { error: "that is not a date", code: "birth-date-invalid" } }
+                underage: { value: { error: "Brilhart Fitness is for people 18 and older", code: "underage" } }
+                email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
         '403':
           description: Instance is invite-only and the code is missing, used, or revoked.
           content:
@@ -792,8 +838,13 @@ paths:
         `POST /api/account/email`); one that is not an address is refused with `400
         email-invalid`, one that is in use with `409 email-taken` — asked only after the
         hash and the second invite check, so without a valid code it is never answered —
-        which counts against the caller's address like a wrong invite code. **Not**
-        CSRF-exempt.
+        which counts against the caller's address like a wrong invite code. `termsVersion`
+        follows the same rule as in `POST /api/register/options` (`400 terms-required` /
+        `400 terms-version-stale`, checked right after the name) and is recorded on the
+        account (ISO-1390). `birthDate` is required (ISO-1521), checked right after
+        `termsVersion`, before the invite code: missing is `400 birth-date-required`, not a date
+        is `400 birth-date-invalid`, under 18 as of now is `400 underage` — the same three codes
+        and the same place in the flow as `POST /api/register/options`. **Not** CSRF-exempt.
       security: []
       requestBody:
         required: true
@@ -801,13 +852,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, password]
+              required: [name, password, birthDate, termsVersion]
               properties:
                 name: { type: string, maxLength: 40 }
+                termsVersion: { type: string, description: Required. The Terms/Privacy version accepted; must be the one in force. }
+                birthDate: { type: string, description: 'Required, `YYYY-MM-DD`. Not in the future, not implausibly old, and 18+ as of now.' }
                 password: { type: string, minLength: 10, maxLength: 256 }
                 code: { type: string, description: Invite code (INVITE_ONLY only). }
                 email: { type: string, maxLength: 254, description: Optional sign-in e-mail. }
-            example: { name: "Ada", password: "correct horse battery staple", code: "3F9C21A07B54D688" }
+            example: { name: "Ada", password: "correct horse battery staple", birthDate: "1990-05-05", termsVersion: "2026-10-18", code: "3F9C21A07B54D688" }
       responses:
         '200':
           description: Registered and signed in. The session cookie is set.
@@ -824,14 +877,21 @@ paths:
         '400':
           description: >-
             The password breaks the policy — `too-short` (under 10 characters), `too-long`
-            (over 256) or `too-common` — a field is `missing`, or `email-invalid`: the
-            `email` given is not an e-mail address.
+            (over 256) or `too-common` — a field is `missing`, `email-invalid`: the
+            `email` given is not an e-mail address, `terms-required`: no `termsVersion`,
+            `terms-version-stale`: not the version in force, `birth-date-required`: no
+            `birthDate`, `birth-date-invalid`: not a date, or `underage`: under 18 as of now.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 policy: { value: { error: "this password is too easy to guess", code: "too-common" } }
                 email: { value: { error: "that is not an e-mail address", code: "email-invalid" } }
+                termsRequired: { value: { error: "update the app to accept the terms", code: "terms-required" } }
+                termsStale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
+                birthDateRequired: { value: { error: "a birth date is required", code: "birth-date-required" } }
+                birthDate: { value: { error: "that is not a date", code: "birth-date-invalid" } }
+                underage: { value: { error: "Brilhart Fitness is for people 18 and older", code: "underage" } }
         '403':
           description: Invite-only and the code is missing, used or revoked.
           content:
@@ -1224,6 +1284,51 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "this profile has no e-mail yet", code: "no-email" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/account/terms/accept:
+    post:
+      tags: [auth]
+      operationId: acceptTerms
+      summary: Accept the current Terms of Use and Privacy Policy
+      description: |
+        For a signed-in account whose `GET /api/me` says `needsTerms: true` — one imported from
+        before acceptance was recorded, or one that accepted an older text (ISO-1390). `version`
+        must be the server's current `legal_version` (see `GET /api/config`): missing is
+        `terms-required`, any other value is `terms-version-stale` (the app shows an outdated
+        text and needs an update). Idempotent: when the account already accepted this version,
+        answers 200 with the stored acceptance and records nothing new.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string, description: 'The LEGAL_VERSION of the text the app showed.' }
+            example: { version: "2026-10-18" }
+      responses:
+        '200':
+          description: The account has accepted the current version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  termsVersion: { type: string }
+                  termsAcceptedAt: { type: string, format: date-time }
+              example: { ok: true, termsVersion: "2026-10-18", termsAcceptedAt: "2026-10-18T12:00:00.000Z" }
+        '400':
+          description: '`version` is missing (`terms-required`) or not the current one (`terms-version-stale`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                required: { value: { error: "update the app to accept the terms", code: "terms-required" } }
+                stale: { value: { error: "these terms are not the current ones — update the app", code: "terms-version-stale" } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -1852,9 +1957,11 @@ paths:
       operationId: createBillingCheckout
       summary: Start a Stripe Checkout Session for one of the three plans
       description: |
-        Requires a verified e-mail (Phase 2) — refused with 403 otherwise, since the renewal and
-        first-period notices this phase sends have nowhere to go without one. Creates the account's
-        Stripe customer on first use.
+        Requires the current terms accepted (ISO-1390) — refused with 403 `terms-required`
+        otherwise, checked first, so when both are missing the client shows the terms before the
+        e-mail. Then requires a verified e-mail (Phase 2) — refused with 403 `email-unverified`
+        otherwise, since the renewal and first-period notices this phase sends have nowhere to go
+        without one. Creates the account's Stripe customer on first use.
 
         There is no free trial and no Stripe `trialing` status (ISO-1392): an account's first-ever
         Checkout Session sells one cycle of `STRIPE_PRICE_INTRO` alone (R$1,99), so the subscription
@@ -1891,11 +1998,16 @@ paths:
               example: { error: "invalid plan", code: "invalid-plan" }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: The account's e-mail is not verified yet.
+          description: |
+            The account has not accepted the current terms (`terms-required`, checked first —
+            accept them with `POST /api/account/terms/accept`), or its e-mail is not verified yet
+            (`email-unverified`).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: "e-mail not verified", code: "email-unverified" }
+              examples:
+                termsRequired: { value: { error: "accept the current terms first", code: "terms-required" } }
+                emailUnverified: { value: { error: "e-mail not verified", code: "email-unverified" } }
         '404': { $ref: '#/components/responses/BillingOff' }
 
   /api/billing/portal:
@@ -2728,6 +2840,397 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "no such code" }
+
+  /api/admin/programs:
+    get:
+      tags: [admin]
+      operationId: adminPrograms
+      summary: 'Admin: list training programs'
+      description: >-
+        The active catalog by default (`trash=0`); `trash=1` lists the trash instead, ordered by
+        when each was trashed, and ignores `status`. `q` matches title or description
+        (case-insensitive; its own `%`/`_`/`\` are escaped, never treated as wildcards).
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string, enum: [strength, hypertrophy, conditioning, mobility, general] } }
+        - { name: difficulty, in: query, schema: { type: string, enum: [beginner, intermediate, advanced] } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, published] } }
+        - { name: trash, in: query, schema: { type: string, enum: ['0', '1'] } }
+      responses:
+        '200':
+          description: The matching programs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  programs: { type: array, items: { $ref: '#/components/schemas/Program' } }
+                  trashCount: { type: integer, description: 'How many programs are in the trash right now, regardless of `trash`.' }
+        '400':
+          description: An unknown category/difficulty/status filter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/programs/meta:
+    get:
+      tags: [admin]
+      operationId: adminProgramsMeta
+      summary: 'Admin: program catalog enums and limits'
+      description: Category/difficulty values with display labels, field limits, and the two configurable knobs (PROGRAM_TRASH_DAYS, PROGRAM_COVER_MAX_MB) — everything the form needs before it ever submits.
+      responses:
+        '200':
+          description: Catalog metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories: { type: array, items: { type: object, properties: { value: { type: string }, label: { type: string } } } }
+                  difficulties: { type: array, items: { type: object, properties: { value: { type: string }, label: { type: string } } } }
+                  limits: { type: object }
+                  trashDays: { type: integer }
+                  coverMaxMB: { type: number }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/program:
+    get:
+      tags: [admin]
+      operationId: adminProgram
+      summary: 'Admin: one program, with its history'
+      description: Works for a program in the trash too (§3.6 — an admin may always see it; only a future end-user route would answer 404 there).
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The program and its last 50 audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  program: { $ref: '#/components/schemas/Program' }
+                  history: { type: array, items: { $ref: '#/components/schemas/ProgramEvent' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/programs/new:
+    post:
+      tags: [admin]
+      operationId: adminProgramNew
+      summary: 'Admin: create a training program'
+      description: Always created with rev 1. Title must be unique (case-insensitive) among active programs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, category, difficulty, sessionMinutes]
+              properties:
+                title: { type: string, minLength: 3, maxLength: 120 }
+                description: { type: string, maxLength: 5000 }
+                category: { type: string, enum: [strength, hypertrophy, conditioning, mobility, general] }
+                difficulty: { type: string, enum: [beginner, intermediate, advanced] }
+                sessionMinutes: { type: integer, minimum: 1, maximum: 600 }
+                status: { type: string, enum: [draft, published], default: draft }
+      responses:
+        '200':
+          description: The new program.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '400':
+          description: A field failed validation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "title must be 3-120 characters", field: title }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Another active program already has this title.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "a program with this title already exists", code: title-taken }
+
+  /api/admin/program/update:
+    post:
+      tags: [admin]
+      operationId: adminProgramUpdate
+      summary: 'Admin: edit, publish or unpublish a program'
+      description: >-
+        Partial — only the fields present are validated and changed. `rev` must match the
+        program's current revision or this answers `409 {code: stale, current}` without writing
+        anything. A program in the trash answers `409 {code: in-trash}` — it is read-only until
+        restored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, rev]
+              properties:
+                id: { type: string }
+                rev: { type: integer }
+                title: { type: string }
+                description: { type: string }
+                category: { type: string, enum: [strength, hypertrophy, conditioning, mobility, general] }
+                difficulty: { type: string, enum: [beginner, intermediate, advanced] }
+                sessionMinutes: { type: integer }
+                status: { type: string, enum: [draft, published] }
+      responses:
+        '200':
+          description: The updated program.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '400':
+          description: A field failed validation, or id/rev are missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale rev, title taken, or the program is in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "changed since you loaded it", code: stale, current: {} }
+
+  /api/admin/program/trash:
+    post:
+      tags: [admin]
+      operationId: adminProgramTrash
+      summary: 'Admin: move a program to the trash'
+      description: Disappears from the active catalog at once. Restorable for PROGRAM_TRASH_DAYS, after which it is purged automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id, rev], properties: { id: { type: string }, rev: { type: integer } } }
+      responses:
+        '200':
+          description: Trashed.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale rev, or already in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/program/restore:
+    post:
+      tags: [admin]
+      operationId: adminProgramRestore
+      summary: 'Admin: restore a program out of the trash'
+      description: Always comes back as a draft — republishing is a separate, explicit step.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id], properties: { id: { type: string } } }
+      responses:
+        '200':
+          description: Restored, as a draft.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Not in the trash, or another active program already has this title.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/program/purge:
+    post:
+      tags: [admin]
+      operationId: adminProgramPurge
+      summary: 'Admin: permanently delete a program from the trash'
+      description: >-
+        Only works on a program already in the trash, and only with `confirmTitle` matching the
+        program's title exactly (the server re-checks this — the client's own "type the title"
+        gate is not trusted alone). There is no undo past this call; `program_events` keeps the
+        history, the row itself does not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, confirmTitle]
+              properties: { id: { type: string }, confirmTitle: { type: string } }
+      responses:
+        '200':
+          description: Purged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '400':
+          description: confirmTitle does not match.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "the typed title does not match", code: confirm-mismatch }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The program is not in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/program/cover:
+    put:
+      tags: [admin]
+      operationId: adminProgramCoverSet
+      summary: 'Admin: set or replace a program''s cover image'
+      description: >-
+        The body is the raw, already-cropped (16:9) image — `w`/`h`/`alt` ride the query string
+        since the body is the file itself. Validated by magic number (jpg/png/webp only — SVG,
+        GIF and video are refused); `PROGRAM_COVER_MAX_MB` caps the size (default 5, itself
+        capped by the server's overall body limit). `alt` is required and must describe the
+        image, not restate the title or the filename.
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+        - { name: rev, in: query, required: true, schema: { type: integer } }
+        - { name: w, in: query, required: true, schema: { type: integer }, description: Width of the already-cropped image. }
+        - { name: h, in: query, required: true, schema: { type: integer }, description: Height of the already-cropped image. }
+        - { name: alt, in: query, required: true, schema: { type: string, minLength: 3, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+      responses:
+        '200':
+          description: The program, with its new cover.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '400':
+          description: id/rev missing, or the dimensions/alt text failed validation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale rev, or the program is in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: The file is larger than PROGRAM_COVER_MAX_MB.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Not a JPEG, PNG or WebP image by magic number.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "cover must be a JPEG, PNG or WebP image" }
+    get:
+      tags: [admin]
+      operationId: adminProgramCoverGet
+      summary: 'Admin: the program''s cover image bytes'
+      description: >-
+        Works for a program in the trash too — same admin-only visibility as GET /api/admin/program.
+        The response is cacheable forever (`immutable`): the filename is the content's own hash,
+        so a changed cover is always a new URL.
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+        - { name: v, in: query, schema: { type: string }, description: Cache-busting hint for the client; ignored by the server. }
+      responses:
+        '200':
+          description: The image bytes.
+          content: { image/jpeg: {}, image/png: {}, image/webp: {} }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program, or it has no cover.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/program/cover/remove:
+    post:
+      tags: [admin]
+      operationId: adminProgramCoverRemove
+      summary: 'Admin: remove a program''s cover image'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id, rev], properties: { id: { type: string }, rev: { type: integer } } }
+      responses:
+        '200':
+          description: The program, without a cover.
+          content:
+            application/json:
+              schema: { type: object, properties: { program: { $ref: '#/components/schemas/Program' } } }
+        '400':
+          description: id/rev missing, or there is no cover to remove.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "no cover to remove", code: no-cover }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such program.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale rev, or the program is in the trash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/admin/audit:
     get:
@@ -3976,6 +4479,61 @@ components:
           oneOf: [{ type: string }, { type: 'null' }]
           description: Resolved display name (only in GET /api/admin/invites).
       additionalProperties: true
+
+    Program:
+      type: object
+      description: >-
+        An admin-curated training program — instance-wide catalog content, not a user's own
+        training data (see docs/ADMIN_PROGRAMS.md). `rev` is optimistic concurrency: pass the
+        value you last read back on every update/trash/cover call, or get `409 stale`.
+      required: [id, title, description, category, difficulty, sessionMinutes, status, rev, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, maxLength: 5000 }
+        category: { type: string, enum: [strength, hypertrophy, conditioning, mobility, general] }
+        difficulty: { type: string, enum: [beginner, intermediate, advanced] }
+        sessionMinutes: { type: integer, minimum: 1, maximum: 600, description: 'Estimated duration of one session, in minutes.' }
+        status: { type: string, enum: [draft, published] }
+        rev: { type: integer }
+        coverFile: { type: string, description: '<sha256>.<ext> — present only once a cover is set.' }
+        coverMime: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        coverWidth: { type: integer }
+        coverHeight: { type: integer }
+        coverBytes: { type: integer }
+        coverAlt: { type: string, description: Required whenever a cover is present. }
+        coverUpdatedAt: { type: string }
+        coverUpdatedBy: { type: string, description: Admin user id (absent once that account is deleted). }
+        createdAt: { type: string }
+        createdBy: { type: string }
+        createdByName: { type: string, description: Resolved display name (list/detail routes only). }
+        updatedAt: { type: string }
+        updatedBy: { type: string }
+        updatedByName: { type: string }
+        publishedAt: { type: string }
+        deletedAt: { type: string, description: Present only for a program in the trash. }
+        deletedBy: { type: string }
+        deletedByName: { type: string }
+      additionalProperties: false
+
+    ProgramEvent:
+      type: object
+      description: One append-only row of a program's own audit trail (program_events).
+      required: [id, programId, programTitle, action, actorName, at, changes]
+      properties:
+        id: { type: integer }
+        programId: { type: string }
+        programTitle: { type: string, description: Snapshot at the time of the event. }
+        action:
+          type: string
+          enum: [create, update, publish, unpublish, cover_set, cover_remove, trash, restore, purge, purge_auto]
+        actorId: { type: string, description: Absent once that admin account is deleted. }
+        actorName: { type: string, description: 'Snapshot of the actor''s name at the time — or "system" for purge_auto.' }
+        at: { type: string }
+        changes:
+          type: object
+          description: '{field: [before, after]} for whatever moved; description collapses to the string "changed".'
+      additionalProperties: false
 
     AuditEvent:
       type: object

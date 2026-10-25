@@ -69,9 +69,11 @@ export const TextField = forwardRef(function TextField({ className = '', ...rest
   return <input ref={ref} className={'field ' + className} {...rest} />
 })
 
-export function TextArea({ className = '', ...rest }) {
-  return <textarea className={'field area ' + className} {...rest} />
-}
+// forwardRef, same as TextField — a caller that needs to focus it (e.g. a submit that moves
+// focus to the first invalid field) needs a real DOM node back, not a function component.
+export const TextArea = forwardRef(function TextArea({ className = '', ...rest }, ref) {
+  return <textarea ref={ref} className={'field area ' + className} {...rest} />
+})
 
 export const SearchField = forwardRef(function SearchField({ value, onChange, onClear, ...rest }, ref) {
   return (

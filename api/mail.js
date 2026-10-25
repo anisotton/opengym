@@ -13,6 +13,7 @@
  */
 import { connect as netConnect } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
+import { randomUUID } from 'node:crypto';
 
 const MAIL_PROVIDER = String(process.env.MAIL_PROVIDER || '').trim().toLowerCase();
 const MAIL_API_KEY = process.env.MAIL_API_KEY || '';
@@ -83,6 +84,45 @@ async function command(socket, line, expect) {
   return text;
 }
 
+/* The message itself. `text` and `html` travel together as multipart/alternative when both are
+   given — a client picks the richest part it can show, so the plain text (what the `log` driver
+   prints) is never thrown away just because an HTML part exists. Every part is base64-encoded:
+   the bodies are UTF-8 with lines well past 998 characters (inline-styled table markup), and
+   base64 makes neither the line limit nor 8BITMIME the relay's problem. A subject with anything
+   outside ASCII (every Brilhart subject has an em dash) goes out as an RFC 2047 encoded word. */
+function encodedWord(s) {
+  return /^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`;
+}
+function base64Lines(s) {
+  return Buffer.from(s, 'utf8').toString('base64').replace(/(.{76})/g, '$1\r\n').replace(/\r\n$/, '');
+}
+function mimePart(type, content) {
+  return [`Content-Type: ${type}; charset=utf-8`, 'Content-Transfer-Encoding: base64', '', base64Lines(content)].join('\r\n');
+}
+export function buildMime({ from, to, subject, text, html }) {
+  const domain = smtpAddress(from).split('@')[1] || 'localhost';
+  const headers = [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${encodedWord(subject)}`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <${randomUUID()}@${domain}>`,
+    'MIME-Version: 1.0'
+  ];
+  if (text && html) {
+    const boundary = `=_brilhart_${randomUUID().replace(/-/g, '')}`;
+    headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    return [
+      ...headers, '',
+      `--${boundary}`, mimePart('text/plain', text),
+      `--${boundary}`, mimePart('text/html', html),
+      `--${boundary}--`, ''
+    ].join('\r\n');
+  }
+  const type = html ? 'text/html' : 'text/plain';
+  return [...headers, `Content-Type: ${type}; charset=utf-8`, 'Content-Transfer-Encoding: base64', '', base64Lines(html || text)].join('\r\n');
+}
+
 function smtpDriver({ to, subject, text, html }, { from }) {
   if (!SMTP_HOST) throw new Error('mail: SMTP_HOST is not set');
   return new Promise((resolve, reject) => {
@@ -100,9 +140,7 @@ function smtpDriver({ to, subject, text, html }, { from }) {
         await command(socket, `MAIL FROM:<${smtpAddress(from)}>`, [250]);
         await command(socket, `RCPT TO:<${smtpAddress(to)}>`, [250, 251]);
         await command(socket, 'DATA', [354]);
-        const contentType = html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8';
-        const headers = [`From: ${from}`, `To: ${to}`, `Subject: ${subject}`, 'MIME-Version: 1.0', `Content-Type: ${contentType}`, ''].join('\r\n');
-        const body = (headers + '\r\n' + (html || text)).split('\r\n').map(l => l.startsWith('.') ? '.' + l : l).join('\r\n');
+        const body = buildMime({ from, to, subject, text, html }).split('\r\n').map(l => l.startsWith('.') ? '.' + l : l).join('\r\n');
         await command(socket, body + '\r\n.', [250]);
         await command(socket, 'QUIT', [221]).catch(() => {});   // best-effort close, delivery already confirmed
         done(null);

@@ -62,7 +62,7 @@ test('malformed and non-object JSON bodies are a 400 with no stack trace, on eve
     }
   }
   // A field whose toString is not callable is valid JSON; String() on it used to throw.
-  let r = await status(h, 'POST', '/api/register/options', anon, JSON.stringify({ name: 'x', code: { toString: 1 } }));
+  let r = await status(h, 'POST', '/api/register/options', anon, JSON.stringify({ name: 'x', code: { toString: 1 }, termsVersion: '2026-10-18' }));
   assert.notEqual(r.status, 500);
   r = await status(h, 'POST', '/api/pair/redeem', anon, JSON.stringify({ code: { toString: 1 } }));
   assert.equal(r.status, 400);

@@ -2,6 +2,7 @@
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { userFromMe } from '../lib/session-user.js'
 import { passwordError, PasswordSignInSheet, PasswordRegisterForm, PasswordRow, PasswordSheet, EmailSheet, looksLikeEmail } from './PasswordAuth.jsx'
 import { normalizeEmail } from '../../../api/password.js'
 
@@ -15,6 +16,8 @@ const mocks = vi.hoisted(() => {
   const state = { webauthn: true, hasData: false, sheets: [], answers: {}, calls: [] }
   state.toast = vi.fn()
   state.setUser = vi.fn()
+  // The store's setUserFromMe: the real mapping (set after import below) into the setUser spy.
+  state.setUserFromMe = vi.fn((me, base, opts) => state.setUser(state.userFromMe(me, base), opts))
   state.adoptProfile = vi.fn(async () => ({}))
   state.pushState = vi.fn(async () => {})
   state.pullState = vi.fn(async () => {})
@@ -30,7 +33,7 @@ const mocks = vi.hoisted(() => {
   })
   state.snapshot = () => ({
     S: {}, config: { password_login: true },
-    setUser: state.setUser, adoptProfile: state.adoptProfile, pushState: state.pushState, pullState: state.pullState,
+    setUser: state.setUser, setUserFromMe: state.setUserFromMe, adoptProfile: state.adoptProfile, pushState: state.pushState, pullState: state.pullState,
   })
   return state
 })
@@ -77,6 +80,7 @@ const byPlaceholder = (host, p) => host.querySelector(`input[placeholder="${p}"]
 const button = (host, text) => [...host.querySelectorAll('button')].find(b => b.textContent === text)
 const submit = async host => { act(() => { host.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle() }
 const alertText = host => host.querySelector('[role="alert"]')?.textContent || null
+const accept = host => act(() => { host.querySelector('input[name="terms"]').click() })
 const click = async (host, text) => { act(() => button(host, text).click()); await settle() }
 
 beforeEach(() => {
@@ -86,7 +90,8 @@ beforeEach(() => {
   mocks.answers = {}
   mocks.calls.length = 0
   for (const f of [mocks.toast, mocks.setUser, mocks.adoptProfile, mocks.pushState, mocks.pullState, mocks.passwordLogin,
-    mocks.passwordRegister, mocks.passwordResetRedeem, mocks.passkeyAssertion]) f.mockClear()
+    mocks.passwordRegister, mocks.passwordResetRedeem, mocks.passkeyAssertion, mocks.setUserFromMe]) f.mockClear()
+  mocks.userFromMe = userFromMe
 })
 afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { root.unmount(); host.remove() }) }) })
 
@@ -100,6 +105,9 @@ describe('passwordError', () => {
     expect(passwordError(fail(409, { code: 'last-way-in' }))).toMatch(/only way into your profile/)
     expect(passwordError(fail(429, { code: 'locked', retryAfter: 120 }))).toBe('Too many attempts — try again in 2 minutes.')
     expect(passwordError(fail(429, { code: 'locked', retryAfter: 30 }))).toBe('Too many attempts — try again in 30 seconds.')
+    // ISO-1390: a signup refused over the terms — both mean "update the app", never raw English.
+    expect(passwordError(fail(400, { error: 'terms version is stale', code: 'terms-version-stale' }))).toBe('Update the app to accept the new terms.')
+    expect(passwordError(fail(400, { error: 'update the app to accept the terms', code: 'terms-required' }))).toBe('Update the app to accept the new terms.')
     // No code: what the server said, as it said it.
     expect(passwordError(fail(500, { error: 'server error' }))).toBe('server error')
   })
@@ -108,6 +116,8 @@ describe('passwordError', () => {
 describe('PasswordSignInSheet', () => {
   it('signs in with the name and password, then carries on like a passkey sign-in', async () => {
     mocks.passwordLogin.mockResolvedValue({ id: 'u1', name: 'Ana' })
+    // ISO-1390: like a passkey sign-in, it asks /api/me for what the sign-in answer leaves out.
+    mocks.answers['GET /api/me'] = { user: { id: 'u1', name: 'Ana' }, termsVersion: null, termsAcceptedAt: null, needsTerms: true }
     const close = vi.fn()
     const host = mount(<PasswordSignInSheet close={close} />)
     const name = byPlaceholder(host, 'Name or e-mail')
@@ -119,7 +129,9 @@ describe('PasswordSignInSheet', () => {
     type(name, '  Ana '); type(pw, 'correct horse battery')
     await submit(host)
     expect(mocks.passwordLogin).toHaveBeenCalledWith('Ana', 'correct horse battery')
-    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana' }, { adopt: true })   // nothing syncs until the question is answered
+    expect(mocks.calls.some(c => c.path === '/api/me' && c.method === 'GET')).toBe(true)
+    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana', termsVersion: null, termsAcceptedAt: null, needsTerms: true }, { adopt: true })   // nothing syncs until the question is answered
+    expect(mocks.setUserFromMe).toHaveBeenCalledTimes(1)   // this visit's terms check (termsChecked)
     expect(close).toHaveBeenCalled()
     expect(mocks.adoptProfile).toHaveBeenCalled()
     expect(mocks.toast).toHaveBeenCalledWith('Welcome back, Ana')
@@ -173,10 +185,13 @@ describe('PasswordSignInSheet', () => {
     await submit(host)
     expect(alertText(host)).toBe('Enter your name or e-mail.')
     expect(mocks.passwordLogin).not.toHaveBeenCalled()
+    // /api/me failing after the sign-in still signs in, with the user the sign-in answered (ISO-1390).
+    mocks.answers['GET /api/me'] = fail(0)
     type(field, ' Ana@Example.com '); type(byPlaceholder(host, 'Password'), 'correct horse battery')
     await submit(host)
     expect(mocks.passwordLogin).toHaveBeenCalledWith('Ana@Example.com', 'correct horse battery')
     expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u1', name: 'Ana' }, { adopt: true })
+    expect(mocks.setUserFromMe).not.toHaveBeenCalled()   // a failed refetch is no terms check
   })
 
   it('a reset code is redeemed with the e-mail too', async () => {
@@ -213,6 +228,7 @@ describe('PasswordRegisterForm', () => {
     mocks.passwordRegister.mockResolvedValue({ id: 'u9', name: 'Cleo' })
     const host = mount(<Harness inviteOnly />)
     type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(host.querySelector('input[type="date"]'), '1990-05-05')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
     await submit(host)
@@ -223,9 +239,12 @@ describe('PasswordRegisterForm', () => {
     expect(alertText(host)).toBe('The two passwords are not the same.')
     expect(mocks.passwordRegister).not.toHaveBeenCalled()
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    accept(host)
     await submit(host)
-    expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', '')
-    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo' })
+    expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', '', '1990-05-05', '2026-10-18')
+    // The acceptance the server recorded in that request (ISO-1390), so Settings shows its date now.
+    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo', termsVersion: '2026-10-18', termsAcceptedAt: expect.any(String), needsTerms: false })
+    expect(Number.isNaN(Date.parse(mocks.setUser.mock.calls[0][0].termsAcceptedAt))).toBe(false)
     expect(mocks.pullState).toHaveBeenCalled()
     expect(mocks.toast).toHaveBeenCalledWith('Welcome, Cleo')
   })
@@ -239,6 +258,7 @@ describe('PasswordRegisterForm', () => {
     expect(host.textContent).toContain('Lets you sign in with it instead of your name. Nothing is ever sent to it.')
     type(byPlaceholder(host, 'Your name'), 'Cleo')
     type(mail, 'cleo at example')
+    type(host.querySelector('input[type="date"]'), '1990-05-05')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
     await submit(host)
@@ -246,21 +266,66 @@ describe('PasswordRegisterForm', () => {
     expect(mocks.passwordRegister).not.toHaveBeenCalled()
     mocks.passwordRegister.mockRejectedValueOnce(fail(409, { code: 'email-taken' }))
     type(mail, ' cleo@example.com ')
+    accept(host)
     await submit(host)
-    expect(mocks.passwordRegister).toHaveBeenLastCalledWith('Cleo', 'correct horse battery', '', 'cleo@example.com')
+    expect(mocks.passwordRegister).toHaveBeenLastCalledWith('Cleo', 'correct horse battery', '', 'cleo@example.com', '1990-05-05', '2026-10-18')
     expect(alertText(host)).toBe('Another profile already uses this e-mail address.')
     await submit(host)
-    expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo' })
+    expect(mocks.setUser).toHaveBeenCalledWith(expect.objectContaining({ id: 'u9', name: 'Cleo' }))
+  })
+
+  it('keeps Create profile disabled until the terms are accepted, then sends LEGAL_VERSION', async () => {
+    mocks.passwordRegister.mockResolvedValue({ id: 'u9', name: 'Cleo' })
+    const host = mount(<Harness />)
+    const box = host.querySelector('input[name="terms"]')
+    expect(box.checked).toBe(false)
+    expect(button(host, 'Create profile').disabled).toBe(true)
+    type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(host.querySelector('input[type="date"]'), '1990-05-05')
+    type(byPlaceholder(host, 'Password'), 'correct horse battery')
+    type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    accept(host)
+    expect(button(host, 'Create profile').disabled).toBe(false)
+    await submit(host)
+    expect(mocks.passwordRegister.mock.calls[0][5]).toBe('2026-10-18')
+  })
+
+  it('a submit with the terms box unticked never reaches passwordRegister', async () => {
+    const host = mount(<Harness />)
+    type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(host.querySelector('input[type="date"]'), '1990-05-05')
+    type(byPlaceholder(host, 'Password'), 'correct horse battery')
+    type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    await submit(host)
+    expect(mocks.passwordRegister).not.toHaveBeenCalled()
   })
 
   it('a name already taken by a password profile is said in words', async () => {
     mocks.passwordRegister.mockRejectedValue(fail(409, { code: 'name-taken' }))
     const host = mount(<Harness />)
     type(byPlaceholder(host, 'Your name'), 'Ana')
+    type(host.querySelector('input[type="date"]'), '1990-05-05')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    accept(host)
     await submit(host)
     expect(alertText(host)).toBe('Another profile already signs in with this name.')
+  })
+
+  // ISO-1521: the same block and exact wording as the passkey half (SignupFlow.jsx).
+  it('a minor birth date disables Create profile, shows the exact message, and sends nothing', async () => {
+    const host = mount(<Harness />)
+    type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(host.querySelector('input[type="date"]'), '2015-06-01')
+    type(byPlaceholder(host, 'Password'), 'correct horse battery')
+    type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    accept(host)
+    expect(alertText(host)).toBe('Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.')
+    const btn = button(host, 'Create profile')
+    expect(btn.disabled).toBe(true)
+    btn.disabled = false   // a programmatic call that bypasses the disabled attribute
+    await submit(host)
+    expect(mocks.passwordRegister).not.toHaveBeenCalled()
   })
 })
 

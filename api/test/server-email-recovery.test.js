@@ -78,6 +78,11 @@ async function startServer(t, { env = {}, users = [] } = {}) {
     env: { ORIGIN, APP_URL: '', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env }
   });
   h.req = async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
+    // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
+    // server-terms.test.js's subject, not this file's. ISO-1521: same idea for the now-required
+    // birthDate — an adult one, since the under-18 refusal is server-age-gate.test.js's subject.
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-18' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}), ...headers },
@@ -140,17 +145,21 @@ test('register/options requires a valid, unique e-mail; register/verify mints an
   assert.match(link.token, /^[A-Za-z0-9_-]{30,}$/);
 });
 
-test('register/options accepts an optional, validated birthDate, and never blocks on it', async t => {
+// ISO-1521 replaces ISO-1398's "optional, never blocks" — required, format-validated, and a
+// minor is refused outright. The required/underage cases of that newer rule are
+// server-age-gate.test.js's subject; this stays about shape (not-a-date, in the future).
+test('register/options validates birthDate\'s shape; a well-formed adult date is stored', async t => {
   const h = await startServer(t);
   const ip = '198.51.100.12';
   const bad = await h.req('POST', '/api/register/options', { body: { name: 'Ada', email: 'ada@example.com', birthDate: '2024-02-30' }, ip });
   assert.deepEqual(bad.body, { error: 'that is not a date', code: 'birth-date-invalid' });
   const future = await h.req('POST', '/api/register/options', { body: { name: 'Ada', email: 'ada@example.com', birthDate: '2999-01-01' }, ip });
   assert.equal(future.status, 400);
-  const ok = await h.req('POST', '/api/register/options', { body: { name: 'Ada', email: 'ada@example.com', birthDate: '2010-05-17' }, ip });
+  const ok = await h.req('POST', '/api/register/options', { body: { name: 'Ada', email: 'ada@example.com', birthDate: '1990-05-05' }, ip });
   assert.equal(ok.status, 200);
+  // h.register() falls back to h.req's own default adult birthDate (ISO-1521) when a test omits one.
   const { user } = await h.register('Bea', 'bea@example.com', ip);
-  assert.equal((await h.user(user.id)).birth_date, null, 'omitting it stays null, never required');
+  assert.equal((await h.user(user.id)).birth_date.toISOString().slice(0, 10), '1990-05-05');
 });
 
 test('register/verify re-checks the e-mail: a race since options still loses', async t => {
@@ -176,7 +185,10 @@ test('GET /api/me reports email/emailVerified/needsEmail; confirming the link se
   const ip = '198.51.100.20';
   const { user, cookie } = await h.register('Ada', 'ada@example.com', ip);
   const me1 = await h.req('GET', '/api/me', { cookie, ip });
-  assert.deepEqual(me1.body, { user, email: 'ada@example.com', emailVerified: false, needsEmail: false });
+  // ISO-1390's terms fields ride along; their own values are server-terms.test.js's subject.
+  assert.equal(typeof me1.body.termsAcceptedAt, 'string');
+  assert.deepEqual(me1.body, { user, email: 'ada@example.com', emailVerified: false, needsEmail: false,
+    termsVersion: '2026-10-18', termsAcceptedAt: me1.body.termsAcceptedAt, needsTerms: false });
 
   const { token } = h.mailedLink('verificar-email');
   const v = await h.req('POST', '/api/account/email/verify', { body: { token }, ip });
@@ -197,7 +209,8 @@ test('an old account (no e-mail) needs one; a wrong confirmation token is refuse
   const h = await startServer(t);
   await h.seedOldAccount('u_old', 'Grandfathered');
   const me = await h.req('GET', '/api/me', { cookie: mintSession('u_old'), ip: '198.51.100.30' });
-  assert.deepEqual(me.body, { user: { id: 'u_old', name: 'Grandfathered', admin: false }, email: null, emailVerified: false, needsEmail: true });
+  assert.deepEqual(me.body, { user: { id: 'u_old', name: 'Grandfathered', admin: false }, email: null, emailVerified: false, needsEmail: true,
+    termsVersion: null, termsAcceptedAt: null, needsTerms: true });
 
   const ip = '198.51.100.31';
   // 20 free wrong guesses, then the 21st is the one whose own failure locks the address — the

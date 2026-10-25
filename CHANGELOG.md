@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+**Terms of Use and Privacy Policy (ISO-1390)**
+
+- 📜 **The Terms of Use and the Privacy Policy now live inside the app**, at `#/termos` and
+  `#/privacidade`, linked from Settings together with the version you accepted and the date.
+- ✅ **Signup needs an explicit acceptance.** A mandatory checkbox links both texts; the accepted
+  version and its timestamp are stored on the account.
+- 🔒 **Existing accounts see a locked "We updated our terms" sheet** until they accept the current
+  version. New endpoint `POST /api/account/terms/accept` records it (idempotent: the original date
+  is kept) and writes an `account.terms.accept` audit event.
+- 💳 **Checkout refuses an account that never accepted**, so nobody is charged before the terms.
+- 🗄️ Migration 006 adds the acceptance columns to `users`.
+- 🌍 The new strings are translated in all sixteen languages.
+- ⚠️ The texts still carry `[CONFIRMAR]` placeholders and need legal review before launch.
+
+**Minimum age (ISO-1521)**
+
+- 🔒 **Signup now refuses anyone under 18** instead of only showing a notice: the birth date is
+  required on both the passkey and password forms, and a minor's date disables the button with an
+  explanation, in every language.
+
 ## v1.3.9 — 2026-09-28
 
 The milestone was "edit your history", and it is in: fix a saved workout after the fact, move it to

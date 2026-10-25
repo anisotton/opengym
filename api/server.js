@@ -27,23 +27,34 @@ import {
 } from './password.js';
 import { createBackoff, createWindow } from './rate-limit.js';
 import { MAX_PASSKEYS } from './passkeys-store.js';
-import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
+import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE, sniffMedia } from './media.js';
 import { connectAndMigrate, withTransaction } from './db.js';
 import {
   getUserState, getUserStateRev, putUserState,
-  getUserById, getAllUsers, createUser, setPassword, removePassword, rehashPassword,
+  getUserById, getAllUsers, createUser, setPassword, removePasswordUnlessLast, rehashPassword,
   setPasswordReset, bumpSessionVersion, setEmail, markEmailVerified, setDisabled, touchLastPull,
-  setLastReminder, deleteUser, upsertUser, backfillPasswordResetBy,
+  setLastReminder, deleteUser, upsertUser, backfillPasswordResetBy, setTermsAccepted,
   createSession, getSession, revokeSession,
   createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
   upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
   removePasskey, touchPasskeyUse, upsertPasskey,
-  createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup
+  createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup,
+  listPrograms, getProgram, listProgramEvents, createProgram, updateProgram, trashProgram,
+  restoreProgram, purgeProgram, purgeExpiredPrograms, setProgramCover, clearProgramCover,
+  coverStillReferenced, getAllCoverFiles
 } from './store.js';
+import {
+  CATEGORIES as PROGRAM_CATEGORIES, DIFFICULTIES as PROGRAM_DIFFICULTIES,
+  CATEGORY_LABELS as PROGRAM_CATEGORY_LABELS, DIFFICULTY_LABELS as PROGRAM_DIFFICULTY_LABELS,
+  TITLE_MIN as PROGRAM_TITLE_MIN, TITLE_MAX as PROGRAM_TITLE_MAX, DESCRIPTION_MAX as PROGRAM_DESCRIPTION_MAX,
+  SESSION_MINUTES_MIN, SESSION_MINUTES_MAX, COVER_ALT_MIN, COVER_ALT_MAX, COVER_WIDTH_MIN, COVER_HEIGHT_MIN, COVER_DIM_MAX,
+  validateProgram, validateCoverAlt, validateCoverDims, programConfig
+} from './programs.js';
 import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
 import { sendMail } from './mail.js';
+import { LEGAL_VERSION } from './legal.js';
 import { renderVerifyEmail } from './mail-templates/verify-email.js';
 import { renderRecoverEmail } from './mail-templates/recover-access.js';
 import { renderPreChargeNotice } from './mail-templates/pre-charge-notice.js';
@@ -960,7 +971,9 @@ const THROTTLED = {
   'POST /api/recover/redeem': 'recover',
   // Only the shared burst budget (ISO-1480): there is no secret here for a `kind` to guard, just
   // an audit-log beacon a misbehaving or hostile page could otherwise spam without limit.
-  'POST /api/client-event': null
+  'POST /api/client-event': null,
+  // Accepting the current terms (ISO-1390): nothing to guess, so only the shared burst budget.
+  'POST /api/account/terms/accept': null
 };
 
 // Which address the throttle counts against. Unlike clientIp() above, which only labels a log
@@ -1078,11 +1091,26 @@ const EMAIL_ERRORS = {
   invalid: { error: 'that is not an e-mail address', code: 'email-invalid' },
   taken: { error: 'another profile already uses this e-mail address', code: 'email-taken' }
 };
+// ISO-1390: a signup accepts the Terms of Use and the Privacy Policy, and the acceptance is bound
+// to the text the person could actually read — the copy bundled with the app, whose version the
+// app sends as `termsVersion`. The server records the version, so it has to be the one in force:
+// anything else is refused rather than stored as an acceptance of a text nobody showed. Two codes,
+// because the two cases want different words from the app: nothing at all (`terms-required`), a
+// different version an app built before the texts changed (`terms-version-stale`). A current app
+// never sends nothing — its forms will not submit unticked — so `terms-required` here only reaches
+// a bundle from before ISO-1390, which shows the message as it stands: an update is its way
+// forward too, and the words say so rather than ask it to tick a box it does not have.
+function termsVersionProblem(body) {
+  const v = body.termsVersion;
+  if (v === LEGAL_VERSION) return null;
+  if (typeof v !== 'string' || !v.trim()) return { status: 400, error: 'update the app to accept the terms', code: 'terms-required' };
+  return { status: 400, error: 'these terms are not the current ones — update the app', code: 'terms-version-stale' };
+}
 // A birth date as the signup form sends it: plain YYYY-MM-DD, not in the future, not absurdly old
-// (130 years catches a fat-fingered year without hard-coding an age policy this route has no
-// business enforcing — see ISO-1398 for the under-18 notice this value feeds, which never blocks
-// a signup either way). Rejects anything the round trip through Date doesn't echo back exactly
-// (an out-of-range day like 2024-02-30), rather than letting JS's date math quietly roll it over.
+// (130 years catches a fat-fingered year without hard-coding the under-18 rule below, which is
+// its own, separate check). Rejects anything the round trip through Date doesn't echo back
+// exactly (an out-of-range day like 2024-02-30), rather than letting JS's date math quietly roll
+// it over.
 function parseBirthDate(raw) {
   const s = text(raw).trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
@@ -1090,6 +1118,33 @@ function parseBirthDate(raw) {
   if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return null;
   if (d.getTime() > Date.now() || Date.now() - d.getTime() > 130 * 365.25 * 86400000) return null;
   return s;
+}
+// Whole years as of right now, from a date parseBirthDate has already validated — same rule as
+// frontend/src/lib/age.js's ageFromBirthDate (UTC calendar dates, "already had the birthday this
+// year or not"), kept in parallel rather than imported since api/ and frontend/ are separate
+// packages (CLAUDE.md's dependency-light constraint; see that file's own header comment for the
+// other half of this cross-reference).
+function ageFromBirthDate(birthDate) {
+  const [y, mo, d] = birthDate.split('-').map(Number);
+  const now = new Date();
+  let age = now.getUTCFullYear() - y;
+  const hadBirthdayThisYear = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) >= Date.UTC(now.getUTCFullYear(), mo - 1, d);
+  if (!hadBirthdayThisYear) age--;
+  return age;
+}
+// ISO-1521 (Decision 18/10/2026, ISO-1390): replaces ISO-1386/1398's "ask, never block" — a birth
+// date is now required at signup, and under 18 is refused outright. Checked right after the terms
+// in both /api/register/options and /api/register/password, before anything that spends an
+// address- or invite-guess budget (addressPaused/strikeAddress, the invite check): a signup that
+// can never go through should not get to spend either, the same reasoning as termsVersionProblem
+// above. Existing accounts are untouched — this is signup-time only. Returns null on success.
+function birthDateProblem(body) {
+  const hasBirthDate = body.birthDate != null && text(body.birthDate).trim() !== '';
+  if (!hasBirthDate) return { status: 400, error: 'a birth date is required', code: 'birth-date-required' };
+  const birthDate = parseBirthDate(body.birthDate);
+  if (!birthDate) return { status: 400, error: 'that is not a date', code: 'birth-date-invalid' };
+  if (ageFromBirthDate(birthDate) < 18) return { status: 400, error: 'Brilhart Fitness is for people 18 and older', code: 'underage' };
+  return null;
 }
 // Who a sign-in body names: `identifier` (what the app sends), `name` (what it sent before, and
 // what older clients still send — an address typed there works too) or `email` (only an address).
@@ -1313,6 +1368,21 @@ const passwordRoutes = {
     const body = await readBody(req);
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required', code: 'missing' });
+    // ISO-1390: same rule and same place as /api/register/options — before the invite check and
+    // the hash, so an outdated app is told so without spending either.
+    const termsProblem = termsVersionProblem(body);
+    if (termsProblem) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: termsProblem.code });
+      return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    }
+    // ISO-1521: same rule and same place as /api/register/options — right after the terms,
+    // before the invite-guess budget below gets spent on a signup that could never go through.
+    const birthProblem = birthDateProblem(body);
+    if (birthProblem) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: birthProblem.code });
+      return json(res, birthProblem.status, { error: birthProblem.error, code: birthProblem.code });
+    }
+    const birthDate = parseBirthDate(body.birthDate);
     const code = text(body.code).trim().toUpperCase();
     if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
     if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
@@ -1347,7 +1417,11 @@ const passwordRoutes = {
     if (await nameTaken(name)) return taken();
     if (email && await emailTaken(email)) return emailRefused();
     const created = new Date().toISOString();
-    const user = { id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}) };
+    const user = {
+      id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}), birthDate,
+      // ISO-1390: termsVersionProblem() above already pinned body.termsVersion to LEGAL_VERSION.
+      termsAcceptedVersion: LEGAL_VERSION, termsAcceptedAt: created
+    };
     if (INVITE_ONLY) user.invitedBy = code;
     // createUser and consumeInvite commit or fail together: an invite consumed by a request whose
     // user row then never landed (the unique-name/e-mail race below) would be burned for nothing,
@@ -1426,14 +1500,14 @@ const passwordRoutes = {
     const proof = await proveOwner(req, res, user, body, 'password-remove');
     if (!proof) return;
     // Everything above awaited: the session may have ended, and the profile's last passkey may
-    // have been removed by a request that ran alongside this one. Checked again against fresh
-    // data (sessionStillValid's return), not the snapshot from before those awaits.
+    // have been removed by a request that ran alongside this one. sessionStillValid re-checks the
+    // session itself; removePasswordUnlessLast re-checks (and acts on) the password/passkey count
+    // atomically, under the same per-account lock a concurrent passkey removal takes (ISO-1592) —
+    // the two checks above are only a cheap pre-proof filter, not the real decision.
     const fresh = await sessionStillValid(req, user);
     if (!fresh) return json(res, 401, { error: 'not signed in' });
-    if (!hasPassword(fresh)) return json(res, 200, { ok: true });
-    if (!(await passkeyCount(fresh))) return lastWayIn();
-    delete fresh.pw;
-    await removePassword(pool, fresh.id);
+    const r = await removePasswordUnlessLast(pool, fresh.id);
+    if (r.error) return lastWayIn();
     audit(req, 'auth.password.remove', { user: fresh });
     json(res, 200, { ok: true });
   },
@@ -1690,11 +1764,17 @@ const passkeyRoutes = {
 
   // `?id=` — the credential id from the list; the body carries the same proof adding one takes
   // (proveOwner), asked only once the removal could go ahead, so a refusal the list already
-  // decides spends no passkey prompt and no password check. The last one is never removed
-  // (removePasskeyRecord), checked again after the proof, since a request running alongside may
-  // have removed another passkey or the password meanwhile. An unused device code goes with it: a
-  // passkey is removed because it is lost or not trusted, and a code made with it just before — by
-  // whoever holds it — would otherwise add a fresh one right after.
+  // decides spends no passkey prompt and no password check — passwordWayIn(user) here is only
+  // that cheap pre-proof filter, safe to read from the pre-proof snapshot since a stale answer
+  // costs at most an unnecessary prompt. The last one is never removed: removePasskey decides
+  // again after the proof, atomically and against live data (PASSWORD_LOGIN is config, not
+  // account data, so it's passed straight through; whether a password currently exists is read
+  // fresh inside the lock) — a request running alongside may have removed the password or another
+  // passkey meanwhile (ISO-1592), and passing passwordWayIn(user)'s pre-proof answer in here
+  // instead was exactly that bug: a snapshot taken before proveOwner's await, which can run long
+  // enough for a concurrent password removal to land in the gap. An unused device code goes with
+  // it: a passkey is removed because it is lost or not trusted, and a code made with it just
+  // before — by whoever holds it — would otherwise add a fresh one right after.
   'DELETE /api/account/passkeys': async (req, res) => {
     const user = await readSession(req);
     if (!user) return notSignedIn(res);
@@ -1705,12 +1785,13 @@ const passkeyRoutes = {
     if (refused) return refuse(refused);
     const proof = await proveOwner(req, res, user, body, 'passkey-remove');
     if (!proof) return;
-    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
-    const r = await removePasskey(pool, user.id, id, passwordWayIn(user) ? 1 : 0);
+    const fresh = await sessionStillValid(req, user);
+    if (!fresh) return notSignedIn(res);
+    const r = await removePasskey(pool, fresh.id, id, PASSWORD_LOGIN);
     if (r.error) return refuse(r);
-    await dropDeviceLinks(pool, user.id);
-    audit(req, 'auth.passkey.remove', { user, msg: r.row.name || null });
-    json(res, 200, { ok: true, ...(await passkeyState(user)) });
+    await dropDeviceLinks(pool, fresh.id);
+    audit(req, 'auth.passkey.remove', { user: fresh, msg: r.row.name || null });
+    json(res, 200, { ok: true, ...(await passkeyState(fresh)) });
   },
 
   // Makes the code another device redeems below. Same proof as adding a passkey here, because the
@@ -1832,12 +1913,12 @@ const recoverLink = token => `${APP_URL}/#/recuperar?token=${encodeURIComponent(
 // missing e-mail, not a 500 on an action (a signup, a profile finally getting one) that already
 // succeeded on its own.
 async function mailVerification(user, token) {
-  const { subject, text: body, html } = renderVerifyEmail({ name: user.name, link: verifyLink(token) });
+  const { subject, text: body, html } = renderVerifyEmail({ name: user.name, link: verifyLink(token), appUrl: APP_URL });
   try { await sendMail({ to: user.email, subject, text: body, html }); }
   catch (e) { console.error('mail: could not send verification e-mail', e.message); }
 }
 async function mailRecovery(user, token) {
-  const { subject, text: body, html } = renderRecoverEmail({ name: user.name, link: recoverLink(token) });
+  const { subject, text: body, html } = renderRecoverEmail({ name: user.name, link: recoverLink(token), appUrl: APP_URL });
   try { await sendMail({ to: user.email, subject, text: body, html }); }
   catch (e) { console.error('mail: could not send recovery e-mail', e.message); }
 }
@@ -1883,6 +1964,27 @@ const emailRoutes = {
     await issueVerification(user);
     audit(req, 'auth.email.resend', { user });
     json(res, 200, { ok: true });
+  },
+
+  // An account that never accepted the current terms (imported from db.json, or signed up before
+  // the texts changed) accepts them here, signed in (ISO-1390). Same version rule as signup: only
+  // the server's LEGAL_VERSION, so an app showing an older text cannot record it as accepted.
+  // Idempotent — a second call (a double tap, a retry after a lost response) answers the stored
+  // acceptance without rewriting its date or auditing again, so terms_accepted_at stays the moment
+  // the person first agreed.
+  'POST /api/account/terms/accept': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return notSignedIn(res);
+    const body = await readBody(req);
+    const termsProblem = termsVersionProblem({ termsVersion: body.version });
+    if (termsProblem) return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    if (user.termsAcceptedVersion !== LEGAL_VERSION) {
+      await setTermsAccepted(pool, user.id, LEGAL_VERSION, new Date().toISOString());
+      audit(req, 'account.terms.accept', { user, msg: LEGAL_VERSION });
+    }
+    // Read back rather than echo our own timestamp: the answer is what the row actually holds.
+    const fresh = await getUserById(pool, user.id);
+    json(res, 200, { ok: true, termsVersion: fresh.termsAcceptedVersion, termsAcceptedAt: fresh.termsAcceptedAt });
   },
 
   // The neutral half of recovery: always 200, with the same body, whether or not `email` names a
@@ -2027,6 +2129,90 @@ if (MEDIA_ON) {
   setTimeout(mediaSweepAll, 5 * 60000).unref();
 }
 
+/* ---------- program covers (ISO-1485) ----------
+ * A flat namespace of its own, DATA_DIR/program-covers/<sha256>.<ext> — deliberately outside
+ * api/media.js's uploads/<uid>/ store, whose GC collects anything not referenced by that one
+ * profile's own state (a Program cover belongs to no profile at all, and would be collected the
+ * first time that GC ran). Magic-number validation (sniffMedia) and the size cap are reused from
+ * media.js; the streaming/quota/per-profile machinery is not — a cover is admin-only, small
+ * (PROGRAM_COVER_MAX_MB, default 5) and infrequent enough that reading the whole body into memory
+ * (readRawBody, already capped at MAX_BODY) is simpler and exactly as safe.
+ */
+const PROGRAM_CFG = programConfig(process.env);
+const PROGRAM_COVER_DIR = path.join(DATA, 'program-covers');
+try { fs.mkdirSync(PROGRAM_COVER_DIR, { recursive: true, mode: 0o700 }); fs.chmodSync(PROGRAM_COVER_DIR, 0o700); }
+catch (e) { console.error('program-covers: could not create directory', e.message); }
+const programCoverPath = file => path.join(PROGRAM_COVER_DIR, file);
+const PROGRAM_COVER_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+
+// store.js's programs.* functions answer `{ error, code, current? }` on a refusal rather than
+// throwing — this is every route's one place to turn that into the right HTTP status.
+const PROGRAM_ERROR_STATUS = {
+  'not-found': 404, 'in-trash': 409, stale: 409, 'title-taken': 409,
+  'not-in-trash': 409, 'confirm-mismatch': 400, 'no-cover': 400
+};
+function programError(res, result) {
+  const status = PROGRAM_ERROR_STATUS[result.code] || 400;
+  json(res, status, { error: result.error, code: result.code, ...(result.current ? { current: result.current } : {}) });
+}
+
+// Best-effort: a failed unlink leaves an orphan for the sweep below to collect later, never a
+// reason to fail the request that already committed the row change it followed.
+function unlinkProgramCover(file) {
+  if (!file) return;
+  try { fs.unlinkSync(programCoverPath(file)); }
+  catch (e) { if (e.code !== 'ENOENT') console.error('program-covers: could not remove', file, e.message); }
+}
+
+// Files on disk nothing in `programs` (active or trashed) references any more, and old enough
+// (ORPHAN_GRACE_MS) that a cover mid-upload when this runs is never caught mid-write — setProgramCover
+// only reaches the DB write after the bytes are already on disk, so a brand-new file with no row
+// yet is either about to get one (a save in flight) or already failed its own request and will be
+// swept on a later pass once it ages past the grace period.
+const PROGRAM_COVER_ORPHAN_GRACE_MS = 3600000;
+async function programCoverSweep() {
+  let files;
+  try { files = fs.readdirSync(PROGRAM_COVER_DIR); } catch { return; }
+  if (!files.length) return;
+  let referenced;
+  try { referenced = await getAllCoverFiles(pool); } catch (e) { return console.error('program-covers: sweep could not read references', e.message); }
+  const now = Date.now();
+  let removed = 0;
+  for (const file of files) {
+    if (referenced.has(file)) continue;
+    const full = programCoverPath(file);
+    let stat;
+    try { stat = fs.statSync(full); } catch { continue; }
+    if (now - stat.mtimeMs < PROGRAM_COVER_ORPHAN_GRACE_MS) continue;
+    try { fs.unlinkSync(full); removed++; } catch (e) { console.error('program-covers: sweep could not remove', file, e.message); }
+  }
+  if (removed) console.log(`program-covers: swept ${removed} orphaned file(s)`);
+}
+setInterval(programCoverSweep, 3600000).unref();
+setTimeout(programCoverSweep, 5 * 60000).unref();
+
+// The retention clock (plan §2.3): a program in the trash longer than PROGRAM_TRASH_DAYS is
+// deleted for good, same as a human doing it through POST /api/admin/program/purge, logged the
+// same way (`program_events.action = 'purge_auto'`) but with no admin behind it — `audit()`'s
+// `f.uid` is left unset, same convention as any other system-initiated event. 0 days means never
+// (checked inside purgeExpiredPrograms too; re-checked here isn't required but costs nothing).
+// audit(req, ...) only ever reads req.headers/req.socket — this tick has neither, so it passes a
+// minimal stand-in rather than widening audit()'s own signature for the one caller with no request.
+const NO_REQ = { headers: {}, socket: {} };
+async function programTrashSweep() {
+  if (!PROGRAM_CFG.trashDays) return;
+  let purged;
+  try { purged = await purgeExpiredPrograms(pool, PROGRAM_CFG.trashDays); }
+  catch (e) { return console.error('programs: auto-purge failed', e.message); }
+  for (const p of purged) {
+    if (p.coverFile && !p.coverStillReferenced) unlinkProgramCover(p.coverFile);
+    audit(NO_REQ, 'program.purge.auto', { msg: p.title });
+  }
+  if (purged.length) console.log(`programs: auto-purged ${purged.length} program(s) past ${PROGRAM_CFG.trashDays}-day retention`);
+}
+setInterval(programTrashSweep, 3600000).unref();
+setTimeout(programTrashSweep, 5 * 60000).unref();
+
 // A stored file, streamed. The headers are the point: the bytes were chosen by a user, so the
 // answer must never be something a browser would run. The Content-Type comes from the sniffed
 // extension (never text/* or SVG), nosniff stops a browser second-guessing it, the sandbox CSP
@@ -2148,8 +2334,23 @@ if (BILLING_ON) setInterval(() => {
 }, 15 * 60000).unref();
 
 /* ---------- routes ---------- */
+// Public, unauthenticated, and polled by an external uptime monitor (ISO-1400) — so it stays
+// cheap (a bare SELECT 1, bounded by HEALTH_DB_TIMEOUT_MS) and never reports the account count
+// the old response did; a health probe is not a place to leak how many users an instance has.
+const HEALTH_DB_TIMEOUT_MS = 2000;
 const routes = {
-  'GET /api/health': async (req, res) => json(res, 200, { ok: true, users: (await getAllUsers(pool)).length }),
+  'GET /api/health': async (req, res) => {
+    try {
+      await Promise.race([
+        pool.query('SELECT 1'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('db ping timed out')), HEALTH_DB_TIMEOUT_MS))
+      ]);
+      json(res, 200, { ok: true, db: 'ok' });
+    } catch (e) {
+      console.error('health: db ping failed', e.message);
+      json(res, 503, { ok: false, db: 'down' });
+    }
+  },
 
   // Public config the login screen needs before anyone is signed in. `coach` is absent unless
   // the instance has both switched the Coach on and successfully connected a provider — the
@@ -2172,6 +2373,10 @@ const routes = {
     // that has no Coach. The key's absence is that answer.
     json(res, 200, {
       invite_only: INVITE_ONLY, allow_guest: ALLOW_GUEST,
+      // ISO-1390: public like the two flags above — the signup screen links the texts of this
+      // version before anyone is signed in, and an app whose bundle carries another one knows to
+      // ask for an update instead of collecting an acceptance the server would refuse.
+      legal_version: LEGAL_VERSION,
       // Only when on, so an instance without passwords answers exactly as it did before (#118).
       ...(PASSWORD_LOGIN ? { password_login: true } : {}),
       // Public: the sign-in screen is the first thing that reads it.
@@ -2219,6 +2424,13 @@ const routes = {
       // address (#118), which SELF_HOSTING.md promises is never part of this response — exposing
       // it here, even unverified, would break that promise for an instance that opted into it.
       ...(PASSWORD_LOGIN ? {} : { email: user.email || null, emailVerified: !!user.emailVerifiedAt, needsEmail: !user.email }),
+      // ISO-1390: what the app needs to put the "we updated our terms" sheet in front of an
+      // account — one imported from before this phase has accepted nothing, one that accepted an
+      // older version has to accept again. Always present, PASSWORD_LOGIN or not: unlike `email`
+      // above, nothing here collides with an older field.
+      termsVersion: user.termsAcceptedVersion || null,
+      termsAcceptedAt: user.termsAcceptedAt || null,
+      needsTerms: user.termsAcceptedVersion !== LEGAL_VERSION,
       ...(renew ? { token: await makeSession(user, req.headers['user-agent']) } : {})
     });
   },
@@ -2227,6 +2439,23 @@ const routes = {
     const body = await readBody(req);
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required' });
+    // ISO-1390: checked before the e-mail, so an outdated app or an unticked box never spends the
+    // caller's e-mail-guess budget (addressPaused/strikeAddress below) on a signup that could not
+    // have gone through anyway. The version travels in the challenge to /verify, which records it.
+    const termsProblem = termsVersionProblem(body);
+    if (termsProblem) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: termsProblem.code });
+      return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    }
+    const termsVersion = body.termsVersion;
+    // ISO-1521: right after the terms, before the e-mail-guess budget below gets spent on a
+    // signup that could never go through anyway.
+    const birthProblem = birthDateProblem(body);
+    if (birthProblem) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: birthProblem.code });
+      return json(res, birthProblem.status, { error: birthProblem.error, code: birthProblem.code });
+    }
+    const birthDate = parseBirthDate(body.birthDate);
     // ISO-1397: every signup from here on needs a valid, unique e-mail — checked here, before the
     // WebAuthn ceremony, so a taken or malformed address fails fast rather than after a Face ID/
     // fingerprint prompt. "Taken" is a guess worth throttling the same way it already is at
@@ -2240,11 +2469,6 @@ const routes = {
       audit(req, 'auth.register.denied', { ok: false, name, msg: 'email-taken' });
       return json(res, 409, EMAIL_ERRORS.taken);
     }
-    // Decision 2 of ISO-1386: asked, not required — the under-18 notice is ISO-1398's concern and
-    // never blocks a signup either way, so an absent birth date is simply left out.
-    const hasBirthDate = body.birthDate != null && text(body.birthDate).trim() !== '';
-    const birthDate = hasBirthDate ? parseBirthDate(body.birthDate) : null;
-    if (hasBirthDate && !birthDate) return json(res, 400, { error: 'that is not a date', code: 'birth-date-invalid' });
     const code = text(body.code).trim().toUpperCase();
     if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
       // The rejected code itself is never recorded — a near-miss guess in the log is a liability.
@@ -2259,7 +2483,7 @@ const routes = {
       authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
       excludeCredentials: []
     });
-    const cid = putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code, email, birthDate });
+    const cid = putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code, email, birthDate, termsVersion });
     json(res, 200, { cid, options });
   },
 
@@ -2305,6 +2529,9 @@ const routes = {
       return json(res, 409, EMAIL_ERRORS.taken);
     }
     const user = { id: c.uid, name: c.name, created: new Date().toISOString(), email: c.email, birthDate: c.birthDate };
+    // ISO-1390: the version /options checked, accepted at the moment the account comes to exist.
+    user.termsAcceptedVersion = c.termsVersion;
+    user.termsAcceptedAt = user.created;
     if (INVITE_ONLY) user.invitedBy = c.code;
     const cred = {
       id: credential.id,
@@ -2832,6 +3059,211 @@ const routes = {
     return json(res, stillThere ? 400 : 404, stillThere ? { error: 'already used — cannot revoke' } : { error: 'no such code' });
   },
 
+  /* ---------- admin: training program catalog (ISO-1485) ----------
+   * Admin-only end to end — every route below starts with requireAdmin, same guard and same
+   * 403 + admin.denied as the rest of /api/admin/*. "Program" is the one name this entity goes
+   * by (docs/ADMIN_PROGRAMS.md §1): never "training", which collides with Workout/Routine
+   * already meaning something else in this codebase.
+   */
+  'GET /api/admin/programs': async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    const q = new URL(req.url, 'http://x').searchParams;
+    const trash = /^(1|true)$/i.test(q.get('trash') || '');
+    const category = q.get('category') || '';
+    const difficulty = q.get('difficulty') || '';
+    const status = q.get('status') || '';
+    if (category && !PROGRAM_CATEGORIES.includes(category)) return json(res, 400, { error: 'invalid category filter', field: 'category' });
+    if (difficulty && !PROGRAM_DIFFICULTIES.includes(difficulty)) return json(res, 400, { error: 'invalid difficulty filter', field: 'difficulty' });
+    if (status && !['draft', 'published'].includes(status)) return json(res, 400, { error: 'invalid status filter', field: 'status' });
+    const [rows, users, trashCountRow] = await Promise.all([
+      listPrograms(pool, { q: q.get('q') || '', category, difficulty, status, trash }),
+      getAllUsers(pool),
+      pool.query('SELECT count(*)::int AS n FROM programs WHERE deleted_at IS NOT NULL')
+    ]);
+    const nameOf = id => id ? (users.find(u => u.id === id) || {}).name || null : null;
+    const programs = rows.map(p => ({
+      ...p,
+      ...(p.createdBy ? { createdByName: nameOf(p.createdBy) } : {}),
+      ...(p.updatedBy ? { updatedByName: nameOf(p.updatedBy) } : {}),
+      ...(p.deletedBy ? { deletedByName: nameOf(p.deletedBy) } : {})
+    }));
+    json(res, 200, { programs, trashCount: trashCountRow.rows[0].n });
+  },
+
+  // Enum values + labels, field limits and the two configurable knobs — everything the form needs
+  // to validate client-side before it ever POSTs, and everything the lists need to render chips.
+  'GET /api/admin/programs/meta': async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    json(res, 200, {
+      categories: PROGRAM_CATEGORIES.map(value => ({ value, label: PROGRAM_CATEGORY_LABELS[value] })),
+      difficulties: PROGRAM_DIFFICULTIES.map(value => ({ value, label: PROGRAM_DIFFICULTY_LABELS[value] })),
+      limits: {
+        title: { min: PROGRAM_TITLE_MIN, max: PROGRAM_TITLE_MAX },
+        description: { max: PROGRAM_DESCRIPTION_MAX },
+        sessionMinutes: { min: SESSION_MINUTES_MIN, max: SESSION_MINUTES_MAX },
+        coverAlt: { min: COVER_ALT_MIN, max: COVER_ALT_MAX },
+        coverDims: { minWidth: COVER_WIDTH_MIN, minHeight: COVER_HEIGHT_MIN, max: COVER_DIM_MAX }
+      },
+      trashDays: PROGRAM_CFG.trashDays,
+      coverMaxMB: PROGRAM_CFG.coverMaxMB
+    });
+  },
+
+  'GET /api/admin/program': async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const [program, events] = await Promise.all([getProgram(pool, id), listProgramEvents(pool, id, 50)]);
+    if (!program) return json(res, 404, { error: 'no such program' });
+    const users = await getAllUsers(pool);
+    const nameOf = uid => uid ? (users.find(u => u.id === uid) || {}).name || null : null;
+    json(res, 200, {
+      program: {
+        ...program,
+        ...(program.createdBy ? { createdByName: nameOf(program.createdBy) } : {}),
+        ...(program.updatedBy ? { updatedByName: nameOf(program.updatedBy) } : {}),
+        ...(program.deletedBy ? { deletedByName: nameOf(program.deletedBy) } : {})
+      },
+      history: events
+    });
+  },
+
+  'POST /api/admin/programs/new': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const v = validateProgram(body, { partial: false });
+    if (!v.ok) return json(res, 400, { error: v.error, field: v.field });
+    const result = await createProgram(pool, v.value, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    audit(req, 'admin.program.create', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  'POST /api/admin/program/update': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    const rev = Number(body.rev);
+    if (!id || !Number.isInteger(rev)) return json(res, 400, { error: 'id and rev are required' });
+    const v = validateProgram(body, { partial: true });
+    if (!v.ok) return json(res, 400, { error: v.error, field: v.field });
+    const result = await updateProgram(pool, id, rev, v.value, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    // Explicit literals, not string concatenation: frontend/src/lib/audit.test.js statically
+    // scans this file for audit() calls whose event name is a plain quoted string, to make sure
+    // every event the server can emit has a human sentence — a name built up at runtime is
+    // invisible to that scan.
+    const action = { update: 'admin.program.update', publish: 'admin.program.publish', unpublish: 'admin.program.unpublish' }[result.action];
+    if (action) audit(req, action, { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  'POST /api/admin/program/trash': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    const rev = Number(body.rev);
+    if (!id || !Number.isInteger(rev)) return json(res, 400, { error: 'id and rev are required' });
+    const result = await trashProgram(pool, id, rev, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    audit(req, 'admin.program.trash', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  'POST /api/admin/program/restore': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    if (!id) return json(res, 400, { error: 'id is required' });
+    const result = await restoreProgram(pool, id, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    audit(req, 'admin.program.restore', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  // Only from the trash, and only with the title typed back exactly — purgeProgram re-checks the
+  // match itself (never trusting the client's own gate), and the row is gone before this answers.
+  'POST /api/admin/program/purge': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    if (!id) return json(res, 400, { error: 'id is required' });
+    const result = await purgeProgram(pool, id, text(body.confirmTitle), { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    if (result.coverFile && !result.coverStillReferenced) unlinkProgramCover(result.coverFile);
+    audit(req, 'admin.program.purge', { user: admin, msg: result.title });
+    json(res, 200, { ok: true });
+  },
+
+  // Raw image bytes in the body, like PUT /api/media/{hash} — but admin-only, capped much smaller
+  // (PROGRAM_COVER_MAX_MB) and read whole into memory rather than streamed: a personal catalog's
+  // cover art is rare and small enough that the simplicity is worth more than media.js's incremental
+  // hashing. `w`/`h`/`alt` ride the query string since the body is the file itself.
+  'PUT /api/admin/program/cover': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const q = new URL(req.url, 'http://x').searchParams;
+    const id = q.get('id') || '';
+    const rev = Number(q.get('rev'));
+    if (!id || !Number.isInteger(rev)) { await readRawBody(req); return json(res, 400, { error: 'id and rev are required' }); }
+    const dims = validateCoverDims(Number(q.get('w')), Number(q.get('h')));
+    if (!dims.ok) { await readRawBody(req); return json(res, 400, { error: dims.error, field: dims.field }); }
+    const program = await getProgram(pool, id);
+    const alt = validateCoverAlt(q.get('alt') || '', program?.title);
+    if (!alt.ok) { await readRawBody(req); return json(res, 400, { error: alt.error, field: alt.field }); }
+    const buf = await readRawBody(req);
+    const maxBytes = Math.round(PROGRAM_CFG.coverMaxMB * 1024 * 1024);
+    if (buf.length > maxBytes) return json(res, 413, { error: 'that file is too large', maxMB: PROGRAM_CFG.coverMaxMB });
+    const sniffed = sniffMedia(buf.subarray(0, 64));
+    const ext = sniffed && PROGRAM_COVER_EXT[sniffed.mime];
+    if (!ext) return json(res, 415, { error: 'cover must be a JPEG, PNG or WebP image' });
+    const sha = crypto.createHash('sha256').update(buf).digest('hex');
+    const file = `${sha}.${ext}`;
+    try { fs.writeFileSync(programCoverPath(file), buf, { mode: 0o600 }); }
+    catch (e) { console.error('program-covers: could not write', file, e.message); return json(res, 500, { error: 'server error' }); }
+    const result = await setProgramCover(pool, id, rev, {
+      file, mime: sniffed.mime, width: dims.value.width, height: dims.value.height, bytes: buf.length, alt: alt.value
+    }, { id: admin.id, name: admin.name });
+    if (result.error) { unlinkProgramCover(file); return programError(res, result); }
+    if (result.oldFile && !result.oldStillReferenced) unlinkProgramCover(result.oldFile);
+    audit(req, 'admin.program.cover.set', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  'POST /api/admin/program/cover/remove': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const id = text(body.id);
+    const rev = Number(body.rev);
+    if (!id || !Number.isInteger(rev)) return json(res, 400, { error: 'id and rev are required' });
+    const result = await clearProgramCover(pool, id, rev, { id: admin.id, name: admin.name });
+    if (result.error) return programError(res, result);
+    if (result.oldFile && !result.oldStillReferenced) unlinkProgramCover(result.oldFile);
+    audit(req, 'admin.program.cover.remove', { user: admin, target: { id: result.row.id, name: result.row.title } });
+    json(res, 200, { program: result.row });
+  },
+
+  // Streamed like sendMediaFile, minus the per-profile access check (the directory check there
+  // has no equivalent here — a Program has no owner — requireAdmin is the whole access check).
+  // Immutable cache: the filename is the content's own hash, so a changed cover is always a new
+  // URL, never a cache invalidation problem.
+  'GET /api/admin/program/cover': async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const program = await getProgram(pool, id);
+    if (!program || !program.coverFile) return json(res, 404, { error: 'no such cover' });
+    let fd;
+    try { fd = fs.openSync(programCoverPath(program.coverFile), 'r'); }
+    catch { return json(res, 404, { error: 'no such cover' }); }
+    const size = fs.fstatSync(fd).size;
+    res.writeHead(200, {
+      'Content-Type': program.coverMime,
+      'Content-Length': String(size),
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff'
+    });
+    try { await pipeline(fs.createReadStream(null, { fd }), res); }
+    catch { res.destroy(); }
+  },
+
   /* ---------- activity log ---------- */
   // Newest first, paged by id. Not by offset: the log grows at the front of this view, so an
   // offset cursor would repeat a row whenever an event lands between two pages; and not by
@@ -2890,6 +3322,12 @@ const routes = {
     if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
+    // ISO-1390: no subscription for an account that has not accepted the current terms — they are
+    // the contract the payment is made under. Checked before the e-mail on purpose: when both are
+    // missing, the terms sheet is the blocking one the app should show first.
+    if (user.termsAcceptedVersion !== LEGAL_VERSION) {
+      return json(res, 403, { error: 'accept the current terms first', code: 'terms-required' });
+    }
     // Issue rule: checkout requires a verified e-mail (Phase 2) — the trial_will_end and renewal
     // notices this phase sends have nowhere to go otherwise.
     if (!user.emailVerifiedAt) return json(res, 403, { error: 'e-mail not verified', code: 'email-unverified' });
@@ -2987,7 +3425,7 @@ setFirstPeriodNoticeHook(async (uid, sub) => {
   const billingDate = d
     ? `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`
     : 'em breve';
-  const { subject, text: body, html } = renderPreChargeNotice({ name: user.name, amount, billingDate });
+  const { subject, text: body, html } = renderPreChargeNotice({ name: user.name, amount, billingDate, appUrl: APP_URL });
   try { await sendMail({ to: user.email, subject, text: body, html }); }
   catch (e) { console.error('mail: could not send pre-charge notice e-mail', e.message); }
 });

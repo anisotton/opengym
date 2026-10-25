@@ -6,7 +6,26 @@
 
 import { makeLinkCode, hashLinkCode, DEVICE_LINK_TTL_MS } from './device-link.js';
 import { passkeyName, transportsOf, MAX_PASSKEYS } from './passkeys-store.js';
+import { newProgramId, diffForEvent, titleMatchesForPurge } from './programs.js';
 import { withTransaction } from './db.js';
+
+// The lock insertPasskey's cap check already takes, keyed on the account rather than any one
+// table: whether a password or a passkey still signs a profile in is decided across both the
+// `users` and `passkeys` tables, so a count-then-act confined to just one of them (even inside
+// its own transaction) can still race a concurrent one on the other table — each reads the other
+// table's pre-commit state and both removals go through, exactly the ISO-1592 bug. Serializing
+// every such check-then-act on this one lock makes the second caller wait for the first's commit
+// (or rollback) before it reads anything, so it always sees the first's result rather than a
+// snapshot from before it landed. `pool.release` exists only on a checked-out client, never on
+// the Pool itself, which is what tells a caller already inside someone else's transaction (passes
+// that transaction's client here) apart from one that still needs its own.
+async function withWayInLock(pool, userId, run) {
+  const body = async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
+    return run(client);
+  };
+  return typeof pool.release === 'function' ? body(pool) : withTransaction(pool, body);
+}
 
 // { state, rev } — state is null and rev is 0 for a profile that has never pushed, exactly what
 // GET /api/data returned for a state file that did not exist yet.
@@ -74,6 +93,8 @@ function rowToUser(row) {
     sv: row.session_version,
     ...(row.email ? { email: row.email } : {}),
     ...(row.email_verified_at ? { emailVerifiedAt: row.email_verified_at.toISOString() } : {}),
+    ...(row.terms_accepted_version ? { termsAcceptedVersion: row.terms_accepted_version } : {}),
+    ...(row.terms_accepted_at ? { termsAcceptedAt: row.terms_accepted_at.toISOString() } : {}),
     ...(row.birth_date ? { birthDate: row.birth_date.toISOString().slice(0, 10) } : {}),
     ...(row.stripe_customer_id ? { stripeCustomerId: row.stripe_customer_id } : {}),
     ...(row.invited_by || row.extra?.invitedBy ? { invitedBy: row.invited_by || row.extra.invitedBy } : {}),
@@ -112,12 +133,23 @@ export async function getAllUsers(pool) {
 // then, same as `lastReminder`; rowToUser reads either place.
 export async function createUser(pool, user) {
   await pool.query(
-    `INSERT INTO users (id, name, email, birth_date, password_hash, password_set_at, created_at, extra)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `INSERT INTO users (id, name, email, birth_date, password_hash, password_set_at, created_at, extra,
+       terms_accepted_version, terms_accepted_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       user.id, user.name, user.email || null, user.birthDate || null,
-      user.pw?.h || null, user.pw?.set || null, user.created, extraOf(user)
+      user.pw?.h || null, user.pw?.set || null, user.created, extraOf(user),
+      user.termsAcceptedVersion || null, user.termsAcceptedAt || null
     ]
+  );
+}
+
+// Records the Terms/Privacy version an existing account accepted and when (ISO-1390). Called for
+// accounts that predate the acceptance step, or when LEGAL_VERSION moves on and they re-accept.
+export async function setTermsAccepted(pool, id, version, at) {
+  await pool.query(
+    'UPDATE users SET terms_accepted_version = $2, terms_accepted_at = $3 WHERE id = $1',
+    [id, version, at]
   );
 }
 
@@ -187,6 +219,28 @@ export async function setPassword(pool, id, pw) {
 
 export async function removePassword(pool, id) {
   await pool.query('UPDATE users SET password_hash = NULL, password_set_at = NULL WHERE id = $1', [id]);
+}
+
+async function hasLivePassword(client, id) {
+  const { rows } = await client.query('SELECT password_hash FROM users WHERE id = $1', [id]);
+  return rows.length > 0 && rows[0].password_hash !== null;
+}
+
+// removePassword with the "never the last way in" rule built in, atomically: server.js used to
+// check hasPassword()/passkeyCount() against a snapshot taken before proveOwner's await (a slow
+// hash, or a WebAuthn ceremony), so a passkey removal landing in that window left nothing. Both
+// the password and the passkey count are read fresh here, inside the per-account lock
+// removePasskey now takes too (ISO-1592), so whichever of the two commits second always sees the
+// other's result rather than a pre-race read.
+export async function removePasswordUnlessLast(pool, id) {
+  const run = async client => {
+    if (!(await hasLivePassword(client, id))) return { ok: true }; // already gone — nothing to refuse
+    const { rows } = await client.query('SELECT count(*)::int AS n FROM passkeys WHERE user_id = $1', [id]);
+    if (rows[0].n < 1) return { error: 'the password is the only way into this profile', code: 'last-way-in' };
+    await client.query('UPDATE users SET password_hash = NULL, password_set_at = NULL WHERE id = $1', [id]);
+    return { ok: true };
+  };
+  return withWayInLock(pool, id, run);
 }
 
 // A sign-in re-hashing an existing password at today's cost parameters — not a new password: only
@@ -534,9 +588,13 @@ export async function upsertDeviceLink(pool, { h, userId, exp, created }) {
 /* ---------- passkeys ----------
  * `passkeyName`/`transportsOf` (passkeys-store.js) shape what a name or a transports list may
  * keep; everything DB-shaped — the rows, the count, the "never lose the last way in" rule — is
- * here. `otherWays` (passkeyRemovalRefused/removePasskey) is how many ways besides its passkeys
- * can still sign the profile in (a password, while the instance offers password sign-in);
- * server.js decides that, this only counts.
+ * here. `otherWays` (passkeyRemovalRefused) is how many ways besides its passkeys can still sign
+ * the profile in (a password, while the instance offers password sign-in) — server.js's own
+ * cheap pre-proof guess, since a wrong one there costs at most a prompt. `removePasskey` takes
+ * `passwordCounts` (PASSWORD_LOGIN, a server setting server.js still owns) but decides for itself
+ * whether a password currently exists — account data, read fresh under its own lock rather than
+ * handed in — because that is the one answer this profile's access actually depends on
+ * (ISO-1592).
  */
 
 function rowToPasskey(row) {
@@ -572,11 +630,11 @@ export async function countPasskeys(pool, userId) {
 // the theory that two additions racing the same account couldn't both slip past a count checked
 // before either had committed — but a plain SELECT count(*) takes no lock, so two concurrent
 // connections each get their own READ COMMITTED snapshot and can both see the same pre-race count
-// and both pass. A `pg_advisory_xact_lock` keyed on the user id forces the second one to wait for
-// the first to commit (or roll back) before it takes its own count, so it sees the row the first
-// one just added. Pass a transaction client in place of `pool` to insert alongside the user row a
-// fresh signup creates (registration ceremonies do) — same idea as consumeInvite; the lock then
-// lives for the rest of that transaction rather than one of its own.
+// and both pass. withWayInLock's advisory lock forces the second one to wait for the first to
+// commit (or roll back) before it takes its own count, so it sees the row the first one just
+// added. Pass a transaction client in place of `pool` to insert alongside the user row a fresh
+// signup creates (registration ceremonies do) — same idea as consumeInvite; the lock then lives
+// for the rest of that transaction rather than one of its own.
 export async function insertPasskey(pool, userId, cred) {
   const name = passkeyName(cred.name);
   const row = {
@@ -585,7 +643,6 @@ export async function insertPasskey(pool, userId, cred) {
     ...(cred.lastUsed ? { lastUsed: cred.lastUsed } : {}), ...(name ? { name } : {})
   };
   const run = async client => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
     let rowCount;
     try {
       ({ rowCount } = await client.query(
@@ -602,12 +659,7 @@ export async function insertPasskey(pool, userId, cred) {
     if (rowCount === 0) return { error: `a profile can have at most ${MAX_PASSKEYS} passkeys`, code: 'passkey-limit' };
     return { ok: true, row };
   };
-  // A Pool (not a transaction client already) needs its own transaction, or the advisory lock
-  // released at that single statement's implicit commit would do nothing to order the INSERT. A
-  // checked-out client (what withTransaction hands its callback) still has a `connect` method of
-  // its own — it's a real pg Client under the hood — so `release` (only the pool ever hands out,
-  // never has itself) is what actually tells the two apart.
-  return typeof pool.release === 'function' ? run(pool) : withTransaction(pool, run);
+  return withWayInLock(pool, userId, run);
 }
 
 export async function renamePasskey(pool, userId, credId, name) {
@@ -618,8 +670,10 @@ export async function renamePasskey(pool, userId, credId, name) {
   return rows.length ? { ok: true, row: rowToPasskey(rows[0]) } : { error: 'passkey not found', code: 'not-found' };
 }
 
-// Why removing `credId` would be refused, or null when it could go. On its own so server.js can
-// ask before it asks the owner for proof, and again, through removePasskey, once the proof is in.
+// Why removing `credId` would be refused, or null when it could go. `otherWays` is a plain count
+// handed in by the caller — on its own so server.js can ask before it asks the owner for proof, a
+// deliberately cheap, non-atomic pre-check: a stale answer here only costs an unnecessary prompt
+// or skips one, never a wrong removal, because removePasskey below decides again, for real.
 export async function passkeyRemovalRefused(pool, userId, credId, otherWays = 0) {
   const cred = await getPasskeyById(pool, credId);
   if (!cred || cred.userId !== userId) return { error: 'passkey not found', code: 'not-found' };
@@ -628,11 +682,22 @@ export async function passkeyRemovalRefused(pool, userId, credId, otherWays = 0)
   return null;
 }
 
-export async function removePasskey(pool, userId, credId, otherWays = 0) {
-  const refused = await passkeyRemovalRefused(pool, userId, credId, otherWays);
-  if (refused) return refused;
-  const { rows } = await pool.query('DELETE FROM passkeys WHERE id = $1 AND user_id = $2 RETURNING *', [credId, userId]);
-  return { ok: true, row: rowToPasskey(rows[0]) };
+// The authoritative check, atomic. `passwordCounts` is PASSWORD_LOGIN — a server setting, not
+// account data, so it's safe for the caller to hand in from before any await; whether this
+// account currently *has* a password is account data, and is read fresh here instead, inside the
+// same per-account lock removePasswordUnlessLast takes, so the two never both see "the other one
+// still covers me" for the same instant (ISO-1592 — server.js used to pass a password flag read
+// from a user snapshot taken before proveOwner's await, exactly the gap a concurrent password
+// removal could land in).
+export async function removePasskey(pool, userId, credId, passwordCounts = false) {
+  const run = async client => {
+    const otherWays = passwordCounts && (await hasLivePassword(client, userId)) ? 1 : 0;
+    const refused = await passkeyRemovalRefused(client, userId, credId, otherWays);
+    if (refused) return refused;
+    const { rows } = await client.query('DELETE FROM passkeys WHERE id = $1 AND user_id = $2 RETURNING *', [credId, userId]);
+    return { ok: true, row: rowToPasskey(rows[0]) };
+  };
+  return withWayInLock(pool, userId, run);
 }
 
 // A passkey's own counter/last-use, touched by every ceremony that verifies an assertion against
@@ -822,6 +887,333 @@ export async function bumpStripeCleanupFailure(pool, id, errorMessage) {
      WHERE id = $1`,
     [id, String(errorMessage || '').slice(0, 300)]
   );
+}
+
+/* ---------- programs (ISO-1485) ----------
+ * The admin-curated catalog — not a user's own training data, see docs/ADMIN_PROGRAMS.md §1.
+ * `rev` is the same optimistic-concurrency shape as user_state.rev: every mutator below reads the
+ * row with `FOR UPDATE` (so a second writer waits instead of racing a lock-free retry, unlike
+ * putUserState — a personal catalog has none of that function's concurrency volume) and checks
+ * the caller's rev against what it finds. Every mutator also writes exactly one program_events
+ * row, in the same transaction as the row change it describes — see migrations/007_programs.sql
+ * for why that table carries no foreign key. `actor` is `{ id, name } | null`; recordEvent's own
+ * default ('system') is only ever used by purgeExpiredPrograms.
+ */
+
+function rowToProgram(row) {
+  const hasCover = row.cover_file != null;
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    category: row.category,
+    difficulty: row.difficulty,
+    sessionMinutes: row.session_minutes,
+    status: row.status,
+    rev: Number(row.rev),
+    ...(hasCover ? {
+      coverFile: row.cover_file, coverMime: row.cover_mime,
+      coverWidth: row.cover_width, coverHeight: row.cover_height, coverBytes: row.cover_bytes,
+      coverAlt: row.cover_alt,
+      ...(row.cover_updated_at ? { coverUpdatedAt: row.cover_updated_at.toISOString() } : {}),
+      ...(row.cover_updated_by ? { coverUpdatedBy: row.cover_updated_by } : {})
+    } : {}),
+    createdAt: row.created_at.toISOString(),
+    ...(row.created_by ? { createdBy: row.created_by } : {}),
+    updatedAt: row.updated_at.toISOString(),
+    ...(row.updated_by ? { updatedBy: row.updated_by } : {}),
+    ...(row.published_at ? { publishedAt: row.published_at.toISOString() } : {}),
+    ...(row.deleted_at ? { deletedAt: row.deleted_at.toISOString() } : {}),
+    ...(row.deleted_by ? { deletedBy: row.deleted_by } : {})
+  };
+}
+
+function rowToProgramEvent(row) {
+  return {
+    id: Number(row.id), programId: row.program_id, programTitle: row.program_title,
+    action: row.action, actorId: row.actor_id, actorName: row.actor_name,
+    at: row.at.toISOString(), changes: row.changes || {}
+  };
+}
+
+async function recordEvent(client, { programId, programTitle, action, actor, changes }) {
+  await client.query(
+    `INSERT INTO program_events (program_id, program_title, action, actor_id, actor_name, changes)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [programId, programTitle, action, actor?.id || null, actor?.name || 'system', JSON.stringify(changes || {})]
+  );
+}
+
+// Every row whose cover_file is still referenced — including a trashed program's, which still
+// needs its file (restoring brings it right back). Called both as a standalone check (the cover
+// routes, below) and against a `client` mid-transaction (purge, which has just deleted the one row
+// that might have been the last reference).
+export async function coverStillReferenced(pool, file) {
+  const { rows } = await pool.query('SELECT 1 FROM programs WHERE cover_file = $1 LIMIT 1', [file]);
+  return rows.length > 0;
+}
+
+// `q` is escaped for ILIKE's own wildcards (%, _, \) before going into the pattern — a search for
+// a literal "%" or "_" must not act as a wildcard, and parameterization alone doesn't stop that
+// (it only stops SQL injection, a different problem). `trash` selects the lixeira instead of the
+// active catalog; `status` is ignored there, since a trashed program's status no longer means
+// anything about what's visible (see server.js's own read path).
+export async function listPrograms(pool, { q, category, difficulty, status, trash } = {}) {
+  const clauses = [trash ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL'];
+  const params = [];
+  if (q) {
+    params.push('%' + String(q).replace(/[%_\\]/g, c => '\\' + c) + '%');
+    clauses.push(`(title ILIKE $${params.length} OR description ILIKE $${params.length})`);
+  }
+  if (category) { params.push(category); clauses.push(`category = $${params.length}`); }
+  if (difficulty) { params.push(difficulty); clauses.push(`difficulty = $${params.length}`); }
+  if (status && !trash) { params.push(status); clauses.push(`status = $${params.length}`); }
+  const order = trash ? 'deleted_at DESC' : 'updated_at DESC';
+  const { rows } = await pool.query(`SELECT * FROM programs WHERE ${clauses.join(' AND ')} ORDER BY ${order}`, params);
+  return rows.map(rowToProgram);
+}
+
+export async function getProgram(pool, id) {
+  const { rows } = await pool.query('SELECT * FROM programs WHERE id = $1', [id]);
+  return rows.length ? rowToProgram(rows[0]) : null;
+}
+
+export async function listProgramEvents(pool, programId, limit = 50) {
+  const { rows } = await pool.query(
+    'SELECT * FROM program_events WHERE program_id = $1 ORDER BY at DESC, id DESC LIMIT $2',
+    [programId, limit]
+  );
+  return rows.map(rowToProgramEvent);
+}
+
+// `value` is already the normalized, validated shape validateProgram() (programs.js) returns —
+// this never re-validates, only persists. The unique index on lower(title) (partial, active rows
+// only) is what actually enforces the no-duplicate-title rule; the 23505 catch here is just this
+// call's half of reporting that race as a clean 409 instead of a 500.
+export async function createProgram(pool, value, actor) {
+  const id = newProgramId();
+  return withTransaction(pool, async client => {
+    let row;
+    try {
+      ({ rows: [row] } = await client.query(
+        `INSERT INTO programs (id, title, description, category, difficulty, session_minutes, status, created_by, updated_by, published_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8, CASE WHEN $7 = 'published' THEN now() ELSE NULL END)
+         RETURNING *`,
+        [id, value.title, value.description, value.category, value.difficulty, value.sessionMinutes, value.status, actor?.id || null]
+      ));
+    } catch (e) {
+      if (e.code === '23505') return { error: 'a program with this title already exists', code: 'title-taken' };
+      throw e;
+    }
+    await recordEvent(client, {
+      programId: id, programTitle: row.title, action: 'create', actor,
+      changes: {
+        title: [null, row.title], category: [null, row.category], difficulty: [null, row.difficulty],
+        sessionMinutes: [null, row.session_minutes], status: [null, row.status]
+      }
+    });
+    return { ok: true, row: rowToProgram(row) };
+  });
+}
+
+// Compare-and-set by rev, same contract GET/PUT /api/data already gives the client: a stale
+// `rev` loses with `{code: 'stale', current}` rather than silently overwriting a concurrent edit.
+// A no-op save (every field already equal to what's submitted) writes nothing and bumps nothing —
+// there is no event for a save that changed nothing. Logged as 'publish'/'unpublish' instead of
+// 'update' only when status is the one and only thing that moved — an edit that changes the
+// description *and* publishes in the same save is logged as 'update' (its `changes` still shows
+// both).
+export async function updateProgram(pool, id, rev, value, actor) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT * FROM programs WHERE id = $1 FOR UPDATE', [id]);
+    if (!rows.length) return { error: 'no such program', code: 'not-found' };
+    const before = rows[0];
+    if (before.deleted_at) return { error: 'this program is in the trash', code: 'in-trash' };
+    if (Number(before.rev) !== Number(rev)) return { error: 'changed since you loaded it', code: 'stale', current: rowToProgram(before) };
+    const next = {
+      title: value.title ?? before.title,
+      description: value.description ?? before.description,
+      category: value.category ?? before.category,
+      difficulty: value.difficulty ?? before.difficulty,
+      session_minutes: value.sessionMinutes ?? before.session_minutes,
+      status: value.status ?? before.status
+    };
+    const unchanged = Object.entries(next).every(([k, v]) => before[k] === v);
+    if (unchanged) return { ok: true, row: rowToProgram(before), action: null };
+    let row;
+    try {
+      ({ rows: [row] } = await client.query(
+        `UPDATE programs SET title=$1, description=$2, category=$3, difficulty=$4, session_minutes=$5,
+           status=$6, rev = rev + 1, updated_at = now(), updated_by = $7,
+           published_at = CASE WHEN $6 = 'published' AND published_at IS NULL THEN now() ELSE published_at END
+         WHERE id = $8
+         RETURNING *`,
+        [next.title, next.description, next.category, next.difficulty, next.session_minutes, next.status, actor?.id || null, id]
+      ));
+    } catch (e) {
+      if (e.code === '23505') return { error: 'a program with this title already exists', code: 'title-taken' };
+      throw e;
+    }
+    // Only the fields a human actually edits go into the diff — not rev/updated_at/published_at,
+    // which move as a side effect of any save and would otherwise make a pure status toggle look
+    // like a multi-field 'update' instead of the 'publish'/'unpublish' it actually was.
+    const editable = r => ({
+      title: r.title, description: r.description, category: r.category, difficulty: r.difficulty,
+      sessionMinutes: r.session_minutes, status: r.status
+    });
+    const changes = diffForEvent(editable(before), editable(row));
+    const onlyStatusChanged = Object.keys(changes).length === 1 && 'status' in changes;
+    const action = onlyStatusChanged ? (row.status === 'published' ? 'publish' : 'unpublish') : 'update';
+    await recordEvent(client, { programId: id, programTitle: row.title, action, actor, changes });
+    return { ok: true, row: rowToProgram(row), action };
+  });
+}
+
+export async function trashProgram(pool, id, rev, actor) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT * FROM programs WHERE id = $1 FOR UPDATE', [id]);
+    if (!rows.length) return { error: 'no such program', code: 'not-found' };
+    const before = rows[0];
+    if (before.deleted_at) return { error: 'already in the trash', code: 'in-trash' };
+    if (Number(before.rev) !== Number(rev)) return { error: 'changed since you loaded it', code: 'stale', current: rowToProgram(before) };
+    const { rows: [row] } = await client.query(
+      'UPDATE programs SET deleted_at = now(), deleted_by = $1, rev = rev + 1 WHERE id = $2 RETURNING *',
+      [actor?.id || null, id]
+    );
+    await recordEvent(client, { programId: id, programTitle: row.title, action: 'trash', actor, changes: {} });
+    return { ok: true, row: rowToProgram(row) };
+  });
+}
+
+// Always comes back as a draft (plan §2.1) — republishing is its own, explicit act. Can collide
+// with an active program's title if one was created or restored in the meantime; reported the
+// same way create/update do.
+export async function restoreProgram(pool, id, actor) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT * FROM programs WHERE id = $1 FOR UPDATE', [id]);
+    if (!rows.length) return { error: 'no such program', code: 'not-found' };
+    const before = rows[0];
+    if (!before.deleted_at) return { error: 'not in the trash', code: 'not-in-trash' };
+    let row;
+    try {
+      ({ rows: [row] } = await client.query(
+        `UPDATE programs SET deleted_at = NULL, deleted_by = NULL, status = 'draft', rev = rev + 1,
+           updated_at = now(), updated_by = $1
+         WHERE id = $2 RETURNING *`,
+        [actor?.id || null, id]
+      ));
+    } catch (e) {
+      if (e.code === '23505') return { error: 'another program already has this title', code: 'title-taken' };
+      throw e;
+    }
+    await recordEvent(client, { programId: id, programTitle: row.title, action: 'restore', actor, changes: {} });
+    return { ok: true, row: rowToProgram(row) };
+  });
+}
+
+// Only from the trash, and only with the title typed back exactly (titleMatchesForPurge,
+// programs.js) — the server's own half of that confirmation, never trusting the client's gate
+// alone. `coverFile`/`coverStillReferenced` tell the caller whether to unlink the file on disk;
+// the row (and, with it, the one reference that might have been keeping the file alive) is
+// already gone by the time this returns.
+export async function purgeProgram(pool, id, confirmTitle, actor) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT * FROM programs WHERE id = $1 FOR UPDATE', [id]);
+    if (!rows.length) return { error: 'no such program', code: 'not-found' };
+    const before = rows[0];
+    if (!before.deleted_at) return { error: 'only a program in the trash can be purged', code: 'not-in-trash' };
+    if (!titleMatchesForPurge(confirmTitle, before.title)) {
+      return { error: 'the typed title does not match', code: 'confirm-mismatch' };
+    }
+    await client.query('DELETE FROM programs WHERE id = $1', [id]);
+    await recordEvent(client, { programId: id, programTitle: before.title, action: 'purge', actor, changes: {} });
+    const coverStill = before.cover_file ? await coverStillReferenced(client, before.cover_file) : false;
+    return { ok: true, title: before.title, coverFile: before.cover_file || null, coverStillReferenced: coverStill };
+  });
+}
+
+// The hourly/boot tick (server.js). `days` of 0 means "never auto-purge" (plan §2.3) — checked by
+// the caller before this is reached, but re-checked here too since nothing stops a direct call.
+// Each candidate purges in its own transaction (not one big one for the whole batch): a personal
+// instance purges a handful of rows at a time at most, and one bad row must not roll back every
+// other one that was fine. Re-reads with the same cutoff under FOR UPDATE before deleting, so a
+// program restored between the candidate scan and its own turn is left alone.
+export async function purgeExpiredPrograms(pool, days, now = Date.now()) {
+  if (!days) return [];
+  const cutoff = new Date(now - days * 86400000);
+  const { rows: candidates } = await pool.query(
+    'SELECT id FROM programs WHERE deleted_at IS NOT NULL AND deleted_at < $1', [cutoff]
+  );
+  const purged = [];
+  for (const { id } of candidates) {
+    const result = await withTransaction(pool, async client => {
+      const { rows } = await client.query(
+        'SELECT * FROM programs WHERE id = $1 AND deleted_at IS NOT NULL AND deleted_at < $2 FOR UPDATE',
+        [id, cutoff]
+      );
+      if (!rows.length) return null;
+      const before = rows[0];
+      await client.query('DELETE FROM programs WHERE id = $1', [id]);
+      await recordEvent(client, { programId: id, programTitle: before.title, action: 'purge_auto', actor: null, changes: {} });
+      const coverStill = before.cover_file ? await coverStillReferenced(client, before.cover_file) : false;
+      return { id, title: before.title, coverFile: before.cover_file || null, coverStillReferenced: coverStill };
+    });
+    if (result) purged.push(result);
+  }
+  return purged;
+}
+
+// `cover`: { file, mime, width, height, bytes, alt } — already validated and the file already on
+// disk by the time this runs (server.js writes the bytes first; a row that then fails to commit
+// just leaves an orphan for the sweep to collect, never a row pointing at nothing). `oldFile`/
+// `oldStillReferenced` tell the caller whether to unlink the file the cover is replacing.
+export async function setProgramCover(pool, id, rev, cover, actor) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT * FROM programs WHERE id = $1 FOR UPDATE', [id]);
+    if (!rows.length) return { error: 'no such program', code: 'not-found' };
+    const before = rows[0];
+    if (before.deleted_at) return { error: 'this program is in the trash', code: 'in-trash' };
+    if (Number(before.rev) !== Number(rev)) return { error: 'changed since you loaded it', code: 'stale', current: rowToProgram(before) };
+    const oldFile = before.cover_file;
+    const { rows: [row] } = await client.query(
+      `UPDATE programs SET cover_file=$1, cover_mime=$2, cover_width=$3, cover_height=$4, cover_bytes=$5,
+         cover_alt=$6, cover_updated_at=now(), cover_updated_by=$7, rev = rev + 1
+       WHERE id = $8 RETURNING *`,
+      [cover.file, cover.mime, cover.width, cover.height, cover.bytes, cover.alt, actor?.id || null, id]
+    );
+    await recordEvent(client, { programId: id, programTitle: row.title, action: 'cover_set', actor, changes: { cover: [oldFile || null, cover.file] } });
+    const replaced = oldFile && oldFile !== cover.file;
+    const oldStillReferenced = replaced ? await coverStillReferenced(client, oldFile) : false;
+    return { ok: true, row: rowToProgram(row), oldFile: replaced ? oldFile : null, oldStillReferenced };
+  });
+}
+
+export async function clearProgramCover(pool, id, rev, actor) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT * FROM programs WHERE id = $1 FOR UPDATE', [id]);
+    if (!rows.length) return { error: 'no such program', code: 'not-found' };
+    const before = rows[0];
+    if (before.deleted_at) return { error: 'this program is in the trash', code: 'in-trash' };
+    if (Number(before.rev) !== Number(rev)) return { error: 'changed since you loaded it', code: 'stale', current: rowToProgram(before) };
+    if (!before.cover_file) return { error: 'no cover to remove', code: 'no-cover' };
+    const oldFile = before.cover_file;
+    const { rows: [row] } = await client.query(
+      `UPDATE programs SET cover_file=NULL, cover_mime=NULL, cover_width=NULL, cover_height=NULL,
+         cover_bytes=NULL, cover_alt=NULL, cover_updated_at=now(), cover_updated_by=$1, rev = rev + 1
+       WHERE id = $2 RETURNING *`,
+      [actor?.id || null, id]
+    );
+    await recordEvent(client, { programId: id, programTitle: row.title, action: 'cover_remove', actor, changes: { cover: [oldFile, null] } });
+    const oldStillReferenced = await coverStillReferenced(client, oldFile);
+    return { ok: true, row: rowToProgram(row), oldFile, oldStillReferenced };
+  });
+}
+
+// Every cover file any row (including the trash) still points at — the sweep's allow-list for
+// deciding which files under DATA_DIR/program-covers are orphans (server.js).
+export async function getAllCoverFiles(pool) {
+  const { rows } = await pool.query('SELECT DISTINCT cover_file FROM programs WHERE cover_file IS NOT NULL');
+  return new Set(rows.map(r => r.cover_file));
 }
 
 // Boot's one-time migration of whatever db.json still holds.

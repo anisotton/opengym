@@ -75,7 +75,10 @@ export async function spawnApi(t, { dataDir, env = {} } = {}) {
       DATABASE_URL: databaseUrl, ...env
     }
   });
-  const h = { log: '', dataDir: dir, databaseUrl };
+  // Exposed so a test can simulate the database disappearing out from under a running server
+  // (health.test.js) — terminates backends and drops the database right now rather than waiting
+  // for teardown. Safe to call again afterwards: cleanup() itself is `DROP DATABASE IF EXISTS`.
+  const h = { log: '', dataDir: dir, databaseUrl, dropDatabase: cleanup };
   child.stdout.on('data', d => h.log += d);
   child.stderr.on('data', d => h.log += d);
   t.after(() => { child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -157,6 +160,15 @@ export async function provisionTestDatabase() {
   };
 }
 
+/** `n` days before today, as the `YYYY-MM-DD` the coach's review window compares against
+ *  (`reviewWindow` in coach/core/payload.js). Fixtures below are built on this, not on a
+ *  calendar date, so they stay inside the 12-week window no matter when the suite runs. */
+export function daysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
 /** A profile that has consented and has some history — the usual starting point. */
 export function sampleState(over = {}) {
   return {
@@ -172,10 +184,10 @@ export function sampleState(over = {}) {
     week: { 1: 'r1', 3: 'r1', 5: 'r1' },
     dayPlan: {},
     exWeights: { '0001': { w: 20 } },
-    bodyweight: [{ d: '2026-07-01', w: 78 }, { d: '2026-07-20', w: 78.5 }],
+    bodyweight: [{ d: daysAgo(19), w: 78 }, { d: daysAgo(0), w: 78.5 }],
     customEx: [],
     workouts: [{
-      id: 'w1', d: '2026-07-20', name: 'Full body A', start: 1000, end: 1000 + 45 * 60000, vol: 600, prs: [],
+      id: 'w1', d: daysAgo(0), name: 'Full body A', start: 1000, end: 1000 + 45 * 60000, vol: 600, prs: [],
       entries: [{
         id: '0001', target: { sets: 3, reps: 10, weight: 20 },
         sets: [{ w: 20, r: 10, done: true, rpe: 9.5 }, { w: 20, r: 9, done: true, rpe: 10 }, { w: 20, r: 8, done: true, rpe: 10 }]

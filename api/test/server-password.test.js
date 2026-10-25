@@ -73,6 +73,11 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
   });
   // Every request looks like the app talking to its own backend unless a test says otherwise.
   h.req = async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
+    // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
+    // server-terms.test.js's subject, not this file's. ISO-1521: same idea for the now-required
+    // birthDate — an adult one, since the under-18 refusal is server-age-gate.test.js's subject.
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-18' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}), ...headers },
@@ -377,6 +382,14 @@ test('changing a password takes the current one and signs out every other sessio
 // straddle the change; whatever cookie any of them got, none may still work afterwards. Run once
 // with a current hash and once with one made at older parameters, whose sign-in rehashes — a
 // second await before the cookie is signed.
+//
+// Once the change has actually landed, every further sign-in with the old password is just a
+// wrong password — each one spends ACCOUNT_FAILS's account-wide allowance (5 free), which is
+// shared with the "new password works" check below. Firing attempts for a fixed 600 ms regardless
+// of when the change settles let an unrelated number of them land afterwards and intermittently
+// exhaust that allowance before the final check ran, with no connection to what this test is
+// actually proving. Stopping as soon as the change is confirmed done bounds that tail to whatever
+// was already in flight at that instant, which is what still straddles the change on every run.
 for (const [label, stored] of [['current', () => pwHash], ['older parameters', () => oldHash]]) {
   test(`sign-ins with the old password still running during a change get no lasting session (${label} hash)`, async t => {
     pwHash ??= await hashPassword(GOOD);
@@ -385,10 +398,13 @@ for (const [label, stored] of [['current', () => pwHash], ['older parameters', (
     const owner = `gymsid=${mintSession('u1')}`;
     const next = 'a much better passphrase';
     const attempts = [];
-    let change;
-    for (let i = 0; i < 30; i++) {
+    let change, changeSettled = false;
+    for (let i = 0; i < 10 && !changeSettled; i++) {
       attempts.push(login(h, 'Ana', GOOD, `198.51.100.${10 + i}`));
-      if (i === 3) change = h.req('POST', '/api/account/password', { body: { next, current: GOOD }, cookie: owner, ip: '203.0.113.200' });
+      if (i === 3) {
+        change = h.req('POST', '/api/account/password', { body: { next, current: GOOD }, cookie: owner, ip: '203.0.113.200' });
+        change.then(() => { changeSettled = true; });
+      }
       await new Promise(r => setTimeout(r, 20));
     }
     const done = await change;

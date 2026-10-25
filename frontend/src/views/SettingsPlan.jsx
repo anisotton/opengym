@@ -13,6 +13,7 @@ import { fmtDate } from '../lib/format.js'
 import { canWriteFromBilling, fmtCentsBRL } from '../lib/billing.js'
 import { billingCheckout, billingPortal } from '../lib/api.js'
 import { openNeedsEmailPrompt } from '../components/AccountEmail.jsx'
+import { openTermsSheet } from '../components/TermsSheet.jsx'
 import { useOnline } from '../components/ServerSync.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
@@ -86,6 +87,8 @@ export default function SettingsPlan() {
       window.location.href = url
     } catch (e) {
       setBusyPlan(null)
+      // Terms changed since this account accepted: the sheet is the answer, not a card error.
+      if (e?.data?.code === 'terms-required') { openTermsSheet(); return }
       if (e?.data?.code === 'email-unverified') { openNeedsEmailPrompt(); return }
       setCardError(prev => ({ ...prev, [id]: t('Could not open payment. Try again.') }))
     }

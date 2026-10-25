@@ -185,3 +185,28 @@ describe('bio / vault', () => {
     expect(vault()).toBe('VAULT-de')
   })
 })
+
+// The terms version the app sends at sign-up is its own bundle's LEGAL_VERSION (ISO-1390): the
+// callers pass it, api.js only puts it in the request body.
+describe('sign-up sends termsVersion', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  const json = body => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+
+  it('passkeyRegister puts it in the body of /api/register/options', async () => {
+    const { passkeyRegister } = await import('./api.js')
+    const fetchMock = vi.fn(async () => json({}))
+    vi.stubGlobal('fetch', fetchMock)
+    await passkeyRegister('A', '', 'a@x.io', '', '2026-10-17').catch(() => {})
+    expect(fetchMock.mock.calls[0][0]).toContain('/api/register/options')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).termsVersion).toBe('2026-10-17')
+  })
+
+  it('passwordRegister puts it in the body of /api/register/password', async () => {
+    const { passwordRegister } = await import('./api.js')
+    const fetchMock = vi.fn(async () => json({ user: { id: 'u1' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await passwordRegister('A', 'pw', '', '', '2000-01-01', '2026-10-17')
+    expect(fetchMock.mock.calls[0][0]).toContain('/api/register/password')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).termsVersion).toBe('2026-10-17')
+  })
+})

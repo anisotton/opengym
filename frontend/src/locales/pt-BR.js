@@ -4,6 +4,20 @@
 import pt from './pt.js'
 
 export const PT_BR_OVERRIDES = {
+  // --- legal pages (ISO-1390) ---
+  "Version {0}": "Versão {0}",
+  "Terms of Use": "Termos de Uso",
+  "Privacy Policy": "Política de Privacidade",
+  "I have read and accept the Terms of Use and the Privacy Policy.": "Li e aceito os Termos de Uso e a Política de Privacidade.",
+  "Read the Terms of Use": "Ler os Termos de Uso",
+  "Read the Privacy Policy": "Ler a Política de Privacidade",
+  "We updated our terms": "Atualizamos nossos termos",
+  "To keep using Brilhart Fitness, read and accept the current Terms of Use and Privacy Policy.": "Para continuar usando o Brilhart Fitness, leia e aceite os Termos de Uso e a Política de Privacidade atuais.",
+  "You accepted version {0} on {1}.": "Você aceitou a versão {0} em {1}.",
+  "Accept and continue": "Aceitar e continuar",
+  "Update the app to accept the new terms.": "Atualize o app para aceitar os novos termos.",
+  "Reload": "Recarregar",
+  "Could not save your acceptance — are you online?": "Não foi possível registrar seu aceite — você está online?",
   // --- billing / subscription (ISO-1392/ISO-1395) ---
   "Read-only account": "Conta em modo leitura",
   "Subscribe to log workouts again. Your history is still here.": "Assine para voltar a registrar treinos. Seu histórico continua disponível.",
@@ -1056,8 +1070,9 @@ export const PT_BR_OVERRIDES = {
   'Today’s strength is tomorrow’s lightness.': 'A força de hoje é a leveza de amanhã.',
   // ISO-1398: account e-mail, confirmation, recovery.
   'Add your e-mail': 'Adicionar seu e-mail',
+  // ISO-1521: minimum age to sign up — exact wording confirmed by Anderson, 18/10/2026.
+  'Brilhart Fitness is for people 18 and older. We cannot complete your sign-up.': 'A Brilhart Fitness é destinada a maiores de 18 anos. Não é possível concluir seu cadastro.',
   'Check your birth date.': 'Confira sua data de nascimento.',
-  'People under 18 should use this app with a guardian’s guidance.': 'Menores de 18 anos devem usar o app com orientação de um responsável.',
   'That is already your e-mail.': 'Esse já é seu e-mail.',
   'We sent a confirmation link to {0}. It is valid for 24 hours — open it to confirm your account.': 'Enviamos um link de confirmação para {0}. Ele é válido por 24 horas — abra-o para confirmar sua conta.',
   'You can already use the app. Only a subscription needs the confirmed e-mail.': 'Você já pode usar o app. Só uma assinatura precisa do e-mail confirmado.',
@@ -1073,6 +1088,14 @@ export const PT_BR_OVERRIDES = {
   'Send link': 'Enviar link',
   'That link is invalid or expired.': 'Esse link é inválido ou expirou.',
   'Confirm your e-mail to keep access to your subscription.': 'Confirme seu e-mail para não perder o acesso à assinatura.',
+  'Confirm your e-mail': 'Confirme seu e-mail',
+  'Open the link we sent to {0}.': 'Abra o link que enviamos para {0}.',
+  'Just a moment.': 'Só um instante.',
+  'Your account is confirmed. If you ever lose this device, this e-mail is how you get back in.': 'Sua conta está confirmada. Se um dia perder este aparelho, é por este e-mail que você volta a entrar.',
+  'Your e-mail was already confirmed.': 'Seu e-mail já estava confirmado.',
+  'This link no longer works': 'Este link não vale mais',
+  'It expired or was already used. Ask for a new one and open the latest e-mail.': 'Ele expirou ou já foi usado. Peça um novo e abra o e-mail mais recente.',
+  'Send a new link': 'Enviar um novo link',
   // --- delete account (ISO-1394/ISO-1449), spec by Atena in ISO-1448 ---
   'Delete account': 'Excluir conta',
   'Erases everything — your data, your subscription, and the account itself.': 'Apaga tudo — seus dados, sua assinatura e a própria conta.',
