@@ -47,9 +47,19 @@ function parseStripeForm(raw) {
 // calls the admin catalog routes make. `seedPrices` pre-populates the store (object keyed by id)
 // so a test can hand it a fixture price (e.g. one carrying `metadata.bf_plan` for reconcile) that
 // was never created through this mock server itself.
-function mockStripeApi(seedPrices = {}) {
+// `pageSize` (ISO-1625, T1b review — reconcileCatalog's own pagination) lets a test force more
+// than one `prices.list` round trip regardless of how few fixture Prices it seeds, by capping how
+// many this mock ever hands back in one page — the real limit billing.js asks for (100) stays
+// irrelevant to the mock either way.
+function mockStripeApi(seedPrices = {}, { pageSize = Infinity } = {}) {
   const calls = [];
   const prices = { ...seedPrices };
+  // `delay.ms` (ISO-1625, T1b review — stale-after-stripe compensation): a test can widen the gap
+  // between a price-update call landing and its response, to reliably land a concurrent, faster
+  // (no Stripe call of its own) request's own DB write inside that gap — without this, that race is
+  // too fast and too timing-dependent on a local mock to land in the one specific window the
+  // compensation test needs (after Stripe already wrote, before this transaction's own DB CAS).
+  const delay = { ms: 0 };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => { body += c; });
@@ -58,9 +68,16 @@ function mockStripeApi(seedPrices = {}) {
       const u = new URL(req.url, 'http://x');
       if (req.method === 'GET' && u.pathname === '/v1/prices') {
         const product = u.searchParams.get('product');
-        const data = Object.values(prices).filter(p => !product || p.product === product);
+        const startingAfter = u.searchParams.get('starting_after');
+        let data = Object.values(prices).filter(p => !product || p.product === product).sort((a, b) => a.id.localeCompare(b.id));
+        if (startingAfter) {
+          const idx = data.findIndex(p => p.id === startingAfter);
+          data = idx === -1 ? data : data.slice(idx + 1);
+        }
+        const hasMore = data.length > pageSize;
+        data = data.slice(0, pageSize);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ object: 'list', data, has_more: false }));
+        return res.end(JSON.stringify({ object: 'list', data, has_more: hasMore }));
       }
       if (req.method === 'GET' && u.pathname.startsWith('/v1/prices/')) {
         const id = decodeURIComponent(u.pathname.split('/').pop());
@@ -86,8 +103,8 @@ function mockStripeApi(seedPrices = {}) {
         const existing = prices[id];
         if (!existing) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { message: 'No such price' } })); }
         if ('active' in f) existing.active = f.active !== 'false';
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify(existing));
+        const respond = () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(existing)); };
+        return delay.ms > 0 ? setTimeout(respond, delay.ms) : respond();
       }
       if (req.method === 'POST' && u.pathname === '/v1/customers') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -101,7 +118,7 @@ function mockStripeApi(seedPrices = {}) {
       res.end(JSON.stringify({ error: { message: `not mocked: ${req.method} ${req.url}` } }));
     });
   });
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls, prices })));
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls, prices, delay })));
 }
 
 async function sql(databaseUrl, text, params) {
@@ -116,14 +133,14 @@ async function sql(databaseUrl, text, params) {
 // is the live-gate shape: the mock's fixture Prices are `livemode:false`, which a live key makes
 // seedCatalogFromEnv's own livemode check refuse — deliberately, so those tests exercise the gate
 // on an unseeded catalog without ever reaching real Stripe.
-async function startServer(t, { users, seeded = true, apiKey = 'sk_test_unused', env = {} } = {}) {
+async function startServer(t, { users, seeded = true, apiKey = 'sk_test_unused', env = {}, pageSize = Infinity } = {}) {
   const seedPrices = seeded ? {
     price_monthly_test: { id: 'price_monthly_test', object: 'price', unit_amount: 8900, currency: 'brl', recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1', active: true },
     price_quarterly_test: { id: 'price_quarterly_test', object: 'price', unit_amount: 23700, currency: 'brl', recurring: { interval: 'month', interval_count: 3 }, livemode: false, product: 'prod_1', active: true },
     price_yearly_test: { id: 'price_yearly_test', object: 'price', unit_amount: 76800, currency: 'brl', recurring: { interval: 'year', interval_count: 1 }, livemode: false, product: 'prod_1', active: true },
     price_intro_test: { id: 'price_intro_test', object: 'price', unit_amount: 199, currency: 'brl', recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1', active: true }
   } : {};
-  const { server, port, calls, prices } = await mockStripeApi(seedPrices);
+  const { server, port, calls, prices, delay } = await mockStripeApi(seedPrices, { pageSize });
   t.after(() => server.close());
   const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
@@ -142,6 +159,7 @@ async function startServer(t, { users, seeded = true, apiKey = 'sk_test_unused',
     }
   });
   h.calls = calls;
+  h.mockDelay = delay;
   h.prices = prices;
   h.req = async (method, p, { body, cookie, headers = {} } = {}) => {
     const r = await fetch(`${h.api}${p}`, {
@@ -318,6 +336,103 @@ test('admin billing catalog: publicar versão swaps current atomically, the old 
   const newRow = await h.row1('SELECT * FROM billing_prices WHERE id = $1', [newPriceId]);
   assert.equal(newRow.state, 'current');
   assert.equal(Number(newRow.unit_amount), 9900);
+});
+
+/* ---------- ISO-1625 (T1b review): stale-after-stripe compensation ---------- */
+test('ativar/desativar: a losing race after Stripe already flipped reverts the Price back to the winner\'s value', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  // Two toggles racing the same plan/version at once, opposite directions: whichever wins the DB
+  // CAS keeps its own Stripe write; the loser's own write already landed by the time it loses the
+  // race and must be reverted — before this fix, Stripe and the DB were simply left disagreeing.
+  const bodyA = { id: 'monthly', version: 1, available: false, reason: 'temporarily pulling this plan', ...proof };
+  const bodyB = { id: 'monthly', version: 1, available: true, reason: 'keeping this plan on sale', ...proof };
+  const [ra, rb] = await Promise.all([
+    h.req('POST', '/api/admin/billing/catalog/plan/availability', { cookie: adminCookie, headers: { 'Idempotency-Key': idemp() }, body: bodyA }),
+    h.req('POST', '/api/admin/billing/catalog/plan/availability', { cookie: adminCookie, headers: { 'Idempotency-Key': idemp() }, body: bodyB })
+  ]);
+  const statuses = [ra.status, rb.status].sort();
+  assert.deepEqual(statuses, [200, 409]);
+  const winner = ra.status === 200 ? ra : rb;
+  const loser = ra.status === 200 ? rb : ra;
+  assert.equal(loser.body.code, 'stale');
+
+  const plan = await h.row1('SELECT * FROM billing_plans WHERE id = $1', ['monthly']);
+  const priceRow = h.prices[plan.current_price_id];
+  assert.equal(priceRow.active, winner.body.plan.available, 'Stripe converges on the winner — the loser\'s write was reverted, never left standing');
+});
+
+test('publicar versão: a version bumped by an unrelated concurrent edit after Stripe already wrote is reverted (stale-after-stripe)', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const draft = await h.req('POST', '/api/admin/billing/catalog/plan/price', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { planId: 'monthly', unitAmount: 9900, reason: 'adjusting for inflation', ...proof }
+  });
+  const newPriceId = draft.body.price.id;
+
+  // Widens the gap between publish's own Stripe calls landing and responding (ISO-1625, T1b
+  // review), and waits out proveOwner's own deliberately slow scrypt verification (password.js:
+  // ~50-150ms/attempt) before firing the unrelated edit — without both, the race is too fast and
+  // too timing-dependent on a local mock to land reliably inside the one window this test needs:
+  // after publish's own version check already passed and Stripe already activated/deactivated the
+  // Prices, but before publish's own DB transaction re-checks the version.
+  h.mockDelay.ms = 300;
+  const publishPromise = h.req('POST', '/api/admin/billing/catalog/plan/publish', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { planId: 'monthly', priceId: newPriceId, version: 1, reason: 'publishing the new monthly price', ...proof }
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const displayEdit = await h.req('POST', '/api/admin/billing/catalog/plan/display', {
+    cookie: adminCookie, body: { id: 'monthly', version: 1, display: { 'pt-BR': { name: 'Mensal (editado)' } } }
+  });
+  assert.equal(displayEdit.status, 200, 'the unrelated edit itself succeeds and bumps the version');
+  const publish = await publishPromise;
+  assert.equal(publish.status, 409);
+  assert.equal(publish.body.code, 'stale-after-stripe');
+
+  // Stripe already activated the new Price and deactivated the old one by the time the DB CAS
+  // lost the race — both reverted, so current_price_id (still price_monthly_test) never ends up
+  // pointing at a Price Stripe itself says is inactive.
+  assert.equal(h.prices[newPriceId].active, false, 'the new Price was deactivated again');
+  assert.equal(h.prices.price_monthly_test.active, true, 'the old Price was reactivated');
+  const plan = await h.row1('SELECT * FROM billing_plans WHERE id = $1', ['monthly']);
+  assert.equal(plan.current_price_id, 'price_monthly_test', 'never moved — still points at an active Price');
+});
+
+/* ---------- ISO-1625 (T1b review): reconcile pagination ---------- */
+test('admin billing catalog: reconcile pages through prices.list instead of stopping at the first page', async t => {
+  const h = await startServer(t, { users: [admin()], pageSize: 1 });
+  // Three untracked bf_plan-tagged Prices — with the mock capped to one Price per page
+  // (pageSize:1), a single-page reconcile would only ever see the first of these.
+  for (const [id, planId] of [['price_page_a', 'monthly'], ['price_page_b', 'quarterly'], ['price_page_c', 'yearly']]) {
+    h.prices[id] = {
+      id, object: 'price', unit_amount: 12345, currency: 'brl',
+      recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1', active: false,
+      metadata: { bf_plan: planId, bf_version: '9' }
+    };
+  }
+  const r = await h.req('POST', '/api/admin/billing/catalog/reconcile', { cookie: adminCookie });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.adopted.sort(), ['price_page_a', 'price_page_b', 'price_page_c']);
+  const listCalls = h.calls.filter(c => c.method === 'GET' && c.url.startsWith('/v1/prices?'));
+  assert.ok(listCalls.length > 1, `pageSize:1 against more than one Price must take more than one page, saw ${listCalls.length}`);
+});
+
+/* ---------- ISO-1625 (T1b review): Idempotency-Key reused for a different action ---------- */
+test('admin billing catalog: an Idempotency-Key reused for a different action is refused, never replayed as that action', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const key = idemp();
+  const first = await h.req('POST', '/api/admin/billing/catalog/plan/price', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': key },
+    body: { planId: 'monthly', unitAmount: 9900, reason: 'adjusting for inflation', ...proof }
+  });
+  assert.equal(first.status, 200);
+  const second = await h.req('POST', '/api/admin/billing/catalog/plan/availability', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': key }, // same key, a different action
+    body: { id: 'monthly', version: 1, available: false, reason: 'pulling this plan off sale', ...proof }
+  });
+  assert.equal(second.status, 409);
+  assert.equal(second.body.code, 'idempotency-key-reused');
+  assert.equal(h.prices.price_monthly_test.active, true, 'never actually touched — refused before calling Stripe');
 });
 
 /* ---------- reconcile ---------- */

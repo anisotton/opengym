@@ -2388,14 +2388,21 @@ paths:
         Handled event types: `checkout.session.completed` (links the Stripe customer to the
         account), `customer.subscription.created` (on a first-ever subscription, still on the intro
         Price, converts it into a two-phase Subscription Schedule rather than recording it as-is —
-        see `createBillingCheckout`) / `.updated` (records status, plan, `firstPeriod`,
-        `current_period_end`, `cancel_at_period_end`), `customer.subscription.deleted` (account goes
-        read-only), `invoice.paid` (confirms a renewal, and records `firstFullCharge` the first time
-        a full-price invoice lands after a first period) and `invoice.payment_failed` (moves the
-        account to `past_due`, which still writes — Stripe retries on its own schedule before
-        eventually cancelling). The first-period-ending e-mail is not a webhook event at all — there
-        is no Stripe trial in this design, so there is nothing for `trial_will_end` to fire on — it
-        runs off a periodic check instead (`tickFirstPeriodNotices`, api/billing.js).
+        see `createBillingCheckout`) / `.updated` / `.deleted` (ISO-1625 T2b: all three now fetch
+        the subscription fresh with `subscriptions.retrieve` and write *that* object — never the
+        event's own payload — so redeliveries landing out of order converge on whatever Stripe
+        currently says instead of regressing a newer state; `.deleted` is simply whichever status
+        that retrieve comes back with, almost always `canceled`), `subscription_schedule.updated`
+        / `.released` / `.canceled` (ISO-1625 T2b: keeps `scheduleId`/`scheduledPriceId` on the
+        subscription it drives in step with a phase change), `price.created` / `.updated`
+        (ISO-1625 T2b: adopts a Price tagged `metadata.bf_plan` this catalog has never heard of as
+        a `draft` — never its money, which is immutable once known), `invoice.paid` (confirms a
+        renewal, and records `firstFullCharge` the first time a full-price invoice lands after a
+        first period) and `invoice.payment_failed` (moves the account to `past_due`, which still
+        writes — Stripe retries on its own schedule before eventually cancelling). The
+        first-period-ending e-mail is not a webhook event at all — there is no Stripe trial in this
+        design, so there is nothing for `trial_will_end` to fire on — it runs off a periodic check
+        instead (`tickFirstPeriodNotices`, api/billing.js).
       requestBody:
         required: true
         content:
@@ -4211,6 +4218,95 @@ paths:
         $ref: '#/components/requestBodies/BillingSubscriptionActionBody'
       responses:
         '200': { description: The resulting Stripe subscription or schedule object., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/ReasonRequired' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the proveOwner proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: '`stale` or `action-in-progress`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`stripe-rejected`; nothing changed.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/subscription/suspend-collection:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionSuspendCollection
+      summary: 'Admin: suspender cobrança (ISO-1625 T2b)'
+      description: >-
+        `subscriptions.update(pause_collection: {behavior: 'void', resumes_at?})` — Stripe stops
+        generating invoices; `status` itself never changes, so a suspended account still reads
+        `active`/`past_due`. The webhook's own fetch-latest convergence persists
+        `subscriptions.data.pauseCollection`, which is what then makes `PUT /api/data` answer 402
+        again until "retomar cobrança" is called. Same auth as cancel-immediately.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, subscriptionId, reason]
+              properties:
+                userId: { type: string }
+                subscriptionId: { type: string }
+                resumesAt: { type: integer, description: Optional unix-seconds auto-resume date. }
+                reason: { type: string, minLength: 10 }
+                expectedUpdatedAt: { type: string }
+      responses:
+        '200': { description: The resulting Stripe subscription object., content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/ReasonRequired' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the proveOwner proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: '`stale` or `action-in-progress`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`stripe-rejected`; nothing changed.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/subscription/resume-collection:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingSubscriptionResumeCollection
+      summary: 'Admin: retomar cobrança (ISO-1625 T2b)'
+      description: >-
+        The exact reverse of suspend-collection: `subscriptions.update(pause_collection: '')`.
+        Unlike T2a's own "retomar cancelamento", this one does need a fresh proveOwner proof
+        (plan §7 lists suspend/resume-collection among the "ações financeiras").
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        $ref: '#/components/requestBodies/BillingSubscriptionActionBody'
+      responses:
+        '200': { description: The resulting Stripe subscription object., content: { application/json: { schema: { type: object } } } }
         '400': { $ref: '#/components/responses/ReasonRequired' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
@@ -6402,6 +6498,8 @@ components:
             - subscription.cancel-at-period-end
             - subscription.resume
             - subscription.cancel-immediately
+            - subscription.suspend-collection
+            - subscription.resume-collection
             - subscription.generate-link
             - subscription.sync
         reason: { type: string, minLength: 10 }
@@ -6427,9 +6525,13 @@ components:
       description: >-
         One row of `subscriptions` (ISO-1624 T2a) — the current one plus every legacy
         (cancelled, superseded) row this account has ever had. Priced off `billing_prices`
-        (`priceState` can be `retired` and still show the right name/amount). `schedule`,
-        `scheduledPriceId` and `pauseCollection` are only ever set on the one row that is still
-        writable, read live from Stripe at request time — never persisted.
+        (`priceState` can be `retired` and still show the right name/amount). `schedule` is only
+        ever set on the one row that is still being checked live against Stripe at request time
+        (status active/past_due) — never persisted. `scheduledPriceId` and `pauseCollection` are
+        shown the same way for that one row (freshest), but are ALSO persisted into
+        `subscriptions.data` by the webhook's own fetch-latest convergence as of ISO-1625 (T2b) —
+        that mirror is what `PUT /api/data`'s 402 gate reads, since it cannot afford a live Stripe
+        call on every write.
       properties:
         id: { type: string, description: Stripe subscription id. }
         userId: { type: string }
@@ -6465,6 +6567,12 @@ components:
                 behavior: { type: string, enum: [void, keep_as_draft, mark_uncollectible] }
                 resumes_at: { oneOf: [{ type: integer }, { type: 'null' }] }
             - type: 'null'
+        duplicateOf:
+          description: >-
+            The other, older writable subscription's id for this account, when the webhook (ISO-1625
+            T2b, plan §5.3) has detected a race that left two live subscriptions at once. Never
+            refunded automatically — surfaced for an admin to resolve by hand.
+          oneOf: [{ type: string }, { type: 'null' }]
         nextCharge:
           oneOf:
             - type: object

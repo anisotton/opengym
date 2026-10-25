@@ -19,7 +19,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import Stripe from 'stripe';
-import { tempData, spawnApi } from './helpers.mjs';
+import { tempData, spawnApi, testPool } from './helpers.mjs';
+
+// Opened and closed within the same statement (server-billing-catalog.test.js's own comment on
+// this exact shape explains why: a pool kept open across a fetch has hit "terminating connection
+// due to administrator command" racing spawnApi's own teardown).
+async function sql(databaseUrl, text, params) {
+  const pool = testPool(databaseUrl);
+  try { return await pool.query(text, params); }
+  finally { await pool.end(); }
+}
 
 const SECRET = crypto.randomBytes(32).toString('hex');
 const WEBHOOK_SECRET = 'whsec_test_' + crypto.randomBytes(8).toString('hex');
@@ -34,53 +43,101 @@ const headers = uid => ({ Cookie: `gymsid=${mintSession(uid)}`, 'Content-Type': 
 const INTRO_PRICE = 'price_intro_test';
 const MONTHLY_PRICE = 'price_monthly_test';
 
+// ISO-1625 (T2b): fetch-latest means applyStripeEvent now calls subscriptions.retrieve for every
+// customer.subscription.* event — every test in this file needs somewhere for that call to land,
+// not just the one (below) that already exercised convertToSchedule's own network call. One
+// stateful mock, created fresh per test by startServer and always wired via STRIPE_API_HOST/
+// STRIPE_API_PORT, replaces what used to be a special case.
+function mockStripeApi() {
+  const calls = [];
+  const subscriptions = {};
+  const schedules = {};
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const u = new URL(req.url, 'http://x');
+      calls.push({ method: req.method, url: req.url, body });
+      const notFound = () => { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'not found' } })); };
+
+      if (req.method === 'GET' && u.pathname.match(/^\/v1\/subscriptions\/[^/]+$/)) {
+        const id = decodeURIComponent(u.pathname.split('/').pop());
+        const s = subscriptions[id];
+        if (!s) return notFound();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(s));
+      }
+      if (req.method === 'GET' && u.pathname.match(/^\/v1\/subscription_schedules\/[^/]+$/)) {
+        const id = decodeURIComponent(u.pathname.split('/').pop());
+        const s = schedules[id];
+        if (!s) return notFound();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(s));
+      }
+      if (req.method === 'POST' && u.pathname === '/v1/subscription_schedules') {
+        const id = 'sched_test_1';
+        const schedule = schedules[id] || {
+          id, object: 'subscription_schedule',
+          phases: [{ start_date: 1700000000, end_date: 1702678400, items: [{ price: INTRO_PRICE, quantity: 1 }] }]
+        };
+        schedules[id] = schedule;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(schedule));
+      }
+      if (req.method === 'POST' && u.pathname.match(/^\/v1\/subscription_schedules\/[^/]+$/)) {
+        const id = decodeURIComponent(u.pathname.split('/').pop());
+        const schedule = schedules[id] || { id, object: 'subscription_schedule', phases: [] };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(schedule));
+      }
+
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: `not mocked: ${req.method} ${req.url}` } }));
+    });
+  });
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls, subscriptions, schedules })));
+}
+
 async function startServer(t, { users, env = {} } = {}) {
+  const mock = await mockStripeApi();
+  t.after(() => mock.server.close());
   const dataDir = tempData();
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({ users, creds: [], subs: [], invites: [] }));
-  return spawnApi(t, {
+  const h = await spawnApi(t, {
     dataDir,
     env: {
       STRIPE_API_KEY: 'sk_test_unused',
       STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      STRIPE_API_HOST: '127.0.0.1', STRIPE_API_PORT: String(mock.port),
       STRIPE_PRICE_MONTHLY: MONTHLY_PRICE,
       STRIPE_PRICE_INTRO: INTRO_PRICE,
       ...env
     }
   });
-}
-
-// A local stand-in for api.stripe.com, for the one test that needs convertToSchedule's own
-// subscriptionSchedules.create/update calls to actually go somewhere and be inspected — the real
-// request is what proves the fix (`end_date`, not the rejected `iterations`), not just a reading
-// of the source. billing.js's getStripe() points at this host via STRIPE_API_HOST/STRIPE_API_PORT
-// (test-only seam), never set outside this file.
-function mockStripeApi() {
-  const calls = [];
-  const server = http.createServer((req, res) => {
-    let body = '';
-    req.on('data', c => { body += c; });
-    req.on('end', () => {
-      calls.push({ method: req.method, url: req.url, body });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        id: 'sched_test_1',
-        object: 'subscription_schedule',
-        phases: [{ start_date: 1700000000, end_date: 1702678400, items: [{ price: INTRO_PRICE, quantity: 1 }] }]
-      }));
-    });
-  });
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls })));
+  h.mock = mock;
+  return h;
 }
 
 function stripeEvent(type, object) {
   return { id: 'evt_' + crypto.randomBytes(12).toString('hex'), type, data: { object } };
 }
 
-async function postWebhook(api, event) {
+// Registers the event's own object as the mock's current "live" state before posting — every
+// test but one wants its event payload and the live object fetch-latest retrieves back to be the
+// same, byte for byte, same as before fetch-latest existed. `registerLive: false` is the one
+// escape hatch, for the out-of-order-convergence test below, which sets up a *different*,
+// deliberately fresher live object itself and must stop this helper from clobbering it with the
+// (deliberately stale) event payload it is about to post.
+async function postWebhook(h, event, { registerLive = true } = {}) {
+  const obj = event.data.object;
+  if (registerLive && obj?.id) {
+    if (event.type.startsWith('customer.subscription.')) h.mock.subscriptions[obj.id] = obj;
+    else if (event.type.startsWith('subscription_schedule.')) h.mock.schedules[obj.id] = obj;
+  }
   const payload = JSON.stringify(event);
   const sig = stripeTestClient.webhooks.generateTestHeaderString({ payload, secret: WEBHOOK_SECRET });
-  const r = await fetch(`${api}/api/billing/webhook`, {
+  const r = await fetch(`${h.api}/api/billing/webhook`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
     body: payload
@@ -138,11 +195,11 @@ test('POST /api/billing/webhook: a repeated event id is acknowledged once and ap
   const h = await startServer(t, { users });
   const event = stripeEvent('customer.subscription.created', sub('sub_dupe'));
 
-  const first = await postWebhook(h.api, event);
+  const first = await postWebhook(h, event);
   assert.equal(first.status, 200);
   assert.equal(first.body.duplicate, false);
 
-  const second = await postWebhook(h.api, event); // byte-identical redelivery, same event.id
+  const second = await postWebhook(h, event); // byte-identical redelivery, same event.id
   assert.equal(second.status, 200);
   assert.equal(second.body.duplicate, true);
 
@@ -163,12 +220,12 @@ test('POST /api/billing/webhook: a failed apply un-claims the event, so a Stripe
   const h = await startServer(t, { users });
   const event = stripeEvent('customer.subscription.updated', sub(null, { metadata: { userId: 'u_bill_4', plan: 'monthly' } }));
 
-  const first = await postWebhook(h.api, event);
+  const first = await postWebhook(h, event);
   assert.equal(first.status, 500, 'applying the event failed');
 
   // If the claim had survived that failure, this exact event.id would now read back as a no-op
   // duplicate instead of being retried — it isn't, which is the whole point of unclaiming.
-  const second = await postWebhook(h.api, event);
+  const second = await postWebhook(h, event);
   assert.equal(second.status, 500, 'retried, not silently skipped as already-handled');
 
   const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_4') }).then(r => r.json());
@@ -183,7 +240,7 @@ test('POST /api/billing/webhook: subscription status transitions reach GET /api/
   // First period: active from the first invoice, not a Stripe trial — `firstPeriod` is what tells
   // the UI apart from the ongoing-subscriber case, and `nextChargeAmount` already shows the
   // upcoming FULL plan charge even though the subscription's current item is still the intro price.
-  let r = await postWebhook(h.api, stripeEvent('customer.subscription.created', sub('sub_lifecycle', {
+  let r = await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_lifecycle', {
     items: { data: [{ price: { id: INTRO_PRICE, unit_amount: 199 }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400 }] }
   })));
   assert.equal(r.status, 200);
@@ -194,13 +251,13 @@ test('POST /api/billing/webhook: subscription status transitions reach GET /api/
   assert.equal(s.nextChargeAmount, 8900, 'the upcoming charge is the full monthly price, not R$1.99');
 
   // The schedule's phase change: the subscription's item is now the chosen plan's price.
-  r = await postWebhook(h.api, stripeEvent('customer.subscription.updated', sub('sub_lifecycle')));
+  r = await postWebhook(h, stripeEvent('customer.subscription.updated', sub('sub_lifecycle')));
   assert.equal(r.status, 200);
 
   // The first full-price invoice: firstFullCharge is recorded once, keyed off the invoice's own
   // line price rather than billing_reason — robust regardless of event ordering. Subscription id
   // is read from the dahlia shape (parent.subscription_details.subscription) — see `invoice()`.
-  r = await postWebhook(h.api, stripeEvent('invoice.paid', invoice('in_1', 'sub_lifecycle')));
+  r = await postWebhook(h, stripeEvent('invoice.paid', invoice('in_1', 'sub_lifecycle')));
   assert.equal(r.status, 200);
   s = await status();
   assert.equal(s.status, 'active');
@@ -211,14 +268,14 @@ test('POST /api/billing/webhook: subscription status transitions reach GET /api/
 
   // A failed renewal moves the account to past_due — it still writes (issue rule: Stripe retries
   // before cancelling).
-  r = await postWebhook(h.api, stripeEvent('invoice.payment_failed', invoice('in_2', 'sub_lifecycle')));
+  r = await postWebhook(h, stripeEvent('invoice.payment_failed', invoice('in_2', 'sub_lifecycle')));
   assert.equal(r.status, 200);
   s = await status();
   assert.equal(s.status, 'past_due');
   assert.equal(s.active, true, 'past_due still writes');
 
   // The Portal's cancellation, once the period actually ends.
-  r = await postWebhook(h.api, stripeEvent('customer.subscription.deleted', sub('sub_lifecycle', { status: 'canceled' })));
+  r = await postWebhook(h, stripeEvent('customer.subscription.deleted', sub('sub_lifecycle', { status: 'canceled' })));
   assert.equal(r.status, 200);
   s = await status();
   assert.equal(s.status, 'canceled');
@@ -241,7 +298,7 @@ test('POST /api/billing/webhook: current_period_end falls back to the pre-dahlia
     cancel_at_period_end: false,
     metadata: { userId: 'u_bill_6', plan: 'monthly' }
   };
-  const r = await postWebhook(h.api, stripeEvent('customer.subscription.created', flatSub));
+  const r = await postWebhook(h, stripeEvent('customer.subscription.created', flatSub));
   assert.equal(r.status, 200);
   const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_6') }).then(r => r.json());
   assert.equal(status.nextChargeDate, new Date(flatPeriodEnd * 1000).toISOString());
@@ -254,14 +311,14 @@ test('POST /api/billing/webhook: invoice.paid falls back to the pre-dahlia root-
   // above: without it, invoice.paid/invoice.payment_failed are a silent no-op (subId is undefined).
   const users = [{ id: 'u_bill_7', name: 'Seven', created: new Date().toISOString() }];
   const h = await startServer(t, { users });
-  await postWebhook(h.api, stripeEvent('customer.subscription.created', sub('sub_flat_inv', { metadata: { userId: 'u_bill_7', plan: 'monthly' } })));
+  await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_flat_inv', { metadata: { userId: 'u_bill_7', plan: 'monthly' } })));
 
   const flatInvoice = {
     id: 'in_flat', object: 'invoice', customer: 'cus_1', subscription: 'sub_flat_inv', // root-level, pre-dahlia
     lines: { data: [{ price: { id: MONTHLY_PRICE } }] },
     amount_paid: 8900, currency: 'brl', created: Math.floor(Date.now() / 1000)
   };
-  const r = await postWebhook(h.api, stripeEvent('invoice.paid', flatInvoice));
+  const r = await postWebhook(h, stripeEvent('invoice.paid', flatInvoice));
   assert.equal(r.status, 200);
   const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_7') }).then(r => r.json());
   assert.equal(status.status, 'active');
@@ -276,7 +333,7 @@ test('POST /api/billing/webhook: firstFullCharge is recorded from the dahlia inv
   // pre-dahlia fallback the same way as the other two fields.
   const users = [{ id: 'u_bill_9', name: 'Nine', created: new Date().toISOString() }];
   const h = await startServer(t, { users });
-  await postWebhook(h.api, stripeEvent('customer.subscription.created', sub('sub_flat_price', {
+  await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_flat_price', {
     items: { data: [{ price: { id: INTRO_PRICE, unit_amount: 199 }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400 }] },
     metadata: { userId: 'u_bill_9', plan: 'monthly' }
   })));
@@ -284,7 +341,7 @@ test('POST /api/billing/webhook: firstFullCharge is recorded from the dahlia inv
   const flatPriceInvoice = invoice('in_flat_price', 'sub_flat_price', {
     lines: { data: [{ price: { id: MONTHLY_PRICE } }] } // root-level price.id, pre-dahlia
   });
-  const r = await postWebhook(h.api, stripeEvent('invoice.paid', flatPriceInvoice));
+  const r = await postWebhook(h, stripeEvent('invoice.paid', flatPriceInvoice));
   assert.equal(r.status, 200);
   const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_9') }).then(r => r.json());
   assert.equal(status.firstFullCharge?.amount, 8900, 'firstFullCharge was recorded from the flat line price, not silently skipped');
@@ -304,7 +361,7 @@ test('customer.subscription.created with scheduleTo: the real schedule update se
     items: { data: [{ price: { id: INTRO_PRICE, unit_amount: 199 }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400 }] },
     metadata: { userId: 'u_bill_8', plan: 'monthly', scheduleTo: MONTHLY_PRICE }
   }));
-  const r = await postWebhook(h.api, event);
+  const r = await postWebhook(h, event);
   assert.equal(r.status, 200, 'convertToSchedule succeeded against the mock');
 
   const create = calls.find(c => c.method === 'POST' && c.url === '/v1/subscription_schedules');
@@ -331,15 +388,15 @@ test('PUT /api/data: 402 without a subscription, 200 once active, 200 while past
   const get = await fetch(`${h.api}/api/data`, { headers: headers('u_bill_2') });
   assert.equal(get.status, 200);
 
-  await postWebhook(h.api, stripeEvent('customer.subscription.created', sub('sub_gate', { metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
+  await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_gate', { metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
   r = await put();
   assert.equal(r.status, 200, 'an active subscription (first period or not) lifts the 402');
 
-  await postWebhook(h.api, stripeEvent('customer.subscription.updated', sub('sub_gate', { status: 'past_due', metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
+  await postWebhook(h, stripeEvent('customer.subscription.updated', sub('sub_gate', { status: 'past_due', metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
   r = await put();
   assert.equal(r.status, 200, 'past_due still writes — Stripe is still retrying');
 
-  await postWebhook(h.api, stripeEvent('customer.subscription.deleted', sub('sub_gate', { status: 'canceled', metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
+  await postWebhook(h, stripeEvent('customer.subscription.deleted', sub('sub_gate', { status: 'canceled', metadata: { userId: 'u_bill_2', plan: 'monthly' } })));
   r = await put();
   assert.equal(r.status, 402, 'canceled goes back to read-only');
 });
@@ -362,4 +419,122 @@ test('PUT /api/data: no 402 at all when billing is not configured', async t => {
 
   const webhook = await fetch(`${h.api}/api/billing/webhook`, { method: 'POST', body: '{}' });
   assert.equal(webhook.status, 404);
+});
+
+/* ---------- ISO-1625 (T2b): fetch-latest convergence, new events, pauseCollection, duplicateOf ---------- */
+
+test('POST /api/billing/webhook: an out-of-order redelivery converges on the live Stripe object, never regresses to a stale payload', async t => {
+  const users = [{ id: 'u_bill_11', name: 'Eleven', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+
+  // The account is really already past_due by the time this delivery arrives — some earlier,
+  // faster delivery already advanced it there. Registered directly as the mock's live truth.
+  h.mock.subscriptions.sub_order = sub('sub_order', { status: 'past_due', metadata: { userId: 'u_bill_11', plan: 'monthly' } });
+
+  // This event's own payload is stale — still says `active`, from before that transition. A
+  // pre-fetch-latest applyStripeEvent would have written exactly this and regressed the account.
+  const staleEvent = stripeEvent('customer.subscription.updated', sub('sub_order', { status: 'active', metadata: { userId: 'u_bill_11', plan: 'monthly' } }));
+  const r = await postWebhook(h, staleEvent, { registerLive: false });
+  assert.equal(r.status, 200);
+
+  const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_11') }).then(r => r.json());
+  assert.equal(status.status, 'past_due', 'converged on the live object, not the stale event payload');
+});
+
+test('PUT /api/data: pauseCollection (persisted by the webhook) refuses writes even while status stays active, and clears on resume', async t => {
+  const users = [{ id: 'u_bill_13', name: 'Thirteen', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+  const put = () => fetch(`${h.api}/api/data`, {
+    method: 'PUT', headers: headers('u_bill_13'),
+    body: JSON.stringify({ state: { workouts: [{ id: 'w1' }], routines: [] } })
+  });
+
+  await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_pause', { metadata: { userId: 'u_bill_13', plan: 'monthly' } })));
+  let r = await put();
+  assert.equal(r.status, 200, 'active and unpaused: writes');
+
+  await postWebhook(h, stripeEvent('customer.subscription.updated', sub('sub_pause', {
+    pause_collection: { behavior: 'void', resumes_at: null }, metadata: { userId: 'u_bill_13', plan: 'monthly' }
+  })));
+  r = await put();
+  assert.equal(r.status, 402, 'status is still active, but collection is paused — suspension is never free access');
+  const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_13') }).then(r => r.json());
+  assert.equal(status.status, 'active', 'no synthetic "paused" status');
+
+  await postWebhook(h, stripeEvent('customer.subscription.updated', sub('sub_pause', {
+    pause_collection: null, metadata: { userId: 'u_bill_13', plan: 'monthly' }
+  })));
+  r = await put();
+  assert.equal(r.status, 200, 'resumed — writes again');
+});
+
+test('webhook: a second live subscription for the same account is marked duplicateOf the first, never refunded automatically', async t => {
+  const users = [{ id: 'u_bill_14', name: 'Fourteen', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+
+  await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_dup_a', { metadata: { userId: 'u_bill_14', plan: 'monthly' } })));
+  await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_dup_b', { metadata: { userId: 'u_bill_14', plan: 'monthly' } })));
+
+  const rowA = await sql(h.databaseUrl, "SELECT data->>'duplicateOf' AS d FROM subscriptions WHERE id = 'sub_dup_a'").then(r => r.rows[0]);
+  const rowB = await sql(h.databaseUrl, "SELECT data->>'duplicateOf' AS d FROM subscriptions WHERE id = 'sub_dup_b'").then(r => r.rows[0]);
+  assert.equal(rowA.d, null, 'the older subscription is primary — never marked a duplicate of itself');
+  assert.equal(rowB.d, 'sub_dup_a', 'the newer one is marked duplicateOf the primary');
+
+  // No refund, no cancellation — this app never resolves a duplicate on its own.
+  const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_14') }).then(r => r.json());
+  assert.equal(status.active, true);
+
+  // Cancelling the duplicate clears the mark — self-healing, not a one-shot flag.
+  await postWebhook(h, stripeEvent('customer.subscription.deleted', sub('sub_dup_b', { status: 'canceled', metadata: { userId: 'u_bill_14', plan: 'monthly' } })));
+  const rowB2 = await sql(h.databaseUrl, "SELECT data->>'duplicateOf' AS d FROM subscriptions WHERE id = 'sub_dup_b'").then(r => r.rows[0]);
+  assert.equal(rowB2.d, null, 'no longer live — no longer marked a duplicate of anything');
+});
+
+test('webhook: subscription_schedule.updated/released keep scheduleId/scheduledPriceId on the subscription in step', async t => {
+  const users = [{ id: 'u_bill_15', name: 'Fifteen', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+  await postWebhook(h, stripeEvent('customer.subscription.created', sub('sub_sched_evt', { metadata: { userId: 'u_bill_15', plan: 'monthly' } })));
+
+  const schedule = {
+    id: 'sched_evt_1', object: 'subscription_schedule', subscription: 'sub_sched_evt',
+    phases: [{ start_date: 1700000000, end_date: null, items: [{ price: MONTHLY_PRICE }] }]
+  };
+  let r = await postWebhook(h, stripeEvent('subscription_schedule.updated', schedule));
+  assert.equal(r.status, 200);
+  let row = await sql(h.databaseUrl, "SELECT data->>'scheduleId' AS s, data->>'scheduledPriceId' AS p FROM subscriptions WHERE id = 'sub_sched_evt'").then(r => r.rows[0]);
+  assert.equal(row.s, 'sched_evt_1');
+  assert.equal(row.p, MONTHLY_PRICE);
+
+  // `released` — the schedule let go; `released_subscription` is where the id lives once
+  // `subscription` itself has already gone back to null.
+  r = await postWebhook(h, stripeEvent('subscription_schedule.released', {
+    ...schedule, subscription: null, released_subscription: 'sub_sched_evt'
+  }));
+  assert.equal(r.status, 200);
+  row = await sql(h.databaseUrl, "SELECT data->>'scheduleId' AS s, data->>'scheduledPriceId' AS p FROM subscriptions WHERE id = 'sub_sched_evt'").then(r => r.rows[0]);
+  assert.equal(row.s, null);
+  assert.equal(row.p, null);
+});
+
+test('webhook: price.created/price.updated adopt an unknown bf_plan-tagged Price as a draft, ignore everything else', async t => {
+  const users = [{ id: 'u_bill_16', name: 'Sixteen', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+  // No catalog seeded in this file's env (no STRIPE_PRICE_QUARTERLY/YEARLY) — a bf_plan tag naming
+  // a plan this instance has never heard of is exactly the "nothing sane to attach it to" case.
+  const unknownPlanPrice = {
+    id: 'price_unknown_plan', object: 'price', unit_amount: 5000, currency: 'brl',
+    recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1',
+    metadata: { bf_plan: 'a-plan-nobody-made' }
+  };
+  let r = await postWebhook(h, stripeEvent('price.created', unknownPlanPrice));
+  assert.equal(r.status, 200);
+  let row = await sql(h.databaseUrl, 'SELECT * FROM billing_prices WHERE id = $1', ['price_unknown_plan']).then(r => r.rows[0]);
+  assert.equal(row, undefined, 'no plan to attach it to — nothing adopted');
+
+  // A Price with no bf_plan tag at all — not ours, untouched either way.
+  const unrelatedPrice = { ...unknownPlanPrice, id: 'price_unrelated', metadata: {} };
+  r = await postWebhook(h, stripeEvent('price.updated', unrelatedPrice));
+  assert.equal(r.status, 200);
+  row = await sql(h.databaseUrl, 'SELECT * FROM billing_prices WHERE id = $1', ['price_unrelated']).then(r => r.rows[0]);
+  assert.equal(row, undefined);
 });

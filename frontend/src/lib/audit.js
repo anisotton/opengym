@@ -113,6 +113,16 @@ const LABELS = {
   'admin.billing.catalog.price.publish': "Published a payment plan's new price",
   'admin.billing.catalog.order': 'Reordered the payment plan catalog',
   'admin.billing.catalog.reconcile': 'Reconciled the payment plan catalog against Stripe',
+  // ISO-1619/ISO-1624 T2a, ISO-1625 T2b: one account's billing ficha and its actions — never
+  // folded into a generic "update", same precedent as the catalog events just above.
+  'admin.billing.subscription.change-plan': "Changed an account's plan",
+  'admin.billing.subscription.cancel-period-end': "Scheduled an account's subscription to cancel",
+  'admin.billing.subscription.resume': "Undid a scheduled cancellation on an account's subscription",
+  'admin.billing.subscription.cancel-immediately': "Cancelled an account's subscription immediately",
+  'admin.billing.subscription.suspend-collection': "Suspended an account's billing",
+  'admin.billing.subscription.resume-collection': "Resumed an account's billing",
+  'admin.billing.subscription.generate-link': 'Generated a subscription link for an account',
+  'admin.billing.subscription.sync': "Synced an account's subscription with Stripe",
   // "Sign in with Google" (ISO-1597). `ok`'s `msg` carries the proof kind ('reauth') or, for a
   // pending signup with no account yet, a masked address; `refused`/`fail` carry a reason code.
   'auth.google.start': 'Started linking a Google account',

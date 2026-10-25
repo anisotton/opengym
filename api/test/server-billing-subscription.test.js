@@ -10,12 +10,47 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import { createServer } from 'node:net';
 import pg from 'pg';
 import { hashPassword } from '../password.js';
 import { tempData, spawnApi } from './helpers.mjs';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
 const WEBHOOK_SECRET = 'whsec_test_' + crypto.randomBytes(8).toString('hex');
+
+// ISO-1625 (T2b): a tiny in-process fake SMTP server (same shape as mail-smtp.test.js's own),
+// reused here to prove an admin subscription action actually sends mail end to end — the spawned
+// server.js child does a real TCP connection to it, not a mocked sendMail.
+function fakeSmtpServer() {
+  const received = [];
+  let dataMode = false;
+  let dataBuf = '';
+  const server = createServer(socket => {
+    socket.write('220 fake.smtp greeting\r\n');
+    socket.on('data', chunk => {
+      const text = chunk.toString('utf8');
+      if (dataMode) {
+        dataBuf += text;
+        if (dataBuf.endsWith('\r\n.\r\n')) {
+          dataMode = false;
+          received.push({ cmd: 'DATA-BODY', body: dataBuf.slice(0, -5) });
+          socket.write('250 ok queued\r\n');
+        }
+        return;
+      }
+      for (const line of text.split('\r\n').filter(Boolean)) {
+        received.push({ cmd: line });
+        const verb = line.split(' ')[0];
+        if (verb === 'EHLO') socket.write('250 fake.smtp\r\n');
+        else if (verb === 'MAIL') socket.write('250 ok\r\n');
+        else if (verb === 'RCPT') socket.write('250 ok\r\n');
+        else if (verb === 'DATA') { socket.write('354 go ahead\r\n'); dataMode = true; }
+        else if (verb === 'QUIT') { socket.write('221 bye\r\n'); socket.end(); }
+      }
+    });
+  });
+  return { server, received };
+}
 
 function mintSession(uid, sv = 0) {
   const payload = `${uid}:${Date.now() + 86400000}:${sv}`;
@@ -103,6 +138,16 @@ function mockStripeApi({ prices = {}, subscriptions = {}, schedules = {} } = {})
         if (!s) return notFound();
         const f = parseStripeForm(body);
         if ('cancel_at_period_end' in f) s.cancel_at_period_end = f.cancel_at_period_end === 'true';
+        // ISO-1625 (T2b): pause_collection — `''` (the form value for the empty string Stripe's
+        // own API takes to mean "clear it") decodes through parseStripeForm as the empty string
+        // too, same as any other scalar field; the object form decodes to a nested object exactly
+        // the way `phases[0][items]` already does for schedules.
+        if ('pause_collection' in f) {
+          s.pause_collection = f.pause_collection === '' ? null : {
+            behavior: f.pause_collection.behavior,
+            resumes_at: f.pause_collection.resumes_at != null ? Number(f.pause_collection.resumes_at) : null
+          };
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(s));
       }
@@ -295,6 +340,8 @@ test('admin subscription actions: every route is 403 for a signed-in non-admin',
     ['POST', '/api/admin/billing/subscription/cancel-period-end'],
     ['POST', '/api/admin/billing/subscription/resume'],
     ['POST', '/api/admin/billing/subscription/cancel-immediately'],
+    ['POST', '/api/admin/billing/subscription/suspend-collection'],
+    ['POST', '/api/admin/billing/subscription/resume-collection'],
     ['POST', '/api/admin/billing/subscription/generate-link'],
     ['POST', '/api/admin/billing/subscription/sync']
   ];
@@ -313,6 +360,8 @@ test('admin subscription actions: live gate — 423 on every Stripe-write action
     ['/api/admin/billing/subscription/cancel-period-end', { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }],
     ['/api/admin/billing/subscription/resume', { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON }],
     ['/api/admin/billing/subscription/cancel-immediately', { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }],
+    ['/api/admin/billing/subscription/suspend-collection', { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }],
+    ['/api/admin/billing/subscription/resume-collection', { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }],
     ['/api/admin/billing/subscription/generate-link', { userId: 'u_plain_1', planId: 'monthly', reason: REASON }]
   ];
   for (const [p, body] of writes) {
@@ -468,6 +517,104 @@ test('cancel-immediately: with a schedule — subscriptionSchedules.cancel, not 
   assert.ok(scheduleCancel, 'subscriptionSchedules.cancel was called');
   const subCancel = h.mock.calls.find(c => c.method === 'DELETE' && c.url.startsWith('/v1/subscriptions/sub_1'));
   assert.equal(subCancel, undefined, 'subscriptions.cancel was not called when a schedule exists');
+});
+
+/* ---------- ISO-1625 (T2b): suspend/resume collection ---------- */
+test('suspend-collection: pause_collection:{behavior:void}, status itself never changes, mails and audits', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });
+  const resumesAt = Math.floor(Date.now() / 1000) + 7 * DAY;
+  const r = await h.req('POST', '/api/admin/billing/subscription/suspend-collection', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', resumesAt, reason: REASON, ...proof }
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.pause_collection, { behavior: 'void', resumes_at: resumesAt });
+  assert.equal(r.body.status, 'active', 'no synthetic "paused" status — status itself is untouched');
+  const action = await h.row1('SELECT * FROM billing_admin_actions WHERE action = $1', ['subscription.suspend-collection']);
+  assert.equal(action.status, 'succeeded');
+  assert.equal(action.target_user_id, 'u_plain_1');
+});
+
+test('resume-collection: pause_collection:\'\' clears it, needs proveOwner (unlike resumeCancellation)', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });
+  h.mock.subscriptions.sub_1.pause_collection = { behavior: 'void', resumes_at: null };
+
+  const noProof = await h.req('POST', '/api/admin/billing/subscription/resume-collection', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON } // no proveOwner proof
+  });
+  assert.equal(noProof.status, 403, 'resume-collection is a "ação financeira" (plan §7) — needs proveOwner, unlike resumeCancellation');
+
+  const r = await h.req('POST', '/api/admin/billing/subscription/resume-collection', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.pause_collection, null);
+  const action = await h.row1('SELECT * FROM billing_admin_actions WHERE action = $1', ['subscription.resume-collection']);
+  assert.equal(action.status, 'succeeded');
+});
+
+test('suspend-collection: live gate — 423, same as every other Stripe-write subscription action', async t => {
+  const h = await startServer(t, { users: [admin(), plain()], apiKey: 'sk_live_unused' });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });
+  const r = await h.req('POST', '/api/admin/billing/subscription/suspend-collection', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }
+  });
+  assert.equal(r.status, 423);
+  assert.equal(r.body.code, 'live-writes-disabled');
+});
+
+test('an Idempotency-Key reused for a different action is refused outright, never replayed as that action', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });
+  const key = idemp();
+  const first = await h.req('POST', '/api/admin/billing/subscription/cancel-period-end', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': key },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }
+  });
+  assert.equal(first.status, 200);
+  const second = await h.req('POST', '/api/admin/billing/subscription/suspend-collection', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': key }, // same key, a different action
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }
+  });
+  assert.equal(second.status, 409);
+  assert.equal(second.body.code, 'idempotency-key-reused');
+  assert.equal(h.mock.subscriptions.sub_1.pause_collection, undefined, 'never actually suspended — refused before calling Stripe');
+});
+
+/* ---------- ISO-1625 (T2b): e-mail per action (plan §5 item 5) ---------- */
+test('cancel-immediately: mails the account once the action succeeds', async t => {
+  const { server, received } = fakeSmtpServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const h = await startServer(t, {
+    users: [admin(), withPassword('u_plain_1', 'Plain', { emailVerifiedAt: Date.now(), email: 'plain@example.com' })],
+    env: { MAIL_PROVIDER: 'smtp', MAIL_FROM: 'Brilhart Fitness <no-reply@brilhart.test>', SMTP_HOST: '127.0.0.1', SMTP_PORT: String(port) }
+  });
+  await h.seedSubscription({ id: 'sub_1', userId: 'u_plain_1' });
+  const r = await h.req('POST', '/api/admin/billing/subscription/cancel-immediately', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { userId: 'u_plain_1', subscriptionId: 'sub_1', reason: REASON, ...proof }
+  });
+  assert.equal(r.status, 200);
+
+  // mailBillingAction (server.js) is fire-and-forget — it never blocks the response above, so the
+  // SMTP transaction can still be in flight once this assertion starts; poll briefly instead of
+  // asserting the instant the HTTP response resolves.
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && !received.some(x => x.cmd === 'DATA-BODY')) {
+    await new Promise(res => setTimeout(res, 50));
+  }
+  const rcpt = received.find(x => x.cmd?.startsWith('RCPT TO'));
+  assert.ok(rcpt, 'an e-mail was sent');
+  assert.match(rcpt.cmd, /plain@example\.com/);
+  assert.ok(received.some(x => x.cmd === 'DATA-BODY'), 'the SMTP transaction completed');
 });
 
 test('generate-link: reuses createCheckoutSession with metadata.source=admin_link, forwards the Idempotency-Key to Stripe', async t => {

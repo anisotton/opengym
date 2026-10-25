@@ -141,6 +141,12 @@ export function stripeIsLive(price) {
   const key = process.env.STRIPE_API_KEY || '';
   if (/^(sk|rk)_live_/.test(key)) return true;
   if (/^(sk|rk)_test_/.test(key)) return false;
+  // ISO-1625 (T1b review): a key set but with a prefix neither pattern matches (a future Stripe
+  // key format, a typo) used to fall through to `!!price?.livemode` — false for every ordinary
+  // caller, which never passes a price, so an unrecognized key silently read as sandbox and the
+  // live gate below would wave through a write this instance has no business making. Fail closed
+  // instead: a key that exists but isn't recognizably sandbox counts as live.
+  if (key) return true;
   return !!price?.livemode;
 }
 
@@ -212,8 +218,14 @@ export async function seedCatalogFromEnv(pool) {
 // table: past_due is "Stripe still retrying", not yet a block); `canceled`/`unpaid` and no
 // subscription at all do not. No `trialing` anywhere — see the module comment.
 const WRITABLE_STATUSES = new Set(['active', 'past_due']);
+// ISO-1625 (T2b): a suspended collection never grants free access — `status` itself stays
+// `active` while paused (there is no synthetic `paused` status, ISO-1626), so pauseCollection is
+// its own, separate condition here rather than a status value. Read off the DB mirror, not a live
+// Stripe call: applyStripeEvent's own customer.subscription.* handling (below) is what keeps
+// `subscriptions.data.pauseCollection` converged, same as every other field canWrite already
+// trusted before this.
 export function canWrite(subscription) {
-  return WRITABLE_STATUSES.has(subscription?.status);
+  return WRITABLE_STATUSES.has(subscription?.status) && !subscription?.pauseCollection;
 }
 
 export async function hasActiveAccess(pool, userId) {
@@ -329,13 +341,30 @@ function activePhaseIndex(schedule, nowUnix) {
 // "sincronizar" admin action (ISO-1624 T2a) — "mesmo mapeamento do webhook" per the plan, read off
 // whichever Stripe Subscription object `obj` is (a webhook payload or a live retrieve, the two
 // shapes we ever call this with) rather than two copies of the same field-by-field mapping.
-async function subscriptionWriteFields(pool, obj) {
+// `source` (ISO-1625 T2b) is pure provenance, not a business field: which mechanism last wrote
+// this mirror row, for an operator reading `subscriptions.data` by hand when a convergence bug is
+// suspected — applyStripeEvent's own call passes nothing (defaults to 'webhook'), reconcileSubscriptionFromStripe
+// (the "sincronizar" action and the automatic post-timeout recovery) passes 'sync'.
+async function subscriptionWriteFields(pool, obj, source = 'webhook') {
   const priceId = obj.items?.data?.[0]?.price?.id || null;
   const priceAmount = obj.items?.data?.[0]?.price?.unit_amount ?? null;
   // ISO-1630: the catalog's own kind='intro' column, not a straight env-var compare — see
   // isIntroPrice's own comment (store.js) for why that stopped being true once an admin could mint
   // a new intro Price through the catalog instead of STRIPE_PRICE_INTRO.
   const firstPeriod = await isIntroPrice(pool, priceId);
+  const scheduleId = scheduleIdOf(obj);
+  // ISO-1625 (T2b): one extra retrieve, only while a schedule actually governs this subscription —
+  // the subscription object alone never carries its schedule's own phases. Best-effort: a schedule
+  // that has just been released/canceled between the subscription retrieve above and this one is
+  // left as scheduledPriceId: null rather than failing the whole write; the schedule's own webhook
+  // event (below) converges this independently anyway.
+  let scheduledPriceId = null;
+  if (scheduleId) {
+    try {
+      const schedule = await getStripe().subscriptionSchedules.retrieve(scheduleId);
+      scheduledPriceId = lastPhaseOf(schedule).items[0]?.price ?? null;
+    } catch (e) { console.error('billing: schedule retrieve failed for', scheduleId, e.message); }
+  }
   return {
     status: obj.status,
     plan: (await planFromPrice(pool, priceId)) || obj.metadata?.plan || null,
@@ -361,8 +390,35 @@ async function subscriptionWriteFields(pool, obj) {
     // the pre-dahlia shape (older webhook replays, or an instance pinned to an earlier version),
     // confirmed against the real sandbox payload.
     currentPeriodEnd: toIso(obj.current_period_end ?? obj.items?.data?.[0]?.current_period_end),
-    cancelAtPeriodEnd: !!obj.cancel_at_period_end
+    cancelAtPeriodEnd: !!obj.cancel_at_period_end,
+    // ISO-1625 (T2b): persisted now (it never was before — see openapi.yaml's own updated note on
+    // BillingSubscriptionRow) so canWrite's 402 gate can read it without a live Stripe call on
+    // every PUT /api/data — applyStripeEvent's own fetch-latest retrieve and "sincronizar" are
+    // the only writers, same as every other field here; no admin route ever sets this directly.
+    pauseCollection: obj.pause_collection || null,
+    scheduleId,
+    scheduledPriceId,
+    source
   };
+}
+
+// ISO-1625 (T2b, plan §5.3): a second *writable* subscription on the same account — a race that
+// slipped past createCheckoutSession's own guard (two tabs, or a self-serve checkout racing an
+// admin-generated link), or simply two accounts' worth of history colliding after a support fix —
+// is marked, never refunded automatically (D-A3 is still open; a human decides from the ficha).
+// Recomputed from scratch on every subscription-touching event for this account, rather than
+// patched incrementally, so it self-heals the moment only one writable row is left (a
+// cancellation, cancelImmediately) without needing its own cleanup path. The oldest writable row
+// is always "primary" (duplicateOf: null) — stable across repeated runs since createdAt never
+// changes, so this never flips which one is "the" subscription back and forth.
+async function markDuplicateSubscriptions(pool, userId) {
+  const rows = await getSubscriptionsForUser(pool, userId);
+  const live = rows.filter(canWrite).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  const primaryId = live[0]?.id ?? null;
+  for (const row of rows) {
+    const desired = live.length > 1 && row.id !== primaryId && live.some(r => r.id === row.id) ? primaryId : null;
+    if ((row.duplicateOf ?? null) !== desired) await upsertSubscription(pool, row.id, userId, { duplicateOf: desired });
+  }
 }
 
 // Applied only after claimStripeEvent (server.js, store.js) has already won this event's
@@ -379,8 +435,17 @@ export async function applyStripeEvent(pool, event) {
       break;
     }
 
+    // ISO-1625 (T2b): fetch-latest, never this event's own payload — Stripe does not guarantee
+    // webhook delivery order, so writing exactly what one delivery says can regress a newer state
+    // a slower-to-arrive-but-earlier-fired delivery already wrote. Retrieving the subscription
+    // fresh makes every delivery (created, updated, deleted alike — `deleted` is just `updated`
+    // with status already `canceled` once retrieved) converge on whatever Stripe currently says,
+    // independent of arrival order. `claimStripeEvent`'s own per-event-id claim still means this
+    // exact delivery is applied only once; it is convergence across *different* deliveries this
+    // fixes, not a second idempotency layer.
     case 'customer.subscription.created':
-    case 'customer.subscription.updated': {
+    case 'customer.subscription.updated':
+    case 'customer.subscription.deleted': {
       const userId = await resolveUserId(pool, obj);
       if (!userId) break;
       // First-ever subscription, still on the intro Price, not a schedule yet: convert it and stop
@@ -390,17 +455,45 @@ export async function applyStripeEvent(pool, event) {
         await convertToSchedule(getStripe(), obj.id, obj.metadata.scheduleTo);
         break;
       }
-      await upsertSubscription(pool, obj.id, userId, await subscriptionWriteFields(pool, obj));
+      const live = await getStripe().subscriptions.retrieve(obj.id);
+      await upsertSubscription(pool, obj.id, userId, await subscriptionWriteFields(pool, live));
+      await markDuplicateSubscriptions(pool, userId);
       break;
     }
 
-    // Terminal. "Access continues until current_period_end" is enforced by cancel_at_period_end
-    // already being true from the update above in the meantime — this event only fires once that
-    // date is reached, and access ends the moment this status is what the 402 gate reads next.
-    case 'customer.subscription.deleted': {
-      const userId = await resolveUserId(pool, obj);
-      if (!userId) break;
-      await upsertSubscription(pool, obj.id, userId, { status: 'canceled', cancelAtPeriodEnd: false });
+    // ISO-1625 (T2b): the schedule's own lifecycle, mirrored onto whichever subscription it
+    // drives — `updated` keeps scheduleId/scheduledPriceId in step with a phase change (changePlan,
+    // cancelAtPeriodEnd, resumeCancellation, or a Dashboard edit); `released` (the schedule reached
+    // its last phase and let go — the subscription goes back to being a plain one) and `canceled`
+    // (the whole thing ends together — customer.subscription.deleted carries the rest) both clear
+    // them. `released_subscription` is where Stripe puts the id once `subscription` itself has
+    // already gone back to null on release.
+    case 'subscription_schedule.updated':
+    case 'subscription_schedule.released':
+    case 'subscription_schedule.canceled': {
+      const subId = (typeof obj.subscription === 'string' ? obj.subscription : obj.subscription?.id)
+        || (typeof obj.released_subscription === 'string' ? obj.released_subscription : obj.released_subscription?.id);
+      if (!subId) break;
+      const existing = await getSubscriptionById(pool, subId);
+      if (!existing) break;
+      const stillGoverning = event.type === 'subscription_schedule.updated';
+      await upsertSubscription(pool, subId, existing.userId, {
+        scheduleId: stillGoverning ? obj.id : null,
+        scheduledPriceId: stillGoverning ? (lastPhaseOf(obj).items[0]?.price ?? null) : null
+      });
+      break;
+    }
+
+    // ISO-1625 (T2b, plan §3): a Price minted or flipped active/inactive — in the Dashboard, by
+    // this app's own admin routes converging a `stale-after-stripe` race (billing.js's own
+    // compensation above already reverts the common case; this is the independent, order-agnostic
+    // backstop for whatever it misses), or by a later operator action nothing here has to name
+    // ahead of time. `reconcilePriceFromStripe` only ever adopts a Price this catalog has never
+    // heard of as a `draft` — an already-known row's money/shape is immutable by DB trigger and is
+    // never touched here either, matching the plan's own "só active/metadata, nunca valor".
+    case 'price.created':
+    case 'price.updated': {
+      await reconcilePriceFromStripe(pool, obj);
       break;
     }
 
@@ -488,8 +581,10 @@ export async function createCheckoutSession(pool, user, plan, { successUrl, canc
   // ISO-1623 §5.4: two tabs completing Checkout at once must not end up with two live
   // subscriptions charged in parallel — the webhook's own `duplicateOf` handling (T2b) is the
   // backstop for the race that slips past this, not a replacement for refusing it here first.
+  // canWrite's own pauseCollection check (T2b) already covers "paused, not actually free to
+  // re-subscribe" — a suspended account still counts as "already subscribed" here.
   const last = await getLatestSubscription(pool, user.id);
-  if (last && (canWrite(last) || last.pauseCollection)) return { error: 'already subscribed', code: 'already-subscribed' };
+  if (last && canWrite(last)) return { error: 'already subscribed', code: 'already-subscribed' };
   const customerId = await ensureStripeCustomer(pool, user);
   const firstTime = !(await hasEverSubscribed(pool, user.id));
   const introPrice = await resolveIntroPriceId(pool);
@@ -529,6 +624,37 @@ export async function nextChargeAmountCents(pool, sub) {
   if (!sub?.firstPeriod) return sub?.priceAmount ?? null;
   const catalogAmount = await getCurrentPriceAmountForPlan(pool, sub.plan);
   return catalogAmount ?? (PLAN_AMOUNT_CENTS[sub.plan] ?? null);
+}
+
+/* ---------- admin subscription action e-mails (ISO-1619/ISO-1625, T2b, plan §5 item 5) ----------
+ * Small, pure readers server.js's own mail step uses right after an action's route succeeds —
+ * never Stripe calls themselves, and billing.js still has no business importing mail.js or a
+ * template (same reasoning as the firstPeriodNoticeHook seam above). `after` is exactly what each
+ * action already returned to its caller, never re-fetched.
+ */
+
+// changePlan's own `after` is always schedule-shaped (it either just converted one or updated the
+// existing one) — the new plan's price takes effect at the last phase's own start_date.
+export function changePlanEffectiveUnix(after) {
+  return after?.phases ? (lastPhaseOf(after).start_date ?? null) : null;
+}
+
+// cancelAtPeriodEnd's own `after` is a plain subscription (sem schedule) or a schedule (com
+// schedule) — `phases` is what tells the two apart, same duck-typing scheduleIdOf itself uses.
+export function cancellationEffectiveUnix(after) {
+  if (!after) return null;
+  if (after.phases) return lastPhaseOf(after).end_date ?? null;
+  return after.current_period_end ?? after.items?.data?.[0]?.current_period_end ?? null;
+}
+
+// The new plan's display name and current price, for the "troca agendada" e-mail — `newPlanId`
+// is already known from the request itself; this only resolves it to what the account will
+// actually pay, the same catalog lookup createOffer/changePlan themselves use.
+export async function planSummaryForMail(pool, planId) {
+  const plan = await getCatalogPlan(pool, planId);
+  if (!plan) return null;
+  const price = plan.currentPriceId ? await getPriceById(pool, plan.currentPriceId) : null;
+  return { name: plan.display?.['pt-BR']?.name || planId, amountCents: price?.unitAmount ?? null };
 }
 
 // The exact app-facing contract from ISO-1392's spec (item 1 / "Ponto em aberto"): `status` is
@@ -642,6 +768,11 @@ async function runBillingAdminAction(pool, { idempotencyKey, actor, targetUserId
   const claim = await claimBillingAdminAction(pool, { idempotencyKey, actorId: actor.id, targetUserId, action, reason, request });
   if (!claim.claimed) {
     const row = claim.row;
+    // ISO-1625 (T1b review): the same key reused for a different action — a client bug reusing a
+    // stale key, or a key guessed/replayed deliberately — must never be handed back as if it were
+    // a harmless retry of the SAME action. Checked before `status`, since a mismatched action is
+    // wrong regardless of what that other action's own outcome was.
+    if (row.action !== action) return { error: 'this Idempotency-Key was already used for a different action', code: 'idempotency-key-reused' };
     if (row.status === 'succeeded') return { ok: true, replay: true, after: row.after };
     if (row.status === 'failed') return { error: row.error || 'the previous attempt with this Idempotency-Key failed', code: 'action-failed', replay: true };
     return { error: 'a previous attempt with this Idempotency-Key is still in progress', code: 'action-in-progress' };
@@ -709,7 +840,16 @@ export async function setPlanAvailability(pool, { id, version, available, actor,
     if (!plan.currentPriceId) return { error: 'this plan has no published price yet', code: 'no-current-price' };
     await getStripe().prices.update(plan.currentPriceId, { active: available }, { idempotencyKey });
     const result = await setPlanAvailabilityRow(pool, id, version, available);
-    if (result.error) return { ...result, stripeIds: { priceId: plan.currentPriceId } };
+    if (result.error) {
+      // ISO-1625 (T1b review): Stripe already flipped `active` above — by the time this CAS can
+      // fail, there is no path left where it didn't — so a lost race here used to leave the Price
+      // disagreeing with what the DB still believed, with nothing to notice or fix it. Reverting
+      // is the compensation the plan's own invariant #2 demands: current_price_id must never end
+      // up pointing at a Price whose `active` flag says otherwise.
+      await getStripe().prices.update(plan.currentPriceId, { active: !available }, { idempotencyKey: `${idempotencyKey}:revert` })
+        .catch(e => console.error('billing: stale-after-stripe revert failed for', plan.currentPriceId, e.message));
+      return { ...result, stripeIds: { priceId: plan.currentPriceId } };
+    }
     return { ok: true, after: { plan: result.plan }, before: plan, stripeIds: { priceId: plan.currentPriceId } };
   });
 }
@@ -763,7 +903,17 @@ export async function publishPriceVersion(pool, { planId, newPriceId, version, a
     await stripe.prices.update(newPriceId, { active: true }, { idempotencyKey: `${idempotencyKey}:activate` });
     if (oldPriceId) await stripe.prices.update(oldPriceId, { active: false }, { idempotencyKey: `${idempotencyKey}:deactivate` });
     const result = await publishPriceVersionRows(pool, { planId, version, newPriceId, oldPriceId });
-    if (result.error) return { ...result, stripeIds: { newPriceId, oldPriceId } };
+    if (result.error) {
+      // Same compensation as setPlanAvailability above, for the same reason — store.js's own
+      // `code: 'stale-after-stripe'` on this exact path is what the review comment named.
+      await stripe.prices.update(newPriceId, { active: false }, { idempotencyKey: `${idempotencyKey}:revert-activate` })
+        .catch(e => console.error('billing: stale-after-stripe revert failed for', newPriceId, e.message));
+      if (oldPriceId) {
+        await stripe.prices.update(oldPriceId, { active: true }, { idempotencyKey: `${idempotencyKey}:revert-deactivate` })
+          .catch(e => console.error('billing: stale-after-stripe revert failed for', oldPriceId, e.message));
+      }
+      return { ...result, stripeIds: { newPriceId, oldPriceId } };
+    }
     return { ok: true, after: { plan: result.plan }, before: plan, stripeIds: { newPriceId, oldPriceId } };
   });
 }
@@ -783,6 +933,24 @@ export async function getBillingAdminActions(pool, limit) {
   return listBillingAdminActions(pool, limit);
 }
 
+// Shared by reconcileCatalog's own sweep and the price.created/price.updated webhook case
+// (ISO-1625 T2b item 3): adopts a Price this catalog has never heard of, tagged with this app's
+// own `metadata.bf_plan`, as a `draft` — never auto-published, and never touches a Price already
+// known (money/shape are immutable by DB trigger, and `active`/metadata are not reconciled onto an
+// existing row either — plan §3's own "reconcile do Price: só active/metadata, nunca valor" is
+// about not inventing a value for an UNKNOWN Price, not about mutating a known one from here).
+async function reconcilePriceFromStripe(pool, price) {
+  const planId = price.metadata?.bf_plan;
+  if (!planId) return null; // not ours — a Price minted by hand in the Dashboard for something else
+  if (await getPriceById(pool, price.id)) return null; // already known — immutable, nothing to do
+  if (!(await getCatalogPlan(pool, planId))) return null; // its own plan doesn't exist here — nothing sane to attach it to
+  return insertReconciledDraftPrice(pool, {
+    id: price.id, planId, unitAmount: price.unit_amount, currency: price.currency,
+    interval: price.recurring?.interval, intervalCount: price.recurring?.interval_count,
+    livemode: price.livemode, stripeProductId: productIdOf(price)
+  });
+}
+
 // Reconcile (plan §3): every Stripe Price tagged `metadata.bf_plan` that this catalog doesn't
 // know about yet is adopted as a `draft` (never auto-published — see insertReconciledDraftPrice's
 // own comment); every `subscriptions.priceId` this catalog has never heard of is read straight off
@@ -792,18 +960,21 @@ export async function reconcileCatalog(pool) {
   const productId = await getBillingProductId(pool);
   if (!productId) return { error: 'the catalog has no known Stripe product yet', code: 'no-product' };
   const stripe = getStripe();
-  const { data: stripePrices } = await stripe.prices.list({ product: productId, limit: 100 });
+  // ISO-1625 (T1b review): a catalog past 100 Prices (every draft/retired version ever created,
+  // not just the ones currently current) used to have its tail silently unreconciled — `list`
+  // never raises an error for a truncated page, it just stops handing back rows. Paged by id
+  // (`starting_after`, Stripe's own cursor) rather than trusting a single `limit: 100` call to be
+  // everything.
+  const stripePrices = [];
+  let startingAfter;
+  do {
+    const page = await stripe.prices.list({ product: productId, limit: 100, ...(startingAfter ? { starting_after: startingAfter } : {}) });
+    stripePrices.push(...page.data);
+    startingAfter = page.has_more && page.data.length ? page.data[page.data.length - 1].id : null;
+  } while (startingAfter);
   const adopted = [];
   for (const price of stripePrices) {
-    const planId = price.metadata?.bf_plan;
-    if (!planId) continue; // not ours — a Price minted by hand in the Dashboard for something else
-    if (await getPriceById(pool, price.id)) continue; // already known
-    if (!(await getCatalogPlan(pool, planId))) continue; // its own plan doesn't exist here — nothing sane to attach it to
-    const row = await insertReconciledDraftPrice(pool, {
-      id: price.id, planId, unitAmount: price.unit_amount, currency: price.currency,
-      interval: price.recurring?.interval, intervalCount: price.recurring?.interval_count,
-      livemode: price.livemode, stripeProductId: productIdOf(price)
-    });
+    const row = await reconcilePriceFromStripe(pool, price);
     if (row) adopted.push(row.id);
   }
   const retired = [];
@@ -853,7 +1024,7 @@ async function reconcileSubscriptionFromStripe(db, subscriptionId) {
   const before = await getSubscriptionById(db, subscriptionId);
   if (!before) return null;
   const obj = await getStripe().subscriptions.retrieve(subscriptionId);
-  const after = await upsertSubscription(db, subscriptionId, before.userId, await subscriptionWriteFields(db, obj));
+  const after = await upsertSubscription(db, subscriptionId, before.userId, await subscriptionWriteFields(db, obj, 'sync'));
   return { before, after };
 }
 
@@ -873,6 +1044,9 @@ async function runSubscriptionAction(pool, { idempotencyKey, actor, targetUserId
   const claim = await claimBillingAdminAction(pool, { idempotencyKey, actorId: actor.id, targetUserId, action, reason, request });
   if (!claim.claimed) {
     const row = claim.row;
+    // Same reasoning as runBillingAdminAction's own check above — a subscription action key
+    // replayed against a different action is refused outright, never replayed as that action.
+    if (row.action !== action) return { error: 'this Idempotency-Key was already used for a different action', code: 'idempotency-key-reused' };
     if (row.status === 'succeeded') return { ok: true, replay: true, after: row.after };
     if (row.status === 'unknown') return { error: 'the previous attempt is still being confirmed with Stripe — retry is safe', code: 'action-unknown', replay: true };
     if (row.status === 'failed') return { error: row.error || 'the previous attempt with this Idempotency-Key failed', code: 'action-failed', replay: true };
@@ -1064,6 +1238,41 @@ export async function cancelImmediately(pool, { userId, subscriptionId, expected
   });
 }
 
+// "Suspender cobrança" (plan §5, ISO-1625 T2b): `pause_collection: { behavior: 'void' }` — Stripe
+// simply stops generating invoices; it never cancels anything and never touches a schedule, so
+// unlike every action above there is no "sem schedule"/"com schedule" split here at all.
+// `resumesAt` (optional, unix seconds) is Stripe's own auto-resume date; omitted, the pause is
+// indefinite until "retomar cobrança" below. The webhook's own fetch-latest convergence (not this
+// route) is what actually persists `pauseCollection` into the DB mirror the 402 gate reads —
+// consistent with every other action here never writing desired state directly.
+export async function suspendCollection(pool, { userId, subscriptionId, expectedUpdatedAt, actor, reason, idempotencyKey, resumesAt }) {
+  return runSubscriptionAction(pool, {
+    idempotencyKey, actor, targetUserId: userId, subscriptionId, expectedUpdatedAt,
+    action: 'subscription.suspend-collection', reason, request: { subscriptionId, resumesAt: resumesAt ?? null }
+  }, async (sub, stripe) => {
+    const before = await stripe.subscriptions.retrieve(subscriptionId);
+    const after = await stripe.subscriptions.update(subscriptionId, {
+      pause_collection: { behavior: 'void', ...(resumesAt ? { resumes_at: resumesAt } : {}) }
+    }, { idempotencyKey });
+    return { ok: true, before, after, stripeIds: { subscriptionId } };
+  });
+}
+
+// "Retomar cobrança" (plan §5): the exact reverse — `pause_collection: ''` clears it outright
+// (never a partial/`resumes_at`-only update), billing resumes on whatever Stripe already has
+// scheduled next. Distinct from "resumeCancellation" above: this undoes a suspension, not a
+// cancel_at_period_end.
+export async function resumeCollection(pool, { userId, subscriptionId, expectedUpdatedAt, actor, reason, idempotencyKey }) {
+  return runSubscriptionAction(pool, {
+    idempotencyKey, actor, targetUserId: userId, subscriptionId, expectedUpdatedAt,
+    action: 'subscription.resume-collection', reason, request: { subscriptionId }
+  }, async (sub, stripe) => {
+    const before = await stripe.subscriptions.retrieve(subscriptionId);
+    const after = await stripe.subscriptions.update(subscriptionId, { pause_collection: '' }, { idempotencyKey });
+    return { ok: true, before, after, stripeIds: { subscriptionId } };
+  });
+}
+
 // "Gerar link de assinatura" ("atribuir", plan §5): the exact Checkout createCheckoutSession
 // already builds for a self-serve signup, `metadata.source=admin_link` folded in — the once-per-
 // account first-month rule applies identically either way. No subscription exists yet to lock on,
@@ -1122,26 +1331,36 @@ export async function previewSubscriptionAction(pool, { subscriptionId, action, 
   return { ok: true, amountDueCents: invoice.amount_due, currency: invoice.currency, nextPaymentAttempt: toIso(invoice.next_payment_attempt) };
 }
 
-// What each action needs to be offered at all, from the DB row alone plus the live schedule the
-// ficha route already fetched for the account's current subscription — the UI decides what to
-// *show*, this only decides what is safe to *offer*, with a reason attached to anything it
-// refuses. `schedule` is null for a plain (non-schedule) subscription or when there is none at all.
-function describeAvailableActions(latest, schedule) {
+// What each action needs to be offered at all, from the DB row alone plus the live schedule/
+// pauseCollection the ficha route already fetched for the account's current subscription — the UI
+// decides what to *show*, this only decides what is safe to *offer*, with a reason attached to
+// anything it refuses. `schedule` is null for a plain (non-schedule) subscription or when there is
+// none at all. Every check here is against `latest.status` (`WRITABLE_STATUSES`), never `canWrite`
+// — suspending collection is its own, independent axis (ISO-1625 T2b), not a second status, so a
+// paused account still offers changePlan/cancel the same as an unpaused one; only
+// suspendCollection/resumeCollection themselves branch on `pauseCollection`.
+function describeAvailableActions(latest, schedule, pauseCollection) {
   const no = (why) => ({ enabled: false, reason: why });
   const yes = { enabled: true };
   if (!latest) {
     const none = no('no subscription yet');
-    return { changePlan: none, cancelAtPeriodEnd: none, resumeCancellation: none, cancelImmediately: none, generateLink: yes, sync: no('no subscription yet') };
+    return {
+      changePlan: none, cancelAtPeriodEnd: none, resumeCancellation: none, cancelImmediately: none,
+      generateLink: yes, sync: no('no subscription yet'), suspendCollection: none, resumeCollection: none
+    };
   }
-  const writable = canWrite(latest);
+  const statusWritable = WRITABLE_STATUSES.has(latest.status);
   const cancelling = schedule ? schedule.end_behavior === 'cancel' : !!latest.cancelAtPeriodEnd;
+  const paused = !!pauseCollection;
   return {
-    changePlan: writable ? yes : no('subscription is not active'),
-    cancelAtPeriodEnd: writable && !cancelling ? yes : no(!writable ? 'subscription is not active' : 'already set to cancel'),
-    resumeCancellation: writable && cancelling ? yes : no('not currently set to cancel'),
-    cancelImmediately: writable ? yes : no('subscription is not active'),
+    changePlan: statusWritable ? yes : no('subscription is not active'),
+    cancelAtPeriodEnd: statusWritable && !cancelling ? yes : no(!statusWritable ? 'subscription is not active' : 'already set to cancel'),
+    resumeCancellation: statusWritable && cancelling ? yes : no('not currently set to cancel'),
+    cancelImmediately: statusWritable ? yes : no('subscription is not active'),
     generateLink: yes,
-    sync: yes
+    sync: yes,
+    suspendCollection: statusWritable && !paused ? yes : no(!statusWritable ? 'subscription is not active' : 'already suspended'),
+    resumeCollection: statusWritable && paused ? yes : no('not currently suspended')
   };
 }
 
@@ -1154,6 +1373,7 @@ export async function getUserBillingFicha(pool, userId) {
   const latest = rows[0] || null;
   const stripe = getStripe();
   let liveSchedule = null;
+  let livePauseCollection = null;
   const subscriptions = await Promise.all(rows.map(async row => {
     const price = row.priceId ? await getPriceById(pool, row.priceId) : null;
     const plan = price?.planId ? await getCatalogPlan(pool, price.planId) : (row.plan ? await getCatalogPlan(pool, row.plan) : null);
@@ -1163,7 +1383,13 @@ export async function getUserBillingFicha(pool, userId) {
     // on purpose), so the raw field is the only way the ficha can tell a suspended account apart
     // from one that is genuinely billing normally.
     let pauseCollection = null;
-    if (row === latest && canWrite(row)) {
+    // ISO-1625 (T2b): status alone (`WRITABLE_STATUSES`), never `canWrite` — canWrite now also
+    // folds in `pauseCollection` itself (so the 402 gate refuses a suspended account), and that
+    // field is exactly what this block exists to go live-check. Gating on canWrite here would mean
+    // the one row actually paused stops being checked the moment its own pauseCollection is first
+    // mirrored into the DB, freezing the ficha on a stale "paused" view forever instead of
+    // reflecting a resume.
+    if (row === latest && WRITABLE_STATUSES.has(row.status)) {
       try {
         const live = await stripe.subscriptions.retrieve(row.id);
         pauseCollection = live.pause_collection || null;
@@ -1171,6 +1397,7 @@ export async function getUserBillingFicha(pool, userId) {
         if (scheduleId) schedule = await stripe.subscriptionSchedules.retrieve(scheduleId);
       } catch (e) { console.error('billing: live retrieve failed for', row.id, e.message); }
       liveSchedule = schedule;
+      livePauseCollection = pauseCollection;
     }
     const scheduledPriceId = schedule ? lastPhaseOf(schedule).items[0].price : null;
     const cancelling = schedule ? schedule.end_behavior === 'cancel' : !!row.cancelAtPeriodEnd;
@@ -1188,12 +1415,16 @@ export async function getUserBillingFicha(pool, userId) {
       firstFullCharge: row.firstFullCharge || null, lastInvoiceStatus: row.lastInvoiceStatus || null,
       schedule: schedule ? { id: schedule.id, endBehavior: schedule.end_behavior, phases: schedule.phases } : null,
       scheduledPriceId, pauseCollection,
+      // ISO-1625 (T2b): the other live subscription's id, when the webhook has marked this one a
+      // duplicate (plan §5.3) — surfaced so an admin can see it and decide manually; this app never
+      // refunds on its own.
+      duplicateOf: row.duplicateOf || null,
       nextCharge: cancelling ? null : { date: nextChargeDate, amountCents: nextPrice?.unitAmount ?? null }
     };
   }));
   const history = await listBillingAdminActionsForUser(pool, userId, 50);
   return {
-    subscriptions, history, actions: describeAvailableActions(latest, liveSchedule),
+    subscriptions, history, actions: describeAvailableActions(latest, liveSchedule, livePauseCollection),
     liveWritesDisabled: liveWritesDisabled()
   };
 }
