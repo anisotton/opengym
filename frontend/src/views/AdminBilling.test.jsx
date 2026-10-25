@@ -11,7 +11,7 @@ import { SubscriptionPanel } from './AdminBilling.jsx'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-const mocks = vi.hoisted(() => ({ answers: {}, sheets: [] }))
+const mocks = vi.hoisted(() => ({ answers: {}, sheets: [], toasted: [] }))
 vi.mock('../lib/api.js', () => ({
   api: (path, opts) => {
     const key = path.split('?')[0]
@@ -27,7 +27,10 @@ vi.mock('../store/useStore.js', () => {
   return { useStore }
 })
 vi.mock('../store/useUI.js', () => {
-  const snap = () => ({ toast: () => {}, openSheet: render => { mocks.sheets.push(render); return { close: () => {}, lock: () => {} } } })
+  const snap = () => ({
+    toast: m => { mocks.toasted.push(m) },
+    openSheet: render => { mocks.sheets.push(render); return { close: () => {}, lock: () => {} } }
+  })
   const useUI = selector => (selector ? selector(snap()) : snap())
   useUI.getState = snap
   return { useUI }
@@ -71,6 +74,7 @@ const FICHA_ACTIVE = {
 
 beforeEach(() => {
   mocks.sheets.length = 0
+  mocks.toasted.length = 0
   mocks.answers = {
     '/api/admin/user/billing': FICHA_ACTIVE,
     '/api/admin/billing/catalog': { plans: [{ id: 'monthly', display: { 'pt-BR': { name: 'Mensal' } }, available: true }, { id: 'yearly', display: { 'pt-BR': { name: 'Anual' } }, available: true }], introPrices: [], liveWritesDisabled: false },
@@ -96,6 +100,16 @@ describe('SubscriptionPanel: the 7 actions reflect what the ficha says, not a cl
     expect(byLabel('Resume billing').disabled).toBe(true)
     expect(byLabel('Resume billing').title).toBe("Billing isn't suspended")
     expect(byLabel('Generate link').disabled).toBe(true)
+  })
+
+  it('shows the disabled reason as plain text too, not only in the title attribute (Atena review: title never reaches a touchscreen)', async () => {
+    const host = render(<SubscriptionPanel userId="u1" />)
+    await settle()
+    // Visible without hovering anything — a real text node next to the disabled button, the
+    // same way "Resume cancellation"'s own title reads.
+    expect(host.textContent).toContain('not currently set to cancel')
+    expect(host.textContent).toContain("Billing isn't suspended")
+    expect(host.textContent).toContain("User already has an active subscription — use 'Switch plan' instead")
   })
 
   it('shows the status pill and the "Billing suspended" pill only when pauseCollection is set — the status itself stays active', async () => {
@@ -170,5 +184,42 @@ describe('The reinforced confirmation dialog (FinancialConfirmSheet, via "Cancel
     // since the mocked /api/account/passkeys answers {passkeys:[], password:true}) — it is no
     // longer the disabled placeholder button.
     expect(sheet.querySelector('input[type="password"]')).toBeTruthy()
+  })
+})
+
+describe('"Switch plan" lets the admin choose the destination plan (Atena review — it used to just grab "the other one")', () => {
+  it('opens a plan picker first, then carries the chosen plan into the reinforced confirmation', async () => {
+    mocks.answers['/api/admin/billing/subscription/preview'] = { ok: true, amountDueCents: 0, currency: 'brl', nextPaymentAttempt: null }
+    const host = render(<SubscriptionPanel userId="u1" />)
+    await settle()
+    const switchBtn = [...host.querySelectorAll('button')].find(b => b.textContent === 'Switch plan')
+    act(() => { switchBtn.click() })
+    expect(mocks.sheets.length).toBe(1)
+
+    const picker = render(mocks.sheets[0]())
+    await settle()
+    const select = picker.querySelector('select')
+    // Only the catalog's non-current plan is offered (sub.plan is 'monthly').
+    const options = [...select.querySelectorAll('option')].map(o => o.textContent)
+    expect(options).toEqual(['Anual'])
+    act(() => { [...picker.querySelectorAll('button')].find(b => b.textContent === 'Continue').click() })
+
+    // The picker's own "Continue" opens the next sheet with the chosen plan already named —
+    // never silently reopened on whatever the catalog happened to list first.
+    expect(mocks.sheets.length).toBe(2)
+    const confirmSheet = render(mocks.sheets[1]())
+    await settle()
+    expect(confirmSheet.textContent).toContain('Type "Anual" to confirm')
+    expect(confirmSheet.textContent).toContain('the next invoice is for Anual')
+  })
+
+  it('tells the admin there is nothing to switch to, instead of silently doing nothing, when no other plan is published', async () => {
+    mocks.answers['/api/admin/billing/catalog'] = { plans: [{ id: 'monthly', display: { 'pt-BR': { name: 'Mensal' } }, available: true }], introPrices: [], liveWritesDisabled: false }
+    const host = render(<SubscriptionPanel userId="u1" />)
+    await settle()
+    const switchBtn = [...host.querySelectorAll('button')].find(b => b.textContent === 'Switch plan')
+    act(() => { switchBtn.click() })
+    expect(mocks.sheets.length).toBe(0)
+    expect(mocks.toasted).toContain('No other available plan to switch to')
   })
 })

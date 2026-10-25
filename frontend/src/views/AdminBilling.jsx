@@ -539,6 +539,28 @@ function GenerateLinkSheet({ userId, plans, passkeysState, onDone, close }) {
   </>
 }
 
+// "Switch plan" (ISO-1627 Atena review): which plan to switch to is the admin's own choice, not
+// whichever other plan happens to sort first in the catalog — same `<select>` pattern
+// GenerateLinkSheet above already uses. A separate, small sheet rather than folding the picker
+// into FinancialConfirmSheet itself: the reinforced dialog's own typed confirmation already names
+// the chosen plan (`Type "X" to confirm`), so the plan has to be picked and closed over *before*
+// that sheet even opens.
+function ChoosePlanSheet({ plans, onChosen, close }) {
+  const [planId, setPlanId] = useState(plans[0]?.id || '')
+  return <>
+    <h3>Switch plan</h3>
+    <div className="adm-field">
+      <label>New plan</label>
+      <select className="adm-select" value={planId} onChange={e => setPlanId(e.target.value)}>
+        {plans.map(p => <option key={p.id} value={p.id}>{nameOf(p.display)}</option>)}
+      </select>
+    </div>
+    <button className="btn primary" disabled={!planId} onClick={() => onChosen(planId)}>Continue</button>
+    <div style={{ height: 8 }} />
+    <Button variant="ghost" className="dim" onClick={close}>Cancel</Button>
+  </>
+}
+
 // The user's "Subscription" section (UX spec §2) — replaces the old Plan/Status/Next charge
 // tiles in Admin.jsx's UserDetail. Lazy: this is a bigger payload than GET /api/admin/user
 // already sends to the top of that sheet (full history, not just the summary).
@@ -593,14 +615,19 @@ export function SubscriptionPanel({ userId }) {
     />)
   }
 
+  const confirmSwitchTo = other => openReinforced('change-plan', {
+    title: 'Switch plan', needsTypedConfirm: true, typedLabel: `Type "${nameOf(other.display)}" to confirm`, typedExpected: nameOf(other.display),
+    confirmLabel: 'Switch plan', body: { params: { newPlanId: other.id }, previewExtra: { newPlanId: other.id } },
+    buildPreview: () => `Takes effect at the next renewal${sub.nextCharge?.date ? ` (${dayOf(sub.nextCharge.date)})` : ''}. No charge now — the next invoice is for ${nameOf(other.display)}.`
+  })
+  // describeAvailableActions (api/billing.js) enables `changePlan` on status alone — it does not
+  // check whether another plan actually exists to switch to, so this guards the one case the
+  // server's own `actions.changePlan.enabled` can't rule out on its own.
   const switchPlan = () => {
-    const other = catalogPlans.find(p => p.id !== sub.plan) || catalogPlans[0]
-    if (!other) return
-    openReinforced('change-plan', {
-      title: 'Switch plan', needsTypedConfirm: true, typedLabel: `Type "${nameOf(other.display)}" to confirm`, typedExpected: nameOf(other.display),
-      confirmLabel: 'Switch plan', body: { params: { newPlanId: other.id }, previewExtra: { newPlanId: other.id } },
-      buildPreview: () => `Takes effect at the next renewal${sub.nextCharge?.date ? ` (${dayOf(sub.nextCharge.date)})` : ''}. No charge now — the next invoice is for ${nameOf(other.display)}.`
-    })
+    const candidates = catalogPlans.filter(p => p.id !== sub.plan)
+    if (!candidates.length) { toast('No other available plan to switch to'); return }
+    lockKeyedOpen(close => <ChoosePlanSheet plans={candidates} close={close}
+      onChosen={planId => { close(); confirmSwitchTo(candidates.find(p => p.id === planId)) }} />)
   }
   const cancelPeriodEnd = () => openReinforced('cancel-period-end', {
     title: 'Cancel at period end', needsTypedConfirm: true, typedLabel: 'Type "CANCEL" to confirm', typedExpected: 'CANCEL',
@@ -657,12 +684,19 @@ export function SubscriptionPanel({ userId }) {
       </div>
     </> : <div className="adm-empty" style={{ marginBottom: 10 }}>No subscription on record.</div>}
 
-    <div className="adm-actions" style={{ marginBottom: 10 }}>
+    <div style={{ marginBottom: 10 }}>
       {ACTIONS.map(([key, fn]) => {
         const a = ficha.actions[key] || { enabled: false, reason: 'unavailable' }
-        return <button key={key} className="btn" disabled={!a.enabled || busy}
-          title={!a.enabled ? a.reason : busy ? 'Another action on this subscription is in progress' : undefined}
-          aria-label={ACTION_LABELS[key]} onClick={fn}>{ACTION_LABELS[key]}</button>
+        // `title` alone only ever reaches a mouse hovering before the click — nothing on a
+        // touchscreen (Atena's UX review, ISO-1627): the reason also renders as plain text right
+        // under the button, same `.adm-hint` treatment every other inline explanation in this
+        // dashboard already uses, so tapping a disabled action still tells the admin why.
+        const reason = !a.enabled ? a.reason : busy ? 'Another action on this subscription is in progress' : null
+        return <div key={key} style={{ marginBottom: 8 }}>
+          <button className="btn" style={{ width: '100%' }} disabled={!a.enabled || busy}
+            title={reason || undefined} aria-label={ACTION_LABELS[key]} onClick={fn}>{ACTION_LABELS[key]}</button>
+          {reason && <div className="adm-hint" style={{ margin: '4px 0 0' }}>{reason}</div>}
+        </div>
       })}
     </div>
 
