@@ -54,6 +54,7 @@ deve estar ausente do `.env.example`, e nenhuma obrigatória deve faltar na tabe
 | `STRIPE_API_KEY` | chave **restrita** (`rk_...`) do Dashboard Stripe — **sandbox primeiro** (Developers → API keys, modo de teste) | Segredo |
 | `STRIPE_WEBHOOK_SECRET` | gerado ao criar o endpoint de webhook no passo 4 | Segredo |
 | `STRIPE_PRICE_MONTHLY` / `STRIPE_PRICE_QUARTERLY` / `STRIPE_PRICE_YEARLY` / `STRIPE_PRICE_INTRO` | saída de `cd api && STRIPE_API_KEY=rk_... npm run stripe:setup` contra a conta sandbox (ver `docs/SELF_HOSTING.md` §7) | Não (são ids de Price, públicos) |
+| `BILLING_ADMIN_LIVE` | **não defina** enquanto `STRIPE_API_KEY` for sandbox (`rk_test_…`) — a chave `rk_` restrita já não tem a mesma livemode de uma `sk_live_`, mas o gate (`api/billing.js`'s `stripeIsLive()`) é por prefixo da chave: só importa no dia em que este ambiente trocar para uma chave live, e mesmo aí o padrão é ficar de fora (ver "Catálogo de planos" abaixo) | Não |
 | `ADMIN_UIDS` | **vazio no primeiro deploy.** Depois do primeiro cadastro de teste, copie o id em Settings → Conta → Account ID (ou `docker compose exec db psql -U opengym -c "SELECT id, name FROM users"`) e redeploy com esse id aqui | Não |
 | `COACH_DISABLED` | `1` — trava o Coach desligado, independente do toggle do admin (`AdminCoach.jsx` mostra "Force-disabled by COACH_DISABLED" no lugar do toggle) | Não |
 | `TRUST_PROXY` | **não toque** — já vem `1` por padrão no `docker-compose.yml` porque a API só é alcançada através do `web` | — |
@@ -120,9 +121,30 @@ A migração só cria tabelas novas (`billing_plans`/`billing_prices`/`billing_a
 nenhuma tabela existente é tocada, então o redeploy é seguro mesmo antes de qualquer semeadura
 rodar. No boot seguinte com billing ligado, `seedCatalogFromEnv` (`api/billing.js`) lê os quatro
 `STRIPE_PRICE_*` da Stripe e preenche o catálogo uma única vez; se a validação falhar (moeda
-diferente de BRL, intervalo inesperado), o catálogo fica vazio e o billing continua lendo
-`STRIPE_PRICE_*` direto, exatamente como antes desta migração — nada quebra, só o catálogo não
-aparece. Detalhes e rollback: `docs/SELF_HOSTING.md` §7 ("The catalog").
+diferente de BRL, intervalo inesperado, ou `livemode` do Price divergindo do modo da chave), o
+catálogo fica vazio e o billing continua lendo `STRIPE_PRICE_*` direto, exatamente como antes
+desta migração — nada quebra, só o catálogo não aparece. Detalhes e rollback:
+`docs/SELF_HOSTING.md` §7 ("The catalog").
+
+### Administração do catálogo (ISO-1619/ISO-1630)
+
+`/api/admin/billing/catalog/*` (precisa de `ADMIN_UIDS`) é onde um admin cria oferta, ativa/
+desativa plano, publica nova versão de valor e reordena — tudo documentado em
+`docs/SELF_HOSTING.md` ("Managing the catalog"). Três coisas valem a atenção do Anderson neste
+deploy, especificamente por ser sandbox:
+
+- **O gate de live (`BILLING_ADMIN_LIVE`).** Toda escrita admin que chama a Stripe (criar oferta,
+  ativar/desativar, nova versão, publicar) se recusa com `423 live-writes-disabled` sempre que a
+  chave configurada for live (`sk_live_`/`rk_live_`) e `BILLING_ADMIN_LIVE=1` não estiver
+  definido. Com a chave sandbox deste ambiente (`rk_test_…`), o gate nunca fecha — é só o
+  comportamento esperado no dia em que a chave virar live: nenhuma escrita acidental contra
+  dinheiro real sem essa variável ligada de propósito.
+- **Reordenar não passa pelo gate.** `POST .../order` é só banco (sort_order) — continua
+  funcionando mesmo com uma chave live e `BILLING_ADMIN_LIVE` desligado.
+- **Reconcile (`POST .../reconcile`)** é a ferramenta para quando a Stripe e o catálogo
+  divergirem — um Price criado direto no Dashboard, ou uma escrita admin cujo lado Stripe deu
+  certo mas o lado banco não chegou a confirmar (o `billing_admin_actions` da escrita original
+  mostra o `priceId` que ela tentou criar). Ele só lê a Stripe; nunca escreve lá.
 
 ## 5. Monitoramento
 

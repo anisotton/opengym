@@ -1,0 +1,384 @@
+/* Admin catalog routes (ISO-1619/ISO-1630, T1b): /api/admin/billing/catalog/* — requireAdmin, the
+   live gate, proveOwner + reason on every write that touches Stripe, the Idempotency-Key claim,
+   and reconcile. Real server.js in a child, real PostgreSQL, a local mock Stripe server (the same
+   seam server-billing-catalog.test.js uses for T1a's read path) standing in for api.stripe.com.
+   proveOwner's proof here is the admin's own password (hashPassword/password.js), same construction
+   as server-account-delete.test.js's withPassword. */
+import { test, before } from 'node:test';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import http from 'node:http';
+import pg from 'pg';
+import { hashPassword } from '../password.js';
+import { tempData, spawnApi } from './helpers.mjs';
+
+const SECRET = crypto.randomBytes(32).toString('hex');
+const WEBHOOK_SECRET = 'whsec_test_' + crypto.randomBytes(8).toString('hex');
+
+function mintSession(uid, sv = 0) {
+  const payload = `${uid}:${Date.now() + 86400000}:${sv}`;
+  return payload + '.' + crypto.createHmac('sha256', SECRET).update(payload).digest('base64url');
+}
+const cookieFor = uid => `gymsid=${mintSession(uid)}`;
+
+const GOOD = 'correct horse battery staple';
+let pwHash;
+before(async () => { pwHash ??= await hashPassword(GOOD); });
+const user = (id, name, extra = {}) => ({ id, name, created: new Date().toISOString(), ...extra });
+const withPassword = (id, name, extra = {}) => user(id, name, { pw: { h: pwHash, set: new Date().toISOString() }, ...extra });
+
+// Decodes the form-urlencoded, bracket-nested body the Stripe SDK sends for every write
+// (`metadata[bf_plan]=x&recurring[interval]=month`) — good enough for this file's own assertions,
+// not a general qs implementation.
+function parseStripeForm(raw) {
+  const out = {};
+  for (const [k, v] of new URLSearchParams(raw)) {
+    const parts = k.replace(/\]/g, '').split('[');
+    let node = out;
+    for (let i = 0; i < parts.length - 1; i++) node = (node[parts[i]] ||= {});
+    node[parts[parts.length - 1]] = v;
+  }
+  return out;
+}
+
+// Extends server-billing-catalog.test.js's own mock with prices.create/update/list, the Stripe
+// calls the admin catalog routes make. `seedPrices` pre-populates the store (object keyed by id)
+// so a test can hand it a fixture price (e.g. one carrying `metadata.bf_plan` for reconcile) that
+// was never created through this mock server itself.
+function mockStripeApi(seedPrices = {}) {
+  const calls = [];
+  const prices = { ...seedPrices };
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      calls.push({ method: req.method, url: req.url, body, idempotencyKey: req.headers['idempotency-key'] || null });
+      const u = new URL(req.url, 'http://x');
+      if (req.method === 'GET' && u.pathname === '/v1/prices') {
+        const product = u.searchParams.get('product');
+        const data = Object.values(prices).filter(p => !product || p.product === product);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ object: 'list', data, has_more: false }));
+      }
+      if (req.method === 'GET' && u.pathname.startsWith('/v1/prices/')) {
+        const id = decodeURIComponent(u.pathname.split('/').pop());
+        const p = prices[id];
+        res.writeHead(p ? 200 : 404, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(p || { error: { message: 'No such price' } }));
+      }
+      if (req.method === 'POST' && u.pathname === '/v1/prices') {
+        const f = parseStripeForm(body);
+        const id = 'price_' + crypto.randomBytes(8).toString('hex');
+        const p = {
+          id, object: 'price', unit_amount: Number(f.unit_amount), currency: f.currency,
+          recurring: f.recurring ? { interval: f.recurring.interval, interval_count: Number(f.recurring.interval_count) } : null,
+          livemode: false, product: f.product, active: f.active !== 'false', metadata: f.metadata || {}
+        };
+        prices[id] = p;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(p));
+      }
+      if (req.method === 'POST' && u.pathname.startsWith('/v1/prices/')) {
+        const id = decodeURIComponent(u.pathname.split('/').pop());
+        const f = parseStripeForm(body);
+        const existing = prices[id];
+        if (!existing) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { message: 'No such price' } })); }
+        if ('active' in f) existing.active = f.active !== 'false';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(existing));
+      }
+      if (req.method === 'POST' && u.pathname === '/v1/customers') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ id: 'cus_test_1', object: 'customer' }));
+      }
+      if (req.method === 'POST' && u.pathname === '/v1/checkout/sessions') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ id: 'cs_test_1', object: 'checkout.session', url: 'https://checkout.stripe.com/pay/cs_test_1' }));
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: `not mocked: ${req.method} ${req.url}` } }));
+    });
+  });
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, calls, prices })));
+}
+
+async function sql(databaseUrl, text, params) {
+  const pool = new pg.Pool({ connectionString: databaseUrl });
+  try { return await pool.query(text, params); }
+  finally { await pool.end(); }
+}
+
+// `seeded: true` (the default) boots with STRIPE_PRICE_MONTHLY/QUARTERLY/YEARLY/INTRO set against
+// the mock, so the catalog seeds at boot — needed by every test that publishes, prices a new
+// version, or reconciles against the existing product. `seeded: false` + `apiKey: 'sk_live_...'`
+// is the live-gate shape: the mock's fixture Prices are `livemode:false`, which a live key makes
+// seedCatalogFromEnv's own livemode check refuse — deliberately, so those tests exercise the gate
+// on an unseeded catalog without ever reaching real Stripe.
+async function startServer(t, { users, seeded = true, apiKey = 'sk_test_unused', env = {} } = {}) {
+  const seedPrices = seeded ? {
+    price_monthly_test: { id: 'price_monthly_test', object: 'price', unit_amount: 8900, currency: 'brl', recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1', active: true },
+    price_quarterly_test: { id: 'price_quarterly_test', object: 'price', unit_amount: 23700, currency: 'brl', recurring: { interval: 'month', interval_count: 3 }, livemode: false, product: 'prod_1', active: true },
+    price_yearly_test: { id: 'price_yearly_test', object: 'price', unit_amount: 76800, currency: 'brl', recurring: { interval: 'year', interval_count: 1 }, livemode: false, product: 'prod_1', active: true },
+    price_intro_test: { id: 'price_intro_test', object: 'price', unit_amount: 199, currency: 'brl', recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1', active: true }
+  } : {};
+  const { server, port, calls, prices } = await mockStripeApi(seedPrices);
+  t.after(() => server.close());
+  const dataDir = tempData();
+  fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
+  fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({ users, creds: [], subs: [], invites: [] }));
+  const h = await spawnApi(t, {
+    dataDir,
+    env: {
+      STRIPE_API_KEY: apiKey, STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      STRIPE_API_HOST: '127.0.0.1', STRIPE_API_PORT: String(port),
+      ADMIN_UIDS: 'u_admin_1', PASSWORD_LOGIN: '1',
+      ...(seeded ? {
+        STRIPE_PRICE_MONTHLY: 'price_monthly_test', STRIPE_PRICE_QUARTERLY: 'price_quarterly_test',
+        STRIPE_PRICE_YEARLY: 'price_yearly_test', STRIPE_PRICE_INTRO: 'price_intro_test'
+      } : {}),
+      ...env
+    }
+  });
+  h.calls = calls;
+  h.prices = prices;
+  h.req = async (method, p, { body, cookie, headers = {} } = {}) => {
+    const r = await fetch(`${h.api}${p}`, {
+      method, headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', ...(cookie ? { Cookie: cookie } : {}), ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    return { status: r.status, body: await r.json() };
+  };
+  h.row1 = (text, params) => sql(h.databaseUrl, text, params).then(r => r.rows[0] || null);
+  h.rows = (text, params) => sql(h.databaseUrl, text, params).then(r => r.rows);
+  return h;
+}
+
+const admin = () => withPassword('u_admin_1', 'Admin', { admin: true });
+const plain = () => withPassword('u_plain_1', 'Plain');
+const adminCookie = cookieFor('u_admin_1');
+const plainCookie = cookieFor('u_plain_1');
+const proof = { current: GOOD };
+const idemp = () => 'idemp-' + crypto.randomBytes(8).toString('hex');
+
+/* ---------- requireAdmin: every route refuses a signed-in non-admin with 403 ---------- */
+test('admin billing catalog: every route is 403 for a signed-in non-admin', async t => {
+  const h = await startServer(t, { users: [admin(), plain()] });
+  const calls = [
+    ['GET', '/api/admin/billing/catalog'],
+    ['GET', '/api/admin/billing/catalog/actions'],
+    ['POST', '/api/admin/billing/catalog/plan/new'],
+    ['POST', '/api/admin/billing/catalog/plan/display'],
+    ['POST', '/api/admin/billing/catalog/plan/availability'],
+    ['POST', '/api/admin/billing/catalog/plan/price'],
+    ['POST', '/api/admin/billing/catalog/plan/publish'],
+    ['POST', '/api/admin/billing/catalog/order'],
+    ['POST', '/api/admin/billing/catalog/reconcile']
+  ];
+  for (const [method, p] of calls) {
+    const r = await h.req(method, p, { cookie: plainCookie, body: method === 'POST' ? {} : undefined });
+    assert.equal(r.status, 403, `${method} ${p}`);
+  }
+});
+
+/* ---------- live gate ---------- */
+test('admin billing catalog: live gate — 423 on every Stripe-touching write, liveWritesDisabled:true, order still passes', async t => {
+  const h = await startServer(t, { users: [admin()], seeded: false, apiKey: 'sk_live_unused' });
+  const view = await h.req('GET', '/api/admin/billing/catalog', { cookie: adminCookie });
+  assert.equal(view.status, 200);
+  assert.equal(view.body.liveWritesDisabled, true);
+
+  const writes = [
+    ['/api/admin/billing/catalog/plan/new', { id: 'biweekly', display: { 'pt-BR': { name: 'Quinzenal' } }, interval: 'month', intervalCount: 1, unitAmount: 5000, reason: 'test reason long enough', ...proof }],
+    ['/api/admin/billing/catalog/plan/availability', { id: 'monthly', version: 1, available: true, reason: 'test reason long enough', ...proof }],
+    ['/api/admin/billing/catalog/plan/price', { planId: 'monthly', unitAmount: 9900, reason: 'test reason long enough', ...proof }],
+    ['/api/admin/billing/catalog/plan/publish', { planId: 'monthly', priceId: 'price_x', version: 1, reason: 'test reason long enough', ...proof }]
+  ];
+  for (const [p, body] of writes) {
+    const r = await h.req('POST', p, { cookie: adminCookie, body, headers: { 'Idempotency-Key': idemp() } });
+    assert.equal(r.status, 423, p);
+    assert.equal(r.body.code, 'live-writes-disabled', p);
+  }
+
+  const reorder = await h.req('POST', '/api/admin/billing/catalog/order', { cookie: adminCookie, body: { order: [] } });
+  assert.equal(reorder.status, 200, 'reorder does not pass through the live gate');
+});
+
+test('admin billing catalog: BILLING_ADMIN_LIVE=1 lifts the gate (liveWritesDisabled:false)', async t => {
+  const h = await startServer(t, { users: [admin()], seeded: false, apiKey: 'sk_live_unused', env: { BILLING_ADMIN_LIVE: '1' } });
+  const view = await h.req('GET', '/api/admin/billing/catalog', { cookie: adminCookie });
+  assert.equal(view.body.liveWritesDisabled, false);
+});
+
+test('admin billing catalog: a sandbox key never trips the gate', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const view = await h.req('GET', '/api/admin/billing/catalog', { cookie: adminCookie });
+  assert.equal(view.body.liveWritesDisabled, false);
+});
+
+/* ---------- proveOwner + reason on the financial writes ---------- */
+test('admin billing catalog: criar oferta without proveOwner is refused', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const r = await h.req('POST', '/api/admin/billing/catalog/plan/new', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { id: 'biweekly', display: { 'pt-BR': { name: 'Quinzenal' } }, interval: 'month', intervalCount: 1, unitAmount: 5000, reason: 'a perfectly good reason' }
+  });
+  assert.equal(r.status, 403);
+});
+
+test('admin billing catalog: criar oferta with reason < 10 chars is refused', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const r = await h.req('POST', '/api/admin/billing/catalog/plan/new', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { id: 'biweekly', display: { 'pt-BR': { name: 'Quinzenal' } }, interval: 'month', intervalCount: 1, unitAmount: 5000, reason: 'short', ...proof }
+  });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.field, 'reason');
+});
+
+test('admin billing catalog: ativar/desativar without proveOwner or with a short reason is refused, both directions', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const noProof = await h.req('POST', '/api/admin/billing/catalog/plan/availability', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() }, body: { id: 'monthly', version: 1, available: false, reason: 'a perfectly good reason' }
+  });
+  assert.equal(noProof.status, 403);
+  const shortReason = await h.req('POST', '/api/admin/billing/catalog/plan/availability', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() }, body: { id: 'monthly', version: 1, available: true, reason: 'short', ...proof }
+  });
+  assert.equal(shortReason.status, 400);
+});
+
+test('admin billing catalog: nova versão de valor without proveOwner or with a short reason is refused', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const noProof = await h.req('POST', '/api/admin/billing/catalog/plan/price', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() }, body: { planId: 'monthly', unitAmount: 9900, reason: 'a perfectly good reason' }
+  });
+  assert.equal(noProof.status, 403);
+  const shortReason = await h.req('POST', '/api/admin/billing/catalog/plan/price', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() }, body: { planId: 'monthly', unitAmount: 9900, reason: 'short', ...proof }
+  });
+  assert.equal(shortReason.status, 400);
+});
+
+/* ---------- criar oferta: happy path ---------- */
+test('admin billing catalog: criar oferta creates a draft Price and an available:false plan', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const r = await h.req('POST', '/api/admin/billing/catalog/plan/new', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { id: 'biweekly', display: { 'pt-BR': { name: 'Quinzenal' } }, interval: 'month', intervalCount: 1, unitAmount: 5000, reason: 'launching a new biweekly plan', ...proof }
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.plan.available, false);
+  const priceRow = await h.row1('SELECT * FROM billing_prices WHERE plan_id = $1', ['biweekly']);
+  assert.equal(priceRow.state, 'draft');
+  assert.equal(Number(priceRow.unit_amount), 5000);
+});
+
+/* ---------- editar apresentação: 409 on a stale version ---------- */
+test('admin billing catalog: editar apresentação with a stale version returns 409', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const stale = await h.req('POST', '/api/admin/billing/catalog/plan/display', {
+    cookie: adminCookie, body: { id: 'monthly', version: 999, display: { 'pt-BR': { name: 'Mensal Novo' } } }
+  });
+  assert.equal(stale.status, 409);
+  const ok = await h.req('POST', '/api/admin/billing/catalog/plan/display', {
+    cookie: adminCookie, body: { id: 'monthly', version: 1, display: { 'pt-BR': { name: 'Mensal Novo' } } }
+  });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.plan.display['pt-BR'].name, 'Mensal Novo');
+});
+
+/* ---------- publicar versão: atomic swap, old Price grandfathered ---------- */
+test('admin billing catalog: publicar versão swaps current atomically, the old Price is retired but unchanged', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  // A subscriber already billed off the plan's original Price (price_monthly_test) — the fixture
+  // this test must still be able to name correctly after the plan moves on.
+  await h.rows(`INSERT INTO subscriptions (id, user_id, data) VALUES ('sub_pub_1', 'u_admin_1', $1)`, [{ status: 'active', plan: 'monthly', priceId: 'price_monthly_test' }]);
+
+  const draft = await h.req('POST', '/api/admin/billing/catalog/plan/price', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { planId: 'monthly', unitAmount: 9900, decisionRef: 'ISO-1630', reason: 'adjusting for inflation', ...proof }
+  });
+  assert.equal(draft.status, 200);
+  const newPriceId = draft.body.price.id;
+
+  const publish = await h.req('POST', '/api/admin/billing/catalog/plan/publish', {
+    cookie: adminCookie, headers: { 'Idempotency-Key': idemp() },
+    body: { planId: 'monthly', priceId: newPriceId, version: 1, reason: 'publishing the new monthly price', ...proof }
+  });
+  assert.equal(publish.status, 200);
+  assert.equal(publish.body.plan.currentPriceId, newPriceId);
+
+  const oldRow = await h.row1('SELECT * FROM billing_prices WHERE id = $1', ['price_monthly_test']);
+  assert.equal(oldRow.state, 'retired');
+  assert.equal(Number(oldRow.unit_amount), 8900, 'the old Price keeps the exact amount it was sold at');
+  assert.equal(oldRow.plan_id, 'monthly', 'still named as the monthly plan — a subscriber on it still shows the right name');
+
+  const newRow = await h.row1('SELECT * FROM billing_prices WHERE id = $1', [newPriceId]);
+  assert.equal(newRow.state, 'current');
+  assert.equal(Number(newRow.unit_amount), 9900);
+});
+
+/* ---------- reconcile ---------- */
+test('admin billing catalog: reconcile adopts an untracked Price tagged metadata.bf_plan, and retires an unknown subscription Price read off Stripe', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  // A Price Stripe already has (created by hand, or by a previous attempt whose own DB write was
+  // lost) that this catalog has never heard of — tagged exactly the way createOffer tags one.
+  h.prices.price_untracked = {
+    id: 'price_untracked', object: 'price', unit_amount: 15000, currency: 'brl',
+    recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1', active: false,
+    metadata: { bf_plan: 'yearly', bf_version: '2' }
+  };
+  // A subscription billed off a Price this catalog never seeded or created at all.
+  h.prices.price_legacy = {
+    id: 'price_legacy', object: 'price', unit_amount: 4200, currency: 'brl',
+    recurring: { interval: 'month', interval_count: 1 }, livemode: false, product: 'prod_1', active: false, metadata: {}
+  };
+  await h.rows(`INSERT INTO subscriptions (id, user_id, data) VALUES ('sub_legacy_1', 'u_admin_1', $1)`, [{ status: 'canceled', plan: 'monthly', priceId: 'price_legacy' }]);
+
+  const r = await h.req('POST', '/api/admin/billing/catalog/reconcile', { cookie: adminCookie });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.adopted.includes('price_untracked'));
+  assert.ok(r.body.retired.includes('price_legacy'));
+
+  const adoptedRow = await h.row1('SELECT * FROM billing_prices WHERE id = $1', ['price_untracked']);
+  assert.equal(adoptedRow.state, 'draft', 'adopted, never auto-published');
+  assert.equal(adoptedRow.plan_id, 'yearly');
+  assert.equal(Number(adoptedRow.unit_amount), 15000);
+
+  const retiredRow = await h.row1('SELECT * FROM billing_prices WHERE id = $1', ['price_legacy']);
+  assert.equal(retiredRow.state, 'retired');
+  assert.equal(Number(retiredRow.unit_amount), 4200, 'never invents a value — read straight off Stripe');
+});
+
+/* ---------- Idempotency-Key replay ---------- */
+test('admin billing catalog: a repeated Idempotency-Key does not create a second Price or a second billing_admin_actions row', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const key = idemp();
+  const body = { planId: 'monthly', unitAmount: 9900, reason: 'adjusting for inflation', ...proof };
+  const first = await h.req('POST', '/api/admin/billing/catalog/plan/price', { cookie: adminCookie, headers: { 'Idempotency-Key': key }, body });
+  assert.equal(first.status, 200);
+  const second = await h.req('POST', '/api/admin/billing/catalog/plan/price', { cookie: adminCookie, headers: { 'Idempotency-Key': key }, body });
+  assert.equal(second.status, 200);
+  assert.deepEqual(second.body, first.body, 'the replay is handed back the exact same result');
+
+  const priceCreateCalls = h.calls.filter(c => c.method === 'POST' && c.url === '/v1/prices');
+  assert.equal(priceCreateCalls.length, 1, 'Stripe was only ever asked to create the Price once');
+
+  const actionRows = await h.rows('SELECT * FROM billing_admin_actions WHERE idempotency_key = $1', [key]);
+  assert.equal(actionRows.length, 1);
+});
+
+/* ---------- reordenar ---------- */
+test('admin billing catalog: reordenar updates sort_order for exactly the current plan set', async t => {
+  const h = await startServer(t, { users: [admin()] });
+  const r = await h.req('POST', '/api/admin/billing/catalog/order', { cookie: adminCookie, body: { order: ['yearly', 'monthly', 'quarterly'] } });
+  assert.equal(r.status, 200);
+  const rows = await h.rows('SELECT id, sort_order FROM billing_plans ORDER BY sort_order');
+  assert.deepEqual(rows.map(r2 => r2.id), ['yearly', 'monthly', 'quarterly']);
+
+  const partial = await h.req('POST', '/api/admin/billing/catalog/order', { cookie: adminCookie, body: { order: ['monthly'] } });
+  assert.equal(partial.status, 400);
+  assert.equal(partial.body.code, 'invalid-order');
+});

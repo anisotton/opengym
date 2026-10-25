@@ -102,6 +102,17 @@ const LABELS = {
   // Stripe billing (ISO-1393): `msg` carries the plan name. No chip of its own, same as media —
   // these rows show under All.
   'billing.checkout': 'Started a Stripe checkout',
+  // ISO-1619/ISO-1630: the admin payment-plan catalog. `activate`/`unpublish` are their own
+  // events (not folded into a generic "update"), same precedent as admin.program.publish/
+  // unpublish above — availability is the one change that affects whether a plan can be sold.
+  'admin.billing.catalog.create': 'Created a new payment plan',
+  'admin.billing.catalog.display': "Edited a payment plan's display text",
+  'admin.billing.catalog.activate': 'Put a payment plan on sale',
+  'admin.billing.catalog.deactivate': 'Took a payment plan off sale',
+  'admin.billing.catalog.price.new': 'Created a new price for a payment plan',
+  'admin.billing.catalog.price.publish': "Published a payment plan's new price",
+  'admin.billing.catalog.order': 'Reordered the payment plan catalog',
+  'admin.billing.catalog.reconcile': 'Reconciled the payment plan catalog against Stripe',
   // "Sign in with Google" (ISO-1597). `ok`'s `msg` carries the proof kind ('reauth') or, for a
   // pending signup with no account yet, a masked address; `refused`/`fail` carry a reason code.
   'auth.google.start': 'Started linking a Google account',

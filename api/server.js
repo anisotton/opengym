@@ -75,7 +75,10 @@ import { renderPreChargeNotice } from './mail-templates/pre-charge-notice.js';
 import {
   BILLING_ON, getStripe, hasActiveAccess, createCheckoutSession, createPortalSession,
   billingStatus, applyStripeEvent, setFirstPeriodNoticeHook, tickFirstPeriodNotices, nextChargeAmountCents,
-  attemptStripeCleanup, tickStripeCleanup, seedCatalogFromEnv
+  attemptStripeCleanup, tickStripeCleanup, seedCatalogFromEnv,
+  liveWritesDisabled, validPlanId, validDisplay, validInterval, validIntervalCount, validUnitAmount,
+  createOffer, setPlanAvailability, createPriceVersion, publishPriceVersion, reorderCatalog,
+  editPlanDisplay, getCatalogAdminView, getBillingAdminActions, reconcileCatalog
 } from './billing.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -2821,6 +2824,29 @@ function assignmentDelivery(a) {
   return { id: a.id, kind: a.kind, payload: a.payload, startsOn: a.startsOn, days: a.days, endedAt: a.endedAt, endReason: a.endReason };
 }
 
+// billing.js's admin catalog writes answer `{ error, code }` on a refusal rather than throwing —
+// same idea as programError/teacherError above.
+const CATALOG_ERROR_STATUS = {
+  'id-taken': 409, 'no-product': 400, 'not-found': 404, 'stale': 409, 'stale-after-stripe': 409,
+  'no-current-price': 400, 'invalid-price': 400, 'invalid-order': 400,
+  'action-failed': 400, 'action-in-progress': 409
+};
+function catalogError(res, result) {
+  json(res, CATALOG_ERROR_STATUS[result.code] || 400, { error: result.error, code: result.code, ...(result.current ? { current: result.current } : {}) });
+}
+// `reason` ≥ 10 chars (the plan's own rule, also enforced by migrations/010's CHECK constraint on
+// billing_admin_actions — this is just the 400 that avoids a raw 23514 from Postgres) and the
+// `Idempotency-Key` header every financial catalog write requires, generated client-side once per
+// confirmation dialog. Shared by every POST route below that touches Stripe.
+function catalogReason(body) {
+  const r = text(body.reason).trim();
+  return r.length >= 10 ? r : null;
+}
+function idempotencyKeyOf(req) {
+  const k = text(req.headers['idempotency-key']).trim();
+  return k || null;
+}
+
 /* ---------- routes ---------- */
 // Public, unauthenticated, and polled by an external uptime monitor (ISO-1400) — so it stays
 // cheap (a bare SELECT 1, bounded by HEALTH_DB_TIMEOUT_MS) and never reports the account count
@@ -3787,6 +3813,174 @@ const routes = {
     });
     try { await pipeline(fs.createReadStream(null, { fd }), res); }
     catch { res.destroy(); }
+  },
+
+  /* ---------- admin: payment-plan catalog (ISO-1619/ISO-1630, T1b) ----------
+   * Admin-only end to end — every route starts with requireAdmin, then 404s the same way the
+   * public billing routes do while BILLING_ON is off. Every write that reaches Stripe
+   * (plan/new, plan/availability, plan/price, plan/publish) additionally: refuses 423
+   * `live-writes-disabled` while liveWritesDisabled() (billing.js) is true, requires a fresh
+   * proveOwner proof and a `reason` ≥ 10 chars, and claims an `Idempotency-Key` header before
+   * ever calling Stripe (billing.js's runBillingAdminAction) — a replayed key is handed back the
+   * first attempt's own result. `plan/display` and `order` are DB-only (no Stripe call, no live
+   * gate, no proveOwner/reason, nothing written to billing_admin_actions — see their own routes in
+   * billing.js for why) and `reconcile` only ever reads Stripe.
+   */
+  'GET /api/admin/billing/catalog': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const view = await getCatalogAdminView(pool);
+    json(res, 200, { ...view, liveWritesDisabled: liveWritesDisabled() });
+  },
+
+  'GET /api/admin/billing/catalog/actions': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    json(res, 200, { actions: await getBillingAdminActions(pool, 100) });
+  },
+
+  // "Criar oferta": a new plan, born `available:false` with its first Price a Stripe `draft`.
+  'POST /api/admin/billing/catalog/plan/new': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const id = text(body.id);
+    const interval = text(body.interval);
+    const intervalCount = Number(body.intervalCount);
+    const unitAmount = Number(body.unitAmount);
+    if (!validPlanId(id)) return json(res, 400, { error: 'invalid plan id', field: 'id' });
+    if (!validDisplay(body.display)) return json(res, 400, { error: 'invalid display', field: 'display' });
+    if (!validInterval(interval)) return json(res, 400, { error: 'invalid interval', field: 'interval' });
+    if (!validIntervalCount(intervalCount)) return json(res, 400, { error: 'invalid intervalCount', field: 'intervalCount' });
+    if (!validUnitAmount(unitAmount)) return json(res, 400, { error: 'invalid unitAmount', field: 'unitAmount' });
+    const reason = catalogReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-catalog-create');
+    if (!proof) return;
+    const result = await createOffer(pool, {
+      id, display: body.display, interval, intervalCount, unitAmount,
+      decisionRef: body.decisionRef != null ? text(body.decisionRef) : null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.create', { user: admin, target: { id, name: body.display?.['pt-BR']?.name } });
+    json(res, 200, result.after);
+  },
+
+  // "Editar apresentação": display text only — never price/interval/availability. Só banco.
+  'POST /api/admin/billing/catalog/plan/display': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const body = await readBody(req);
+    const id = text(body.id);
+    const version = Number(body.version);
+    if (!id || !Number.isInteger(version)) return json(res, 400, { error: 'id and version are required' });
+    if (!validDisplay(body.display)) return json(res, 400, { error: 'invalid display', field: 'display' });
+    const result = await editPlanDisplay(pool, id, version, body.display);
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.display', { user: admin, target: { id } });
+    json(res, 200, { plan: result.plan });
+  },
+
+  // Reorder, in a batch, in one transaction — `order` must name exactly the current plan set.
+  // Só banco, não passa pelo live gate.
+  'POST /api/admin/billing/catalog/order': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const body = await readBody(req);
+    const order = Array.isArray(body.order) ? body.order.map(text) : null;
+    if (!order) return json(res, 400, { error: 'order must be an array of plan ids' });
+    const result = await reorderCatalog(pool, order);
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.order', { user: admin });
+    json(res, 200, { plans: result.plans });
+  },
+
+  // Ativar/desativar: `prices.update active` on the plan's current Price, then `available` in
+  // the DB — in that order, both directions.
+  'POST /api/admin/billing/catalog/plan/availability': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const id = text(body.id);
+    const version = Number(body.version);
+    const available = !!body.available;
+    if (!id || !Number.isInteger(version)) return json(res, 400, { error: 'id and version are required' });
+    const reason = catalogReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-catalog-availability');
+    if (!proof) return;
+    const result = await setPlanAvailability(pool, { id, version, available, actor: { id: admin.id, name: admin.name }, reason, idempotencyKey });
+    if (result.error) return catalogError(res, result);
+    audit(req, available ? 'admin.billing.catalog.activate' : 'admin.billing.catalog.deactivate', { user: admin, target: { id } });
+    json(res, 200, result.after);
+  },
+
+  // "Nova versão de valor": a new draft Price for a plan that already sells one.
+  'POST /api/admin/billing/catalog/plan/price': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const planId = text(body.planId);
+    const unitAmount = Number(body.unitAmount);
+    if (!planId) return json(res, 400, { error: 'planId is required' });
+    if (!validUnitAmount(unitAmount)) return json(res, 400, { error: 'invalid unitAmount', field: 'unitAmount' });
+    const reason = catalogReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-catalog-price-new');
+    if (!proof) return;
+    const result = await createPriceVersion(pool, {
+      planId, unitAmount, decisionRef: body.decisionRef != null ? text(body.decisionRef) : null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.price.new', { user: admin, target: { id: planId } });
+    json(res, 200, result.after);
+  },
+
+  // "Publicar versão": Stripe first (activates the new Price, deactivates the old one), then one
+  // DB transaction (billing.js's publishPriceVersion) — grandfathers every existing subscriber on
+  // the now-retired Price, never migrates them.
+  'POST /api/admin/billing/catalog/plan/publish': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const planId = text(body.planId);
+    const newPriceId = text(body.priceId);
+    const version = Number(body.version);
+    if (!planId || !newPriceId || !Number.isInteger(version)) return json(res, 400, { error: 'planId, priceId and version are required' });
+    const reason = catalogReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-catalog-publish');
+    if (!proof) return;
+    const result = await publishPriceVersion(pool, { planId, newPriceId, version, actor: { id: admin.id, name: admin.name }, reason, idempotencyKey });
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.price.publish', { user: admin, target: { id: planId } });
+    json(res, 200, result.after);
+  },
+
+  // Adopts every Stripe Price tagged `metadata.bf_plan` this catalog doesn't know yet (as a
+  // draft — never auto-published) and records every `subscriptions.priceId` this catalog has
+  // never heard of as `retired`, read straight off Stripe. Read-only against Stripe: no live gate.
+  'POST /api/admin/billing/catalog/reconcile': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const result = await reconcileCatalog(pool);
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.reconcile', { user: admin, msg: `adopted ${result.adopted.length}, retired ${result.retired.length}` });
+    json(res, 200, result);
   },
 
   /* ---------- activity log ---------- */

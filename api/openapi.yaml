@@ -3610,6 +3610,383 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/admin/billing/catalog:
+    get:
+      tags: [admin, billing]
+      operationId: adminBillingCatalog
+      summary: 'Admin: the full payment-plan catalog (ISO-1619/ISO-1630)'
+      description: >-
+        Every plan regardless of `available`, every Price regardless of `state`, and how many
+        live `subscriptions` rows are billed off each Price. `liveWritesDisabled` mirrors
+        billing.js's own live gate — the UI greys every write button out while it is `true`.
+      responses:
+        '200':
+          description: The admin catalog.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans: { type: array, items: { $ref: '#/components/schemas/BillingCatalogPlan' } }
+                  introPrices: { type: array, items: { $ref: '#/components/schemas/BillingCatalogPrice' } }
+                  liveWritesDisabled: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+
+  /api/admin/billing/catalog/actions:
+    get:
+      tags: [admin, billing]
+      operationId: adminBillingCatalogActions
+      summary: 'Admin: the catalog''s financial action history'
+      description: The 100 most recent `billing_admin_actions` rows, newest first.
+      responses:
+        '200':
+          description: The action history.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  actions: { type: array, items: { $ref: '#/components/schemas/BillingAdminAction' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+
+  /api/admin/billing/catalog/plan/new:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingCatalogPlanNew
+      summary: 'Admin: criar oferta — a brand-new plan'
+      description: >-
+        Mints a Stripe Price (`active:false`, `metadata.bf_plan`/`bf_version`) on the catalog's
+        one Product, then persists the plan (`available:false`) and the Price (`draft`) in one
+        transaction. Requires a fresh `proveOwner` proof and a `reason` ≥ 10 characters, and an
+        `Idempotency-Key` header — generate a new one per confirmation dialog; a replay of the
+        same key is handed back the first attempt's own result instead of calling Stripe again.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, display, interval, intervalCount, unitAmount, reason]
+              properties:
+                id: { type: string, pattern: '^[a-z][a-z0-9-]{1,39}$' }
+                display: { type: object, description: 'At least `{"pt-BR": {"name": "..."}}`.' }
+                interval: { type: string, enum: [month, year] }
+                intervalCount: { type: integer, enum: [1, 3, 6, 12] }
+                unitAmount: { type: integer, minimum: 100, maximum: 1000000, description: Centavos. }
+                decisionRef: { type: string }
+                reason: { type: string, minLength: 10 }
+                current: { type: string, description: "proveOwner's password proof — or `credential`/`googleProof`, see OwnerProof." }
+              additionalProperties: true
+      responses:
+        '200':
+          description: The new plan.
+          content:
+            application/json:
+              schema: { type: object, properties: { plan: { $ref: '#/components/schemas/BillingCatalogPlan' } } }
+        '400':
+          description: A field failed validation, `reason` is too short, or the `Idempotency-Key` header is missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the `proveOwner` proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+        '409':
+          description: A plan with this id already exists.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "a plan with this id already exists", code: "id-taken" }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/catalog/plan/display:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingCatalogPlanDisplay
+      summary: 'Admin: editar apresentação — display text only'
+      description: >-
+        Never touches price, interval or availability. Database-only: no Stripe call, no live
+        gate, no `proveOwner`/`reason`, nothing written to `billing_admin_actions`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, version, display]
+              properties:
+                id: { type: string }
+                version: { type: integer }
+                display: { type: object }
+      responses:
+        '200':
+          description: The updated plan.
+          content:
+            application/json:
+              schema: { type: object, properties: { plan: { $ref: '#/components/schemas/BillingCatalogPlan' } } }
+        '400':
+          description: id/version missing, or display is not a valid shape.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such plan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "changed since you loaded it", code: "stale", current: {} }
+
+  /api/admin/billing/catalog/plan/availability:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingCatalogPlanAvailability
+      summary: 'Admin: ativar/desativar a plan'
+      description: >-
+        `prices.update active` on the plan's *current* Price, then `available` in the DB — in
+        that order, both directions. Requires a fresh `proveOwner` proof, a `reason` ≥ 10
+        characters and an `Idempotency-Key` header either way.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, version, available, reason]
+              properties:
+                id: { type: string }
+                version: { type: integer }
+                available: { type: boolean }
+                reason: { type: string, minLength: 10 }
+                current: { type: string }
+              additionalProperties: true
+      responses:
+        '200':
+          description: The updated plan.
+          content:
+            application/json:
+              schema: { type: object, properties: { plan: { $ref: '#/components/schemas/BillingCatalogPlan' } } }
+        '400':
+          description: id/version missing, `reason` too short, the `Idempotency-Key` header is missing, or the plan has no published Price yet (`no-current-price`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the `proveOwner` proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No such plan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale version — before or after the Stripe call (`stale` / `stale-after-stripe`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/catalog/plan/price:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingCatalogPlanPrice
+      summary: 'Admin: nova versão de valor — a new draft Price'
+      description: >-
+        A second (or later) `draft` Price for a plan that already sells one. Never changes the
+        plan itself — `plan/publish` is the separate, explicit act that makes it `current`.
+        Requires a fresh `proveOwner` proof, a `reason` ≥ 10 characters and an `Idempotency-Key`
+        header.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planId, unitAmount, reason]
+              properties:
+                planId: { type: string }
+                unitAmount: { type: integer, minimum: 100, maximum: 1000000, description: Centavos. }
+                decisionRef: { type: string }
+                reason: { type: string, minLength: 10 }
+                current: { type: string }
+              additionalProperties: true
+      responses:
+        '200':
+          description: The new draft Price.
+          content:
+            application/json:
+              schema: { type: object, properties: { price: { $ref: '#/components/schemas/BillingCatalogPrice' } } }
+        '400':
+          description: planId missing, `unitAmount` invalid, `reason` too short, the `Idempotency-Key` header is missing, or the catalog has no known Stripe product yet (`no-product`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the `proveOwner` proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No such plan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/catalog/plan/publish:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingCatalogPlanPublish
+      summary: 'Admin: publicar versão — swap the plan''s current Price'
+      description: >-
+        Stripe first (activates the new Price, deactivates the old one — distinct derived
+        Idempotency-Keys per call, since Stripe's own idempotency cache refuses a second,
+        different request under the same key), then one DB transaction flips both Prices'
+        `state` and the plan's `currentPriceId` together. Never migrates an existing subscriber
+        onto the new Price — grandfathering (ISO-1619 principle #2): a subscription billed off
+        the now-`retired` Price keeps showing the exact name and amount it was sold at, forever.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planId, priceId, version, reason]
+              properties:
+                planId: { type: string }
+                priceId: { type: string, description: Must be a `draft` Price belonging to this plan. }
+                version: { type: integer }
+                reason: { type: string, minLength: 10 }
+                current: { type: string }
+              additionalProperties: true
+      responses:
+        '200':
+          description: The updated plan — `currentPriceId` now points at the published Price.
+          content:
+            application/json:
+              schema: { type: object, properties: { plan: { $ref: '#/components/schemas/BillingCatalogPlan' } } }
+        '400':
+          description: Required fields missing, `reason` too short, the `Idempotency-Key` header is missing, or `priceId` is not a draft Price of this plan (`invalid-price`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin, or the `proveOwner` proof was refused/missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No such plan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale version — before or after the Stripe call (`stale` / `stale-after-stripe`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423': { $ref: '#/components/responses/LiveWritesDisabled' }
+
+  /api/admin/billing/catalog/order:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingCatalogOrder
+      summary: 'Admin: reorder the catalog'
+      description: >-
+        `order` must name exactly the current plan set — a batch update of `sortOrder` in one
+        transaction. Database-only: no Stripe call, and does **not** pass through the live gate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order]
+              properties:
+                order: { type: array, items: { type: string }, description: Every plan id, in the new display order. }
+      responses:
+        '200':
+          description: Every plan, in its new order.
+          content:
+            application/json:
+              schema: { type: object, properties: { plans: { type: array, items: { $ref: '#/components/schemas/BillingCatalogPlan' } } } }
+        '400':
+          description: '`order` is empty, or does not name exactly the current plan set (`invalid-order`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+
+  /api/admin/billing/catalog/reconcile:
+    post:
+      tags: [admin, billing]
+      operationId: adminBillingCatalogReconcile
+      summary: 'Admin: reconcile the catalog against Stripe'
+      description: >-
+        Adopts every Stripe Price tagged `metadata.bf_plan` this catalog doesn't know yet — as a
+        `draft`, never auto-published — and records every `subscriptions.priceId` this catalog
+        has never heard of as `retired`, with its amount read straight off Stripe (never
+        invented). Read-only against Stripe: no live gate, no `proveOwner`/`reason`.
+      responses:
+        '200':
+          description: What was adopted and what was retired.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  adopted: { type: array, items: { type: string }, description: Stripe Price ids adopted as drafts. }
+                  retired: { type: array, items: { type: string }, description: Stripe Price ids recorded as retired. }
+        '400':
+          description: The catalog has no known Stripe product yet (`no-product`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BillingOff' }
+
   /api/admin/audit:
     get:
       tags: [admin]
@@ -5102,6 +5479,22 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
           example: { error: "not your student", code: "not-your-student" }
+    LiveWritesDisabled:
+      description: >-
+        ISO-1630's live gate: this instance's Stripe key is a live one (`sk_live_`/`rk_live_`) and
+        `BILLING_ADMIN_LIVE=1` has not been set. Every admin catalog write that touches Stripe
+        refuses this way; `GET /api/admin/billing/catalog`'s own `liveWritesDisabled` field is the
+        same check, so the UI can grey the write buttons out before anyone tries.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: "live writes are disabled on this instance", code: "live-writes-disabled" }
+    ReasonRequired:
+      description: '`reason` is missing or under 10 characters.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: "reason must be at least 10 characters", field: "reason" }
 
   schemas:
     Error:
@@ -5603,6 +5996,78 @@ components:
           oneOf: [{ type: string }, { type: 'null' }]
           description: Resolved display name (only in GET /api/admin/invites).
       additionalProperties: true
+
+    BillingCatalogPrice:
+      type: object
+      description: >-
+        A mirror of one Stripe Price (migrations/010_billing_catalog.sql) — immutable once
+        created except for `state`/`publishedAt`/`retiredAt`/`decisionRef`, enforced by a
+        trigger. `subscriptionCount` (admin view only) is how many live `subscriptions` rows are
+        currently billed off it — the signal an admin reads before deactivating or publishing
+        over it.
+      properties:
+        id: { type: string, description: Stripe Price id. }
+        planId: { oneOf: [{ type: string }, { type: 'null' }], description: 'Null only for the shared intro Price.' }
+        kind: { type: string, enum: [recurring, intro] }
+        unitAmount: { type: integer, description: Centavos. }
+        currency: { type: string, enum: [brl] }
+        interval: { type: string, enum: [month, year] }
+        intervalCount: { type: integer, enum: [1, 3, 6, 12] }
+        livemode: { type: boolean }
+        stripeProductId: { type: string }
+        state: { type: string, enum: [draft, current, retired] }
+        createdBy: { type: string, description: Admin user id. }
+        createdAt: { type: string }
+        publishedAt: { oneOf: [{ type: string }, { type: 'null' }] }
+        retiredAt: { oneOf: [{ type: string }, { type: 'null' }] }
+        decisionRef: { oneOf: [{ type: string }, { type: 'null' }], description: Free-text pointer to whatever approved this value. }
+        subscriptionCount: { type: integer, description: 'Admin view only (GET /api/admin/billing/catalog).' }
+
+    BillingCatalogPlan:
+      type: object
+      description: >-
+        The commercial offer — what an admin edits. `version` is optimistic concurrency: pass
+        the value last read back on `plan/display`/`plan/availability`/`plan/publish`, or get
+        `409 {code: stale, current}`.
+      required: [id, display, interval, intervalCount, sortOrder, available, version]
+      properties:
+        id: { type: string, example: monthly }
+        display: { type: object, description: 'Per-locale name/description/badge, keyed by locale (pt-BR is always present).' }
+        interval: { type: string, enum: [month, year] }
+        intervalCount: { type: integer, enum: [1, 3, 6, 12] }
+        sortOrder: { type: integer }
+        available: { type: boolean, description: Sellable in Checkout and listed in GET /api/billing/plans. }
+        currentPriceId: { oneOf: [{ type: string }, { type: 'null' }], description: 'Null until the plan''s first version is published.' }
+        introPriceId: { oneOf: [{ type: string }, { type: 'null' }] }
+        version: { type: integer }
+        prices:
+          type: array
+          description: 'Admin view only (GET /api/admin/billing/catalog) — every Price this plan has ever had, any state.'
+          items: { $ref: '#/components/schemas/BillingCatalogPrice' }
+
+    BillingAdminAction:
+      type: object
+      description: >-
+        One row of `billing_admin_actions` — the audit trail every financial catalog write
+        (one that touches Stripe) leaves. `reason` is always ≥ 10 characters (a database
+        constraint, not just a 400 at the door).
+      properties:
+        id: { type: integer }
+        idempotencyKey: { type: string }
+        actorId: { type: string, description: Admin user id. }
+        targetUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        action:
+          type: string
+          enum: [catalog.plan.create, catalog.plan.activate, catalog.plan.deactivate, catalog.price.new-version, catalog.price.publish]
+        reason: { type: string, minLength: 10 }
+        request: { type: object, description: The request body this action was called with. }
+        before: { oneOf: [{ type: object }, { type: 'null' }] }
+        after: { oneOf: [{ type: object }, { type: 'null' }] }
+        stripeIds: { type: object, description: Every Stripe object id this action touched. }
+        status: { type: string, enum: [pending, succeeded, failed, unknown] }
+        error: { oneOf: [{ type: string }, { type: 'null' }] }
+        createdAt: { type: string }
+        completedAt: { oneOf: [{ type: string }, { type: 'null' }] }
 
     Program:
       type: object

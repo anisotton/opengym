@@ -23,7 +23,11 @@ import {
   upsertSubscription, getSubscriptionById, getLatestSubscription, getSubscriptionsDueForFirstPeriodNotice,
   getStripeCleanupDue, deleteStripeCleanup, bumpStripeCleanupFailure,
   isBillingCatalogSeeded, getCatalogPlan, getPriceById, getPlanIdForPrice, getCurrentIntroPrice,
-  getCurrentPriceAmountForPlan, getAvailablePlans, seedBillingCatalog
+  getCurrentPriceAmountForPlan, getAvailablePlans, seedBillingCatalog, isIntroPrice,
+  getBillingProductId, nextPlanSortOrder, insertDraftPlanAndPrice, updatePlanDisplay, reorderPlans,
+  setPlanAvailabilityRow, insertDraftPrice, publishPriceVersionRows,
+  insertReconciledDraftPrice, insertReconciledRetiredPrice, getUnknownSubscriptionPriceIds,
+  claimBillingAdminAction, finishBillingAdminAction, listCatalogAdmin, listBillingAdminActions
 } from './store.js';
 
 const STRIPE_API_VERSION = '2026-08-26.dahlia';
@@ -114,10 +118,37 @@ function seedPriceProblem(price, label) {
   if (!price.recurring) return `${label}: not a recurring Price`;
   if (!['month', 'year'].includes(price.recurring.interval)) return `${label}: unexpected interval ${price.recurring.interval}`;
   if (![1, 3, 6, 12].includes(price.recurring.interval_count)) return `${label}: unexpected interval_count ${price.recurring.interval_count}`;
+  // ISO-1630 (T1a loose end): a sandbox key seeding a live Price (or vice versa) used to go
+  // unnoticed — stripeIsLive() with no Price argument reads the configured key's own prefix, so
+  // this is the key's mode, not a guess derived from the Price being validated.
+  if (price.livemode !== stripeIsLive()) return `${label}: livemode is ${price.livemode}, but the configured key is ${stripeIsLive() ? 'live' : 'sandbox'}`;
   return null;
 }
 
 const productIdOf = price => (typeof price.product === 'string' ? price.product : price.product.id);
+
+// ISO-1630: whether this instance's Stripe key is a live one — the prefix (`sk_`/`rk_` restricted
+// keys both carry `_live_`/`_test_` right after) decides on its own for every ordinary caller. The
+// one caller that has a Price in hand before it has ever looked at a key it minted itself
+// (seedPriceProblem below, validating a Price against the *key's* mode) passes it in as a
+// fallback — never the other way around: a key's own prefix is always trusted over a Price's
+// `livemode` when both are available, since the key is what actually decides what any write here
+// would do.
+export function stripeIsLive(price) {
+  const key = process.env.STRIPE_API_KEY || '';
+  if (/^(sk|rk)_live_/.test(key)) return true;
+  if (/^(sk|rk)_test_/.test(key)) return false;
+  return !!price?.livemode;
+}
+
+// The live gate (plan §4 of ISO-1619/ISO-1630): every admin catalog write that touches Stripe is
+// refused with 423 `live-writes-disabled` against a live key unless an operator has explicitly
+// set `BILLING_ADMIN_LIVE=1` — the one override this issue allows, and the one env var server.js
+// needs to decide `liveWritesDisabled` for the admin UI (GET /api/admin/billing/catalog) without
+// duplicating this check.
+export function liveWritesDisabled() {
+  return stripeIsLive() && process.env.BILLING_ADMIN_LIVE !== '1';
+}
 
 // Boot-time, idempotent (ISO-1623 §3): fills billing_plans/billing_prices from the env's own
 // STRIPE_PRICE_* the very first time an instance boots with the catalog migration applied — never
@@ -283,7 +314,10 @@ export async function applyStripeEvent(pool, event) {
       }
       const priceId = obj.items?.data?.[0]?.price?.id || null;
       const priceAmount = obj.items?.data?.[0]?.price?.unit_amount ?? null;
-      const firstPeriod = priceId != null && priceId === process.env.STRIPE_PRICE_INTRO;
+      // ISO-1630: the catalog's own kind='intro' column, not a straight env-var compare — see
+      // isIntroPrice's own comment (store.js) for why that stopped being true once an admin could
+      // mint a new intro Price through the catalog instead of STRIPE_PRICE_INTRO.
+      const firstPeriod = await isIntroPrice(pool, priceId);
       await upsertSubscription(pool, obj.id, userId, {
         status: obj.status,
         plan: (await planFromPrice(pool, priceId)) || obj.metadata?.plan || null,
@@ -337,7 +371,7 @@ export async function applyStripeEvent(pool, event) {
       const invoicePriceId = obj.lines?.data?.[0]?.price?.id
         ?? obj.lines?.data?.[0]?.pricing?.price_details?.price
         ?? null;
-      const isFullPriceInvoice = invoicePriceId != null && invoicePriceId !== process.env.STRIPE_PRICE_INTRO;
+      const isFullPriceInvoice = invoicePriceId != null && !(await isIntroPrice(pool, invoicePriceId));
       const data = { status: 'active', lastInvoiceStatus: 'paid' };
       // Recorded once — the first full-price invoice after a first (intro) period — never
       // overwritten by a later renewal.
@@ -518,4 +552,213 @@ export async function tickStripeCleanup(pool) {
       await bumpStripeCleanupFailure(pool, row.id, e.message);
     }
   }
+}
+
+/* ---------- admin catalog writes (ISO-1619/ISO-1630) ----------
+ * Called only after server.js has already done requireAdmin, the live gate (liveWritesDisabled
+ * above, for whichever of these touch Stripe), proveOwner and the `reason ≥ 10` check — this file
+ * orchestrates Stripe + the DB, not auth. The shape constants below mirror migrations/010's own
+ * CHECK constraints, so a bad request is refused with 400 here rather than a raw 23514 from
+ * Postgres.
+ */
+const CATALOG_INTERVALS = ['month', 'year'];
+const CATALOG_INTERVAL_COUNTS = [1, 3, 6, 12];
+export const validPlanId = id => typeof id === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(id);
+export const validDisplay = d => !!d && typeof d === 'object' && !Array.isArray(d)
+  && typeof d['pt-BR']?.name === 'string' && d['pt-BR'].name.trim().length > 0;
+export const validInterval = i => CATALOG_INTERVALS.includes(i);
+export const validIntervalCount = n => CATALOG_INTERVAL_COUNTS.includes(n);
+export const validUnitAmount = n => Number.isInteger(n) && n >= 100 && n <= 1000000;
+
+// The idempotency wrapper every Stripe-touching write below shares (createOffer,
+// setPlanAvailability, createPriceVersion, publishPriceVersion) — claims the Idempotency-Key first
+// (store.js's claimBillingAdminAction, the same one-time-claim shape claimStripeEvent uses for a
+// webhook event), so a replay of the same key — the same confirm dialog submitted twice, a client
+// retry after a dropped response — is handed back the first attempt's own result instead of
+// calling Stripe a second time. `fn` does the actual Stripe + DB work and returns either
+// `{ error, code, stripeIds? }` or `{ after, before?, stripeIds }`; `after` is exactly the payload
+// server.js answers the request with, so a replay can hand it back verbatim.
+async function runBillingAdminAction(pool, { idempotencyKey, actor, targetUserId, action, reason, request }, fn) {
+  const claim = await claimBillingAdminAction(pool, { idempotencyKey, actorId: actor.id, targetUserId, action, reason, request });
+  if (!claim.claimed) {
+    const row = claim.row;
+    if (row.status === 'succeeded') return { ok: true, replay: true, after: row.after };
+    if (row.status === 'failed') return { error: row.error || 'the previous attempt with this Idempotency-Key failed', code: 'action-failed', replay: true };
+    return { error: 'a previous attempt with this Idempotency-Key is still in progress', code: 'action-in-progress' };
+  }
+  let result;
+  try { result = await fn(); }
+  catch (e) {
+    await finishBillingAdminAction(pool, claim.row.id, { status: 'failed', error: e.message });
+    throw e;
+  }
+  if (result.error) {
+    await finishBillingAdminAction(pool, claim.row.id, { status: 'failed', error: result.error, stripeIds: result.stripeIds });
+    return result;
+  }
+  await finishBillingAdminAction(pool, claim.row.id, {
+    status: 'succeeded', before: result.before ?? null, after: result.after ?? null, stripeIds: result.stripeIds
+  });
+  return { ok: true, after: result.after };
+}
+
+// "Criar oferta" (plan §3): mints a `prices.create` with `active:false` and `metadata.bf_plan`/
+// `bf_version` (what reconcile below matches on), then persists the plan (`available:false`) and
+// its first Price (`draft`) in one DB transaction. Reuses the catalog's single Stripe Product
+// (`getBillingProductId`) — refuses with `no-product` rather than ever minting a second one.
+export async function createOffer(pool, { id, display, interval, intervalCount, unitAmount, decisionRef, actor, reason, idempotencyKey }) {
+  return runBillingAdminAction(pool, {
+    idempotencyKey, actor, targetUserId: null, action: 'catalog.plan.create', reason,
+    request: { id, display, interval, intervalCount, unitAmount, decisionRef }
+  }, async () => {
+    if (await getCatalogPlan(pool, id)) return { error: 'a plan with this id already exists', code: 'id-taken' };
+    const productId = await getBillingProductId(pool);
+    if (!productId) return { error: 'the catalog has no known Stripe product yet — run stripe:setup first', code: 'no-product' };
+    const introPrice = await getCurrentIntroPrice(pool);
+    const sortOrder = await nextPlanSortOrder(pool);
+    const price = await getStripe().prices.create({
+      product: productId, currency: 'brl', unit_amount: unitAmount,
+      recurring: { interval, interval_count: intervalCount },
+      active: false, metadata: { bf_plan: id, bf_version: '1' }
+    }, { idempotencyKey });
+    const result = await insertDraftPlanAndPrice(pool,
+      { id, display, interval, intervalCount, sortOrder, introPriceId: introPrice?.id || null },
+      {
+        id: price.id, unitAmount: price.unit_amount, currency: price.currency, interval: price.recurring.interval,
+        intervalCount: price.recurring.interval_count, livemode: price.livemode, stripeProductId: productIdOf(price),
+        createdBy: actor.id, decisionRef
+      }
+    );
+    if (result.error) return { ...result, stripeIds: { priceId: price.id } };
+    return { ok: true, after: { plan: result.plan }, stripeIds: { priceId: price.id, productId } };
+  });
+}
+
+// "Ativar/desativar plano": Stripe's own `prices.update active` on the plan's *current* Price,
+// then the DB compare-and-set (store.js's setPlanAvailabilityRow) — in that order, so a version
+// race lost after Stripe already flipped is reported as `stale-after-stripe`, never silently
+// leaving Stripe and the DB disagreeing about whether the plan is on sale.
+export async function setPlanAvailability(pool, { id, version, available, actor, reason, idempotencyKey }) {
+  return runBillingAdminAction(pool, {
+    idempotencyKey, actor, targetUserId: null, action: available ? 'catalog.plan.activate' : 'catalog.plan.deactivate', reason,
+    request: { id, version, available }
+  }, async () => {
+    const plan = await getCatalogPlan(pool, id);
+    if (!plan) return { error: 'no such plan', code: 'not-found' };
+    if (plan.version !== version) return { error: 'changed since you loaded it', code: 'stale', current: plan };
+    if (!plan.currentPriceId) return { error: 'this plan has no published price yet', code: 'no-current-price' };
+    await getStripe().prices.update(plan.currentPriceId, { active: available }, { idempotencyKey });
+    const result = await setPlanAvailabilityRow(pool, id, version, available);
+    if (result.error) return { ...result, stripeIds: { priceId: plan.currentPriceId } };
+    return { ok: true, after: { plan: result.plan }, before: plan, stripeIds: { priceId: plan.currentPriceId } };
+  });
+}
+
+// "Nova versão de valor": a second (or later) `draft` Price for a plan that already sells one —
+// `publishPriceVersion` below is the separate, explicit act that makes it `current`.
+export async function createPriceVersion(pool, { planId, unitAmount, decisionRef, actor, reason, idempotencyKey }) {
+  return runBillingAdminAction(pool, {
+    idempotencyKey, actor, targetUserId: null, action: 'catalog.price.new-version', reason,
+    request: { planId, unitAmount, decisionRef }
+  }, async () => {
+    const plan = await getCatalogPlan(pool, planId);
+    if (!plan) return { error: 'no such plan', code: 'not-found' };
+    const productId = await getBillingProductId(pool);
+    if (!productId) return { error: 'the catalog has no known Stripe product yet', code: 'no-product' };
+    const stripePrice = await getStripe().prices.create({
+      product: productId, currency: 'brl', unit_amount: unitAmount,
+      recurring: { interval: plan.interval, interval_count: plan.intervalCount },
+      active: false, metadata: { bf_plan: planId, bf_version: String(plan.version) }
+    }, { idempotencyKey });
+    const row = await insertDraftPrice(pool, {
+      id: stripePrice.id, planId, unitAmount: stripePrice.unit_amount, currency: stripePrice.currency,
+      interval: stripePrice.recurring.interval, intervalCount: stripePrice.recurring.interval_count,
+      livemode: stripePrice.livemode, stripeProductId: productIdOf(stripePrice), createdBy: actor.id, decisionRef
+    });
+    return { ok: true, after: { price: row }, stripeIds: { priceId: row.id, productId } };
+  });
+}
+
+// "Publicar versão": Stripe first (activates the new Price, deactivates the old one — plan §3),
+// then one DB transaction flips both Prices' `state` and the plan's `current_price_id` together.
+// Distinct derived Idempotency-Keys per Stripe call: Stripe's own idempotency cache is keyed on
+// (key, request) and refuses a second, different request under the same key outright, so reusing
+// one key for both the activate and the deactivate call would throw on the second call, every
+// time. Publishing never migrates an existing subscriber onto the new Price (grandfathering,
+// ISO-1619 principle #2) — only Checkout reading `current_price_id` for new sales changes.
+export async function publishPriceVersion(pool, { planId, newPriceId, version, actor, reason, idempotencyKey }) {
+  return runBillingAdminAction(pool, {
+    idempotencyKey, actor, targetUserId: null, action: 'catalog.price.publish', reason,
+    request: { planId, newPriceId, version }
+  }, async () => {
+    const plan = await getCatalogPlan(pool, planId);
+    if (!plan) return { error: 'no such plan', code: 'not-found' };
+    if (plan.version !== version) return { error: 'changed since you loaded it', code: 'stale', current: plan };
+    const newPrice = await getPriceById(pool, newPriceId);
+    if (!newPrice || newPrice.planId !== planId || newPrice.state !== 'draft') {
+      return { error: 'not a draft price of this plan', code: 'invalid-price' };
+    }
+    const oldPriceId = plan.currentPriceId;
+    const stripe = getStripe();
+    await stripe.prices.update(newPriceId, { active: true }, { idempotencyKey: `${idempotencyKey}:activate` });
+    if (oldPriceId) await stripe.prices.update(oldPriceId, { active: false }, { idempotencyKey: `${idempotencyKey}:deactivate` });
+    const result = await publishPriceVersionRows(pool, { planId, version, newPriceId, oldPriceId });
+    if (result.error) return { ...result, stripeIds: { newPriceId, oldPriceId } };
+    return { ok: true, after: { plan: result.plan }, before: plan, stripeIds: { newPriceId, oldPriceId } };
+  });
+}
+
+// "Reorder" and the admin's full catalog read have no Stripe side at all — straight passthroughs
+// to store.js, kept here only so server.js has one module to import the whole admin surface from.
+export async function reorderCatalog(pool, order) {
+  return reorderPlans(pool, order);
+}
+export async function editPlanDisplay(pool, id, version, display) {
+  return updatePlanDisplay(pool, id, version, display);
+}
+export async function getCatalogAdminView(pool) {
+  return listCatalogAdmin(pool);
+}
+export async function getBillingAdminActions(pool, limit) {
+  return listBillingAdminActions(pool, limit);
+}
+
+// Reconcile (plan §3): every Stripe Price tagged `metadata.bf_plan` that this catalog doesn't
+// know about yet is adopted as a `draft` (never auto-published — see insertReconciledDraftPrice's
+// own comment); every `subscriptions.priceId` this catalog has never heard of is read straight off
+// Stripe and recorded `retired` (never invents a value). Read-only against Stripe — no live gate,
+// this never writes to Stripe at all.
+export async function reconcileCatalog(pool) {
+  const productId = await getBillingProductId(pool);
+  if (!productId) return { error: 'the catalog has no known Stripe product yet', code: 'no-product' };
+  const stripe = getStripe();
+  const { data: stripePrices } = await stripe.prices.list({ product: productId, limit: 100 });
+  const adopted = [];
+  for (const price of stripePrices) {
+    const planId = price.metadata?.bf_plan;
+    if (!planId) continue; // not ours — a Price minted by hand in the Dashboard for something else
+    if (await getPriceById(pool, price.id)) continue; // already known
+    if (!(await getCatalogPlan(pool, planId))) continue; // its own plan doesn't exist here — nothing sane to attach it to
+    const row = await insertReconciledDraftPrice(pool, {
+      id: price.id, planId, unitAmount: price.unit_amount, currency: price.currency,
+      interval: price.recurring?.interval, intervalCount: price.recurring?.interval_count,
+      livemode: price.livemode, stripeProductId: productIdOf(price)
+    });
+    if (row) adopted.push(row.id);
+  }
+  const retired = [];
+  for (const priceId of await getUnknownSubscriptionPriceIds(pool)) {
+    let price;
+    try { price = await stripe.prices.retrieve(priceId); }
+    catch { continue; } // gone from Stripe too — nothing left to adopt, nothing to invent
+    const metaPlanId = price.metadata?.bf_plan;
+    const planId = metaPlanId && (await getCatalogPlan(pool, metaPlanId)) ? metaPlanId : null;
+    const row = await insertReconciledRetiredPrice(pool, {
+      id: price.id, planId, unitAmount: price.unit_amount, currency: price.currency,
+      interval: price.recurring?.interval, intervalCount: price.recurring?.interval_count,
+      livemode: price.livemode, stripeProductId: productIdOf(price)
+    });
+    if (row) retired.push(row.id);
+  }
+  return { ok: true, adopted, retired };
 }

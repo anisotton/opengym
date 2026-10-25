@@ -1035,6 +1035,21 @@ export async function getCurrentIntroPrice(pool) {
   return rows.length ? rowToBillingPrice(rows[0]) : null;
 }
 
+// ISO-1630 (T1a loose end): whether `priceId` is THE account-wide first-period Price — checked
+// against `kind = 'intro'` in ANY state (a retired intro Price still named a first period for
+// whoever was actually sold it, same reasoning as getPlanIdForPrice above), falling back to
+// STRIPE_PRICE_INTRO only while the catalog has never been seeded. applyStripeEvent (billing.js)
+// used to compare straight against `process.env.STRIPE_PRICE_INTRO`, which stopped being true the
+// moment an admin minted a new intro Price through the catalog instead of the env var.
+export async function isIntroPrice(pool, priceId) {
+  if (!priceId) return false;
+  if (await isBillingCatalogSeeded(pool)) {
+    const { rows } = await pool.query("SELECT 1 FROM billing_prices WHERE id = $1 AND kind = 'intro'", [priceId]);
+    return rows.length > 0;
+  }
+  return priceId === process.env.STRIPE_PRICE_INTRO;
+}
+
 // The upcoming full-plan charge during a first period (billing.js's nextChargeAmountCents): the
 // plan's *current* recurring Price, never the intro Price the subscription's own item still is.
 export async function getCurrentPriceAmountForPlan(pool, planId) {
@@ -1099,6 +1114,252 @@ export async function seedBillingCatalog(pool, { plans, intro }) {
       await client.query('UPDATE billing_plans SET current_price_id = $1 WHERE id = $2', [plan.price.id, plan.id]);
     }
   });
+}
+
+/* ---------- billing catalog admin (ISO-1619/ISO-1630) ----------
+ * Everything the admin catalog routes (server.js) need beyond the read path above. Every write
+ * that also touches Stripe (create/availability/new price version/publish) is orchestrated from
+ * billing.js, not here — this file stays pure DB, same split as the rest of the module. A version-
+ * gated write is a lock-free compare-and-set (`UPDATE ... WHERE version = $n`), same shape as
+ * `user_state.rev` (CLAUDE.md) rather than `FOR UPDATE`: the row lock would otherwise have to stay
+ * open across the Stripe network call in between, which this deliberately avoids.
+ */
+
+// Any row's stripe_product_id — every Price this app has ever known about (seeded or admin-
+// created) shares the one Product `scripts/stripe-setup.mjs` creates, so the first row answers for
+// all of them. Null only on a totally fresh install whose catalog has never been seeded or
+// hand-created — the admin create/reconcile routes refuse with `no-product` rather than minting a
+// second Product Stripe-side.
+export async function getBillingProductId(pool) {
+  const { rows } = await pool.query('SELECT stripe_product_id FROM billing_prices LIMIT 1');
+  return rows.length ? rows[0].stripe_product_id : null;
+}
+
+export async function nextPlanSortOrder(pool) {
+  const { rows } = await pool.query('SELECT coalesce(max(sort_order), 0) + 1 AS n FROM billing_plans');
+  return rows[0].n;
+}
+
+// The full admin view (GET /api/admin/billing/catalog): every plan regardless of `available`,
+// every Price regardless of `state`, and how many live `subscriptions` rows are billed off each
+// Price — read off the same jsonb `priceId` the 402 gate and the webhook already trust, not a
+// second source of truth. `liveWritesDisabled` is server.js's own job (it needs `BILLING_ADMIN_LIVE`,
+// an env var this file has no business reading).
+export async function listCatalogAdmin(pool) {
+  const [{ rows: plans }, { rows: prices }, { rows: counts }] = await Promise.all([
+    pool.query('SELECT * FROM billing_plans ORDER BY sort_order'),
+    pool.query('SELECT * FROM billing_prices ORDER BY created_at'),
+    pool.query("SELECT data->>'priceId' AS price_id, count(*)::int AS n FROM subscriptions WHERE data->>'priceId' IS NOT NULL GROUP BY 1")
+  ]);
+  const countByPrice = Object.fromEntries(counts.map(r => [r.price_id, r.n]));
+  const pricesByPlan = {};
+  const introPrices = [];
+  for (const row of prices) {
+    const price = { ...rowToBillingPrice(row), subscriptionCount: countByPrice[row.id] || 0 };
+    if (row.kind === 'intro') introPrices.push(price);
+    else (pricesByPlan[row.plan_id] ||= []).push(price);
+  }
+  return {
+    plans: plans.map(p => ({ ...rowToBillingPlan(p), prices: pricesByPlan[p.id] || [] })),
+    introPrices
+  };
+}
+
+// "Criar oferta" (plan §3): a brand-new plan, `available=false`, with its first Price already a
+// `draft` — mirrors seedBillingCatalog's own INSERT shape, minus the `current`/`published_at` this
+// one deliberately withholds. One transaction so a crash between the two INSERTs can never leave a
+// plan with no Price at all. `23505` on the plan id is reported, not thrown — an admin re-submitting
+// the same slug after a first attempt failed partway (the Stripe Price already exists, caught by
+// the idempotency claim instead) must see a clean 409, not a 500.
+export async function insertDraftPlanAndPrice(pool, plan, price) {
+  return withTransaction(pool, async client => {
+    try {
+      await client.query(
+        `INSERT INTO billing_plans (id, display, interval, interval_count, sort_order, available, intro_price_id)
+         VALUES ($1,$2,$3,$4,$5,false,$6)`,
+        [plan.id, plan.display, plan.interval, plan.intervalCount, plan.sortOrder, plan.introPriceId]
+      );
+    } catch (e) {
+      if (e.code === '23505') return { error: 'a plan with this id already exists', code: 'id-taken' };
+      throw e;
+    }
+    await client.query(
+      `INSERT INTO billing_prices (id, plan_id, kind, unit_amount, currency, interval, interval_count, livemode, stripe_product_id, state, created_by, decision_ref)
+       VALUES ($1,$2,'recurring',$3,$4,$5,$6,$7,$8,'draft',$9,$10)`,
+      [price.id, plan.id, price.unitAmount, price.currency, price.interval, price.intervalCount, price.livemode, price.stripeProductId, price.createdBy, price.decisionRef || null]
+    );
+    const { rows: [row] } = await client.query('SELECT * FROM billing_plans WHERE id = $1', [plan.id]);
+    return { ok: true, plan: rowToBillingPlan(row) };
+  });
+}
+
+// "Editar apresentação" (plan §3): display text only, never price/interval/availability — the
+// compare-and-set contract GET/PUT /api/data already gives the client (`stale` + the current row,
+// not a silent overwrite).
+export async function updatePlanDisplay(pool, id, version, display) {
+  const { rows } = await pool.query(
+    'UPDATE billing_plans SET display = $1, version = version + 1, updated_at = now() WHERE id = $2 AND version = $3 RETURNING *',
+    [display, id, version]
+  );
+  if (rows.length) return { ok: true, plan: rowToBillingPlan(rows[0]) };
+  const current = await getCatalogPlan(pool, id);
+  return current ? { error: 'changed since you loaded it', code: 'stale', current } : { error: 'no such plan', code: 'not-found' };
+}
+
+// "Reordenar em lote" (POST .../order): `order` must name exactly the current plan set — a partial
+// list would leave the plans it omits at whatever sort_order they already had, silently
+// interleaved with the reordered ones. Does not touch `version` (plan §3: this route "não passa
+// pelo live gate", and it is not a financial action either — nothing here is logged to
+// billing_admin_actions).
+export async function reorderPlans(pool, order) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT id FROM billing_plans');
+    const known = new Set(rows.map(r => r.id));
+    if (order.length !== known.size || !order.every(id => known.has(id))) {
+      return { error: 'order must name exactly the current set of plans', code: 'invalid-order' };
+    }
+    for (const [i, id] of order.entries()) {
+      await client.query('UPDATE billing_plans SET sort_order = $1 WHERE id = $2', [i + 1, id]);
+    }
+    const { rows: plans } = await client.query('SELECT * FROM billing_plans ORDER BY sort_order');
+    return { ok: true, plans: plans.map(rowToBillingPlan) };
+  });
+}
+
+// "Ativar/desativar plano": the DB half of the compare-and-set — billing.js calls Stripe first
+// (`prices.update` on the plan's current Price) and only reaches this once that succeeded, so a
+// version race lost *here* (after Stripe already flipped) is reported as `stale-after-stripe`,
+// distinct from the ordinary `stale` a caller can just retry against the fresh row.
+export async function setPlanAvailabilityRow(pool, id, version, available) {
+  const { rows } = await pool.query(
+    'UPDATE billing_plans SET available = $1, version = version + 1, updated_at = now() WHERE id = $2 AND version = $3 RETURNING *',
+    [available, id, version]
+  );
+  if (rows.length) return { ok: true, plan: rowToBillingPlan(rows[0]) };
+  const current = await getCatalogPlan(pool, id);
+  return current ? { error: 'changed since you loaded it', code: 'stale', current } : { error: 'no such plan', code: 'not-found' };
+}
+
+// "Nova versão de valor": a second (or later) `draft` Price for a plan that already has a
+// `current` one — never touches the plan row itself (publishing is the separate, explicit act that
+// does). `decisionRef` is the free-text pointer migrations/010 reserves for exactly this.
+export async function insertDraftPrice(pool, price) {
+  const { rows } = await pool.query(
+    `INSERT INTO billing_prices (id, plan_id, kind, unit_amount, currency, interval, interval_count, livemode, stripe_product_id, state, created_by, decision_ref)
+     VALUES ($1,$2,'recurring',$3,$4,$5,$6,$7,$8,'draft',$9,$10) RETURNING *`,
+    [price.id, price.planId, price.unitAmount, price.currency, price.interval, price.intervalCount, price.livemode, price.stripeProductId, price.createdBy, price.decisionRef || null]
+  );
+  return rowToBillingPrice(rows[0]);
+}
+
+// "Publicar versão": the DB half, after billing.js has already told Stripe to activate the new
+// Price and deactivate the old one. One transaction flips both Prices' `state` (the immutability
+// trigger allows exactly this column) and the plan's `current_price_id` together — a subscriber
+// still billed off the now-`retired` Price keeps reading its name/amount forever (ISO-1619
+// principle #2; nothing here migrates a subscriber onto the new Price, by design — grandfathering).
+export async function publishPriceVersionRows(pool, { planId, version, newPriceId, oldPriceId }) {
+  return withTransaction(pool, async client => {
+    const { rows } = await client.query('SELECT * FROM billing_plans WHERE id = $1 AND version = $2 FOR UPDATE', [planId, version]);
+    if (!rows.length) {
+      const current = await getCatalogPlan(pool, planId);
+      return current ? { error: 'changed since you loaded it (Stripe already switched)', code: 'stale-after-stripe', current } : { error: 'no such plan', code: 'not-found' };
+    }
+    // The old Price has to give up `current` before the new one can claim it — the partial
+    // unique index (`billing_prices_one_current_per_plan`) allows at most one `current` row per
+    // plan_id at any instant, so doing this the other way round would collide with the row this
+    // is about to replace instead of the row it is replacing it with.
+    if (oldPriceId) await client.query("UPDATE billing_prices SET state = 'retired', retired_at = now() WHERE id = $1", [oldPriceId]);
+    await client.query("UPDATE billing_prices SET state = 'current', published_at = now() WHERE id = $1", [newPriceId]);
+    const { rows: [plan] } = await client.query(
+      'UPDATE billing_plans SET current_price_id = $1, version = version + 1, updated_at = now() WHERE id = $2 RETURNING *',
+      [newPriceId, planId]
+    );
+    return { ok: true, plan: rowToBillingPlan(plan) };
+  });
+}
+
+// Reconcile (plan §3): a Price Stripe knows about that this app doesn't yet — tagged with this
+// app's own `metadata.bf_plan` (so a Price created by hand in the Dashboard for something else
+// entirely is never swept in by accident) — is adopted as a `draft`, never auto-published: `active`
+// in Stripe is not the same claim as "this is the plan's `current` Price" in our own catalog, and
+// only "publicar versão" gets to make that claim. `ON CONFLICT DO NOTHING` guards two concurrent
+// reconciles, not the normal case (the caller already filtered to unknown ids).
+export async function insertReconciledDraftPrice(pool, price) {
+  const { rows } = await pool.query(
+    `INSERT INTO billing_prices (id, plan_id, kind, unit_amount, currency, interval, interval_count, livemode, stripe_product_id, state)
+     VALUES ($1,$2,'recurring',$3,$4,$5,$6,$7,$8,'draft')
+     ON CONFLICT (id) DO NOTHING RETURNING *`,
+    [price.id, price.planId, price.unitAmount, price.currency, price.interval, price.intervalCount, price.livemode, price.stripeProductId]
+  );
+  return rows.length ? rowToBillingPrice(rows[0]) : null;
+}
+
+// A subscription billed off a priceId this catalog has never heard of (pre-ISO-1623 history, or a
+// Price minted outside the admin flow) — reconcile's other half. Never invents an amount: the
+// caller reads it straight off Stripe (`stripe.prices.retrieve`) before this is called.
+export async function getUnknownSubscriptionPriceIds(pool) {
+  const { rows } = await pool.query(`
+    SELECT DISTINCT data->>'priceId' AS price_id FROM subscriptions
+    WHERE data->>'priceId' IS NOT NULL AND data->>'priceId' NOT IN (SELECT id FROM billing_prices)
+  `);
+  return rows.map(r => r.price_id);
+}
+
+// Recorded `retired` straight away — read off Stripe, grandfathered, never sellable again
+// (plan_id is whichever plan its own `metadata.bf_plan` names, if this catalog still has that
+// plan; NULL otherwise — exactly the "never invents a value" rule, applied to the linkage too).
+export async function insertReconciledRetiredPrice(pool, price) {
+  const { rows } = await pool.query(
+    `INSERT INTO billing_prices (id, plan_id, kind, unit_amount, currency, interval, interval_count, livemode, stripe_product_id, state, retired_at)
+     VALUES ($1,$2,'recurring',$3,$4,$5,$6,$7,$8,'retired', now())
+     ON CONFLICT (id) DO NOTHING RETURNING *`,
+    [price.id, price.planId, price.unitAmount, price.currency, price.interval, price.intervalCount, price.livemode, price.stripeProductId]
+  );
+  return rows.length ? rowToBillingPrice(rows[0]) : null;
+}
+
+/* ---------- billing admin actions (ISO-1619/ISO-1630) ----------
+ * The audit trail + idempotency claim every *financial* admin action (one that touches Stripe)
+ * writes to — migrations/010's own `reason text NOT NULL CHECK (length(reason) >= 10)` is what
+ * actually enforces the "reason ≥ 10" rule from the plan, not application code. `claimBillingAdminAction`
+ * is the same INSERT ... ON CONFLICT (idempotency_key) DO NOTHING-and-check-rowCount shape as
+ * `claimStripeEvent` above: whichever request's INSERT lands gets to call Stripe; a replay of the
+ * same Idempotency-Key (the same confirm dialog submitted twice, a client retry after a dropped
+ * response) finds the row already there and is hand back its stored result instead.
+ */
+function rowToBillingAdminAction(row) {
+  return {
+    id: Number(row.id), idempotencyKey: row.idempotency_key, actorId: row.actor_id, targetUserId: row.target_user_id,
+    action: row.action, reason: row.reason, request: row.request, before: row.before, after: row.after,
+    stripeIds: row.stripe_ids, status: row.status, error: row.error,
+    createdAt: row.created_at.toISOString(), completedAt: row.completed_at ? row.completed_at.toISOString() : null
+  };
+}
+
+export async function claimBillingAdminAction(pool, { idempotencyKey, actorId, targetUserId, action, reason, request }) {
+  const { rows } = await pool.query(
+    `INSERT INTO billing_admin_actions (idempotency_key, actor_id, target_user_id, action, reason, request, status)
+     VALUES ($1,$2,$3,$4,$5,$6,'pending')
+     ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
+    [idempotencyKey, actorId, targetUserId || null, action, reason, JSON.stringify(request || {})]
+  );
+  if (rows.length) return { claimed: true, row: rowToBillingAdminAction(rows[0]) };
+  const existing = await pool.query('SELECT * FROM billing_admin_actions WHERE idempotency_key = $1', [idempotencyKey]);
+  return { claimed: false, row: rowToBillingAdminAction(existing.rows[0]) };
+}
+
+export async function finishBillingAdminAction(pool, id, { status, before, after, stripeIds, error }) {
+  const { rows } = await pool.query(
+    `UPDATE billing_admin_actions SET status = $2, before = $3, after = $4, stripe_ids = $5, error = $6, completed_at = now()
+     WHERE id = $1 RETURNING *`,
+    [id, status, before ?? null, after ?? null, JSON.stringify(stripeIds || {}), error || null]
+  );
+  return rowToBillingAdminAction(rows[0]);
+}
+
+export async function listBillingAdminActions(pool, limit = 100) {
+  const { rows } = await pool.query('SELECT * FROM billing_admin_actions ORDER BY created_at DESC LIMIT $1', [limit]);
+  return rows.map(rowToBillingAdminAction);
 }
 
 /* ---------- programs (ISO-1485) ----------
