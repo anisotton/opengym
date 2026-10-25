@@ -1957,7 +1957,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': 'Du hast schon 20 aktive Einladungen. Widerrufe eine, um eine weitere zu erstellen.',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': 'Du hast schon einen Lehrer verknüpft. Trenne die Verbindung in den Einstellungen, bevor du eine neue Einladung annimmst.',
   'You can unlink anytime, in Settings.': 'Du kannst die Verbindung jederzeit in den Einstellungen trennen.',
-  'You no longer follow {0}.': 'Du folgst {0} nicht mehr.',
+  'You no longer have access to this student.': 'Du hast keinen Zugriff mehr auf diesen Schüler.',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': 'Du siehst ihre Trainings nicht mehr. Sie behalten die Routinen, die du zugewiesen hast — die werden dann ihre eigenen. Deine Notizen über sie werden gelöscht.',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': 'Du wurdest von einem Lehrer auf Brilhart Fitness eingeladen. Melde dich an oder erstelle dein Konto, um fortzufahren.',
   'Your conversations with the Coach': 'Deine Unterhaltungen mit dem Coach',

@@ -1991,7 +1991,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': 'لديك بالفعل 20 دعوة نشطة. اسحب واحدة لإنشاء دعوة أخرى.',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': 'لديك بالفعل معلم مرتبط بحسابك. ألغِ الربط من الإعدادات قبل قبول دعوة جديدة.',
   'You can unlink anytime, in Settings.': 'يمكنك إلغاء الربط في أي وقت، من الإعدادات.',
-  'You no longer follow {0}.': 'لم تعد تتابع {0}.',
+  'You no longer have access to this student.': 'لم يعد لديك إمكانية الوصول إلى هذا الطالب.',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': 'ستتوقف عن رؤية تمارينهم. يحتفظون بالروتينات التي كلّفتهم بها — تصبح خاصة بهم. وتُحذف ملاحظاتك عنهم.',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': 'دعاك معلم على Brilhart Fitness. سجّل الدخول أو أنشئ حسابك للمتابعة.',
   'Your conversations with the Coach': 'محادثاتك مع المدرب',

@@ -1938,7 +1938,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': 'Zaten 20 aktif davetin var. Yenisini oluşturmak için birini geri al.',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': "Zaten bağlı bir eğitmenin var. Yeni bir daveti kabul etmeden önce Ayarlar'dan bağlantıyı kes.",
   'You can unlink anytime, in Settings.': "İstediğin zaman Ayarlar'dan bağlantıyı kesebilirsin.",
-  'You no longer follow {0}.': "Artık {0}'ı takip etmiyorsun.",
+  'You no longer have access to this student.': 'Bu öğrenciye artık erişimin yok.',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': 'Onun antrenmanlarını artık göremezsin. Atadığın rutinleri o korur — bunlar onun olur. Onunla ilgili notların silinir.',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': "Brilhart Fitness'te bir eğitmen tarafından davet edildin. Devam etmek için giriş yap veya hesabını oluştur.",
   'Your conversations with the Coach': "Koç'la konuşmaların",

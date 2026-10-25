@@ -94,7 +94,46 @@ describe('a 403 from any sub-tab drops the whole fiche, not just that tab', () =
     await act(async () => { notesTab.click() })
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
 
-    expect(host.textContent).toContain('You no longer follow Marina.')
+    expect(host.textContent).toContain('You no longer have access to this student.')
     expect(host.textContent).not.toContain('New note')
+  })
+})
+
+// ISO-1632: the "no access" screen must not depend on a name that only exists if
+// GET /api/teacher/students happened to already have this id cached in this session — on a
+// fresh SPA load (reload, new tab) that list lookup never finds the id, for either reason the
+// 403 can mean (D10's "never leak which case it is" design, api/server.js's requireStudentOf):
+// the bond just ended, or it never existed. Both must land on the same name-independent text,
+// not an empty-name sentence like "Você não acompanha mais ." (the bug as filed).
+describe('the "no access" screen never depends on a cached student name', () => {
+  it('shows the generic message on a direct reload after the student unlinked (no prior list fetch)', async () => {
+    useStore.setState({ S: { ...useStore.getState().S, teacherLibrary: [] }, user: { id: 'teacher-1', name: 'Ana', role: 'teacher' } })
+    vi.mocked(api).mockImplementation(path => {
+      // The student is already gone from the list — exactly what a fresh load sees after unlink.
+      if (path.startsWith('/api/teacher/students')) return Promise.resolve({ students: [] })
+      if (path.startsWith('/api/teacher/student?')) { const e = new Error('forbidden'); e.status = 403; return Promise.reject(e) }
+      return Promise.resolve({})
+    })
+
+    await act(async () => { root.render(<StudentDetail />) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    expect(host.textContent).toContain('You no longer have access to this student.')
+    expect(host.textContent).not.toContain('Você não acompanha mais .')
+  })
+
+  it('shows the same generic message for a teacher who was never linked to this student', async () => {
+    useStore.setState({ S: { ...useStore.getState().S, teacherLibrary: [] }, user: { id: 'teacher-2', name: 'Bea', role: 'teacher' } })
+    vi.mocked(api).mockImplementation(path => {
+      // Teacher B's own list never contained this student at all.
+      if (path.startsWith('/api/teacher/students')) return Promise.resolve({ students: [] })
+      if (path.startsWith('/api/teacher/student?')) { const e = new Error('forbidden'); e.status = 403; return Promise.reject(e) }
+      return Promise.resolve({})
+    })
+
+    await act(async () => { root.render(<StudentDetail />) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    expect(host.textContent).toContain('You no longer have access to this student.')
   })
 })

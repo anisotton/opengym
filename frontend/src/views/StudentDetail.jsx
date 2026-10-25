@@ -326,8 +326,13 @@ export default function StudentDetail() {
     onConfirm: () => api('/api/teacher/student/remove', { method: 'POST', body: JSON.stringify({ id }) }).then(() => nav('/alunos')).catch(() => toast(t('Could not save. Try again.')))
   })
 
+  // No-name message, by design: GET /api/teacher/student answers the same 403 for "never your
+  // student", "someone else's student" and "unlinked" (requireStudentOf, api/server.js), and the
+  // name only ever came from a *separate* GET /api/teacher/students list lookup that, in every
+  // one of those three cases, no longer (or never did) contain this id — so `name` can't be
+  // trusted here regardless of whether this session happened to cache it earlier (ISO-1632).
   if (error === 'denied') return <div className="empty">
-    <div className="muted small" style={{ marginBottom: 12 }}>{t('You no longer follow {0}.', name || '')}</div>
+    <div className="muted small" style={{ marginBottom: 12 }}>{t('You no longer have access to this student.')}</div>
     <Button variant="primary" onClick={() => nav('/alunos')}>{t('Back to Students')}</Button>
   </div>
 

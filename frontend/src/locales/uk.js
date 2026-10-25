@@ -1935,7 +1935,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': 'У тебе вже є 20 активних запрошень. Відклич одне, щоб створити інше.',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': 'У тебе вже є прив’язаний вчитель. Відв’яжись у Налаштуваннях, перш ніж приймати нове запрошення.',
   'You can unlink anytime, in Settings.': 'Ти можеш відв’язатися будь-коли в Налаштуваннях.',
-  'You no longer follow {0}.': 'Ти більше не стежиш за {0}.',
+  'You no longer have access to this student.': 'Ти більше не маєш доступу до цього учня.',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': 'Ти перестаєш бачити їхні тренування. Програми, які ти призначив, залишаються в них — вони стають їхніми. Твої нотатки про них видаляються.',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': 'Тебе запросив вчитель у Brilhart Fitness. Увійди або створи акаунт, щоб продовжити.',
   'Your conversations with the Coach': 'Твої розмови з Тренером',

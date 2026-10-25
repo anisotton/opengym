@@ -1941,7 +1941,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': 'Már 20 aktív meghívód van. Vonj vissza egyet, hogy újat hozhass létre.',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': 'Már van hozzárendelt tanárod. Szüntesd meg a kapcsolatot a Beállításokban, mielőtt elfogadsz egy új meghívót.',
   'You can unlink anytime, in Settings.': 'A kapcsolatot bármikor megszüntetheted, a Beállításokban.',
-  'You no longer follow {0}.': 'Már nem követed {0}-t.',
+  'You no longer have access to this student.': 'Már nincs hozzáférésed ehhez a tanulóhoz.',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': 'Nem fogod többé látni az edzéseiket. Megtartják a rutinokat, amelyeket kiosztottál — azok az övéik lesznek. A róluk írt megjegyzéseid törlődnek.',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': 'Egy tanár meghívott a Brilhart Fitnessre. Jelentkezz be, vagy hozd létre a fiókodat a folytatáshoz.',
   'Your conversations with the Coach': 'A beszélgetéseid az Edzővel',

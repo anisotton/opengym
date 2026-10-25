@@ -1938,7 +1938,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': '你已经有 20 个有效邀请。请撤销一个才能再生成新的。',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': '你已经关联了一位老师。请先在设置中解绑，再接受新的邀请。',
   'You can unlink anytime, in Settings.': '你可以随时在设置中解绑。',
-  'You no longer follow {0}.': '你不再关注 {0} 了。',
+  'You no longer have access to this student.': '你不再有权限查看该学员。',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': '你将无法再看到他们的训练。他们会保留你指派的训练计划——这些计划将归他们所有。你关于他们的备注会被删除。',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': '一位老师在 Brilhart Fitness 上邀请了你。请登录或创建账号以继续。',
   'Your conversations with the Coach': '你与教练的对话',

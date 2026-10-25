@@ -1949,7 +1949,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': 'คุณมีคำเชิญที่ใช้งานอยู่ครบ 20 รายการแล้ว เพิกถอนรายการหนึ่งเพื่อสร้างใหม่',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': 'คุณมีครูฝึกที่เชื่อมโยงอยู่แล้ว เลิกเชื่อมโยงในตั้งค่าก่อนยอมรับคำเชิญใหม่',
   'You can unlink anytime, in Settings.': 'คุณเลิกเชื่อมโยงได้ทุกเมื่อในตั้งค่า',
-  'You no longer follow {0}.': 'คุณไม่ได้ติดตาม {0} อีกต่อไป',
+  'You no longer have access to this student.': 'คุณไม่มีสิทธิ์เข้าถึงนักเรียนคนนี้อีกต่อไป',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': 'คุณจะไม่เห็นการออกกำลังกายของพวกเขาอีก พวกเขาจะยังเก็บรูทีนที่คุณมอบหมายไว้ — รูทีนเหล่านั้นจะกลายเป็นของพวกเขา และโน้ตของคุณเกี่ยวกับพวกเขาจะถูกลบ',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': 'คุณได้รับคำเชิญจากครูฝึกบน Brilhart Fitness เข้าสู่ระบบหรือสร้างบัญชีเพื่อดำเนินการต่อ',
   'Your conversations with the Coach': 'บทสนทนาของคุณกับโค้ช',

@@ -1938,7 +1938,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': 'आपके पास पहले से 20 सक्रिय इनवाइट हैं। नया जनरेट करने के लिए एक को रद्द करें।',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': 'आपसे पहले से एक शिक्षक जुड़ा है। नया इनवाइट स्वीकार करने से पहले सेटिंग्स में अनलिंक करें।',
   'You can unlink anytime, in Settings.': 'आप सेटिंग्स में कभी भी अनलिंक कर सकते हैं।',
-  'You no longer follow {0}.': 'आप अब {0} को फॉलो नहीं करते।',
+  'You no longer have access to this student.': 'अब आपके पास इस छात्र तक पहुंच नहीं है।',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': 'आप उनके वर्कआउट देखना बंद कर देंगे। आपने जो रूटीन असाइन की थीं, वे उनके पास रहेंगी — वे उनकी हो जाएँगी। उनके बारे में आपके नोट हटा दिए जाएँगे।',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': 'आपको Brilhart Fitness पर एक शिक्षक ने इनवाइट किया है। जारी रखने के लिए साइन इन करें या अपना खाता बनाएं।',
   'Your conversations with the Coach': 'कोच के साथ आपकी बातचीत',

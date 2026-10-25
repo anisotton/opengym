@@ -1938,7 +1938,7 @@ export default {
   'You already have 20 active invites. Revoke one to generate another.': '이미 활성 초대가 20개 있습니다. 새로 만들려면 하나를 철회하세요.',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': '이미 연결된 선생님이 있습니다. 새 초대를 수락하기 전에 설정에서 연결을 해제하세요.',
   'You can unlink anytime, in Settings.': '설정에서 언제든지 연결을 해제할 수 있습니다.',
-  'You no longer follow {0}.': '이제 {0}님의 운동을 확인할 수 없습니다.',
+  'You no longer have access to this student.': '이제 이 학생 정보에 접근할 수 없습니다.',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': '더 이상 학생의 운동을 볼 수 없게 됩니다. 학생은 회원님이 배정한 루틴을 그대로 유지하며, 그 루틴은 학생의 것이 됩니다. 학생에 대한 메모는 삭제됩니다.',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': 'Brilhart Fitness에서 선생님의 초대를 받았습니다. 계속하려면 로그인하거나 계정을 만드세요.',
   'Your conversations with the Coach': '코치와의 대화',

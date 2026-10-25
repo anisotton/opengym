@@ -1260,7 +1260,7 @@ export const PT_BR_OVERRIDES = {
   'You already have 20 active invites. Revoke one to generate another.': 'Você já tem 20 convites ativos. Revogue um para gerar outro.',
   'You already have a teacher linked. Unlink in Settings before accepting a new invite.': 'Você já tem um professor vinculado. Desvincule em Configurações antes de aceitar um novo convite.',
   'You can unlink anytime, in Settings.': 'Você pode desvincular quando quiser, em Configurações.',
-  'You no longer follow {0}.': 'Você não acompanha mais {0}.',
+  'You no longer have access to this student.': 'Você não tem mais acesso a este aluno.',
   'You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.': 'Você deixa de ver os treinos dele. Ele continua com as rotinas que você atribuiu — elas passam a ser dele. Suas notas sobre ele são apagadas.',
   'You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.': 'Você foi convidado por um professor no Brilhart Fitness. Entre ou crie sua conta para continuar.',
   'Your conversations with the Coach': 'Suas conversas com o Treinador',
