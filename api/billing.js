@@ -465,18 +465,27 @@ export async function applyStripeEvent(pool, event) {
       if (!userId) break;
       let live = await getStripe().subscriptions.retrieve(obj.id);
       // First-ever subscription, still on the intro Price, not a schedule yet: convert it to the
-      // two-phase schedule — but only once Stripe actually allows it (ISO-1633).
-      // `subscriptionSchedules.create` rejects a subscription that isn't `active`/`past_due` yet
-      // (the same set `canWrite`/WRITABLE_STATUSES treats as writable), which is exactly what
-      // happens when the very first charge fails or needs 3DS: `customer.subscription.created`
-      // then arrives with the subscription still `incomplete`. `scheduleTo` stays on the
-      // subscription's own metadata regardless, so the later `customer.subscription.updated` that
-      // reports the retry/3DS outcome as `active` re-enters this same case and completes the
-      // conversion then — no separate retry bookkeeping needed. Either way (skipped here because
-      // not yet eligible, or thrown by Stripe for some other reason) must never skip the upsert
-      // below: that used to be exactly what left the row permanently missing
-      // priceId/customerId/plan whenever this call threw.
-      if (live.metadata?.scheduleTo && !live.schedule && WRITABLE_STATUSES.has(live.status)) {
+      // two-phase schedule — but only once Stripe actually allows it (ISO-1633) AND while it is
+      // still actually on the intro Price (Oráculo review, same ticket): `scheduleTo` is never
+      // cleared from the subscription's own metadata, so the first gate alone would re-fire on
+      // every later `customer.subscription.updated` that happens to find `schedule` empty again —
+      // the two-phase schedule's own `end_behavior: 'release'` releasing it once the final phase
+      // starts, or an operator releasing it by hand in the Dashboard — recreating a brand new
+      // schedule back to the *original* scheduleTo price and silently undoing a later admin
+      // changePlan (or just re-billing the wrong price for a cycle). The intro-Price check is what
+      // actually says "this is still the once-per-account first-period conversion", not merely
+      // "eligible and unscheduled". `subscriptionSchedules.create` itself rejects a subscription
+      // that isn't `active`/`past_due` yet (the same set `canWrite`/WRITABLE_STATUSES treats as
+      // writable), which is exactly what happens when the very first charge fails or needs 3DS:
+      // `customer.subscription.created` then arrives with the subscription still `incomplete`.
+      // The later `customer.subscription.updated` that reports the retry/3DS outcome as `active`
+      // re-enters this same case and completes the conversion then — no separate retry
+      // bookkeeping needed. Either way (skipped here because not yet eligible, or thrown by
+      // Stripe for some other reason) must never skip the upsert below: that used to be exactly
+      // what left the row permanently missing priceId/customerId/plan whenever this call threw.
+      const liveItemPriceId = live.items?.data?.[0]?.price?.id ?? null;
+      if (live.metadata?.scheduleTo && !live.schedule && WRITABLE_STATUSES.has(live.status)
+        && await isIntroPrice(pool, liveItemPriceId)) {
         try {
           await convertToSchedule(getStripe(), live.id, live.metadata.scheduleTo);
           live = await getStripe().subscriptions.retrieve(obj.id);

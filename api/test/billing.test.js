@@ -420,6 +420,32 @@ test('customer.subscription.created with a failed-first-charge/3DS subscription 
   assert.equal(status.active, true);
 });
 
+test('customer.subscription.updated never re-converts a subscription that is already past the intro Price, even with scheduleTo and no schedule (ISO-1633, Oráculo review)', async t => {
+  // scheduleTo is never cleared from the subscription's own metadata, so a gate that only checks
+  // "active/past_due, no schedule yet" would re-fire every time schedule happens to be empty again
+  // later in the subscription's life — the two-phase schedule's own end_behavior:'release' releases
+  // it once the final (full-plan) phase starts, or an operator releases it by hand in the
+  // Dashboard. Either way, the subscription's item is by then the plan's own Price, not the intro
+  // one — this must not trigger a brand new conversion back to the original scheduleTo price.
+  const users = [{ id: 'u_bill_19', name: 'Nineteen', created: new Date().toISOString() }];
+  const h = await startServer(t, { users });
+
+  const alreadyConverted = sub('sub_1633b', {
+    status: 'active',
+    items: { data: [{ price: { id: MONTHLY_PRICE, unit_amount: 8900 }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400 }] },
+    metadata: { userId: 'u_bill_19', plan: 'monthly', scheduleTo: MONTHLY_PRICE } // leftover, never cleared
+  });
+  const r = await postWebhook(h, stripeEvent('customer.subscription.updated', alreadyConverted));
+  assert.equal(r.status, 200);
+
+  const create = h.mock.calls.find(c => c.method === 'POST' && c.url === '/v1/subscription_schedules');
+  assert.equal(create, undefined, 'no reconversion is attempted once the item is already the plan\'s own (non-intro) Price');
+
+  const status = await fetch(`${h.api}/api/billing/status`, { headers: headers('u_bill_19') }).then(r => r.json());
+  assert.equal(status.status, 'active');
+  assert.equal(status.plan, 'monthly');
+});
+
 test('PUT /api/data: 402 without a subscription, 200 once active, 200 while past_due, 402 once canceled', async t => {
   const users = [{ id: 'u_bill_2', name: 'Two', created: new Date().toISOString() }];
   const h = await startServer(t, { users });
