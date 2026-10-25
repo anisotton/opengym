@@ -393,3 +393,14 @@ export async function billingCheckout(plan) {
 export async function billingPortal() {
   return post('/api/billing/portal', {})
 }
+
+/* -------------------------------------------- teacher assignments (ISO-1594/ISO-1610) --------
+   The student's side of a teacher's pull — see store/useStore.js's refreshTeacherAssignments
+   (piggybacked on the same cadence as fetchBillingStatus above) and lib/teacher.js
+   (importAssignment/endAssignment, which turn the answer into state). */
+export async function fetchTeacherAssignments() {
+  return api('/api/account/assignments')
+}
+export async function ackTeacherAssignment(id) {
+  return post('/api/account/assignments/ack', { id })
+}
