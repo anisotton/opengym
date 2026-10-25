@@ -771,6 +771,22 @@ body.chips-dragging *{cursor:inherit}
 .exmedia .gifhint{inset-inline-end:9px}
 .exmedia .giftoggle{inset-inline-start:9px}
 .exmedia .gifhint .icn,.exmedia .giftoggle .icn{font-size:13px}
+/* Frente/Costas (Brilhart exercises only, ISO-1606): opposite corner from .gifhint/.giftoggle,
+   so none of the three ever overlap, including at the 84px minimized band. */
+.exmedia .gifviews{
+  position:absolute;top:9px;inset-inline-end:9px;z-index:1;display:flex;isolation:isolate;
+  background:rgba(0,0,0,.45);border-radius:99px;padding:2px;
+  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+}
+.exmedia .gifviews .gv-sel{
+  position:absolute;z-index:0;top:2px;bottom:2px;inset-inline-start:2px;
+  width:calc((100% - 4px)/var(--n));transform:translateX(calc(100% * var(--i)));
+  background:rgba(255,255,255,.24);border-radius:97px;transition:transform var(--med) var(--ease);
+}
+.exmedia .gifviews button{
+  position:relative;z-index:1;padding:5px 11px;font-size:12px;font-weight:600;color:#fff;
+  min-height:0;border-radius:97px;
+}
 /* superset: both exercises are on screen together, so the animations have to give way —
    at 180px you had to scroll a full screen between two exercises done back-to-back */
 .exmedia.compact img{height:120px}
@@ -781,6 +797,21 @@ body.chips-dragging *{cursor:inherit}
 .exmedia-x{width:100%;height:320px;display:flex;align-items:center;justify-content:center;color:var(--label-3);font-size:34px}
 .exmedia.compact .exmedia-x{height:120px}
 .exmedia.mini .exmedia-x{height:84px}
+/* An exercise with no media of its own (every EXDB entry — ISO-1603) reserves the same band
+   instead of leaving the detail sheet's media block absent (#1606): the muscle map it already
+   has target/secondary data for, on --surface-2 (not the white .exmedia default, which was
+   tuned for a photo/gif, not a body silhouette) so it doesn't show a blank white card in dark
+   mode. The hairline between muscles and the untrained silhouette are both tuned for --surface
+   in bodymap's own CSS, so both get a local override here against this band's --surface-2. */
+.exmedia.nomedia{
+  height:320px;background:var(--surface-2);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:2px;padding:14px 12px;
+}
+.exmedia.nomedia .bodymap{width:100%;--bm-base:color-mix(in srgb,var(--label) 11%,var(--surface-2))}
+.exmedia.nomedia .bm-v{max-height:200px}
+.exmedia.nomedia .bm-sil{fill:color-mix(in srgb,var(--label) 18%,var(--surface-2))}
+.exmedia.nomedia .bm-v path{stroke:var(--surface-2)}
+.exmedia.nomedia .hm-legend{justify-content:center}
 /* a custom exercise's own video (components/CustomMedia.jsx): the same box as a picture, on black
    so a clip that does not fill it is letterboxed like any player */
 .exmedia video{width:100%;height:320px;object-fit:contain;display:block;background:#000}
@@ -1166,6 +1197,16 @@ body.chips-dragging *{cursor:inherit}
 .noprog{display:flex;align-items:center;gap:7px;margin:0 0 6px;font-size:13px;line-height:1.38;color:var(--orange)}
 .noprog svg{flex:none}
 .noprog .chip{margin-inline-start:auto;padding:3px 11px;font-size:13px;color:var(--orange);background:color-mix(in srgb,var(--orange) 14%,transparent)}
+
+/* "draft — pending Brilhart review" pill above the first instruction step (ISO-1606). Not
+   .noprog's orange chip: that tone means "something needs your attention"; this is just
+   transparency about where the text came from, so it stays neutral, not alarmed. */
+.exdraft{
+  display:inline-flex;align-items:center;gap:5px;margin:0 0 8px;
+  font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;
+  background:var(--surface-2);color:var(--label-2);
+}
+.exdraft svg{flex:none;font-size:12px}
 
 /* start a timed set (issue #16) — sits where you'd otherwise reach for the checkbox */
 .setrow .setgo{
@@ -1648,6 +1689,7 @@ body.chips-dragging *{cursor:inherit}
   #timer.rest{flex-direction:row;align-items:center;gap:14px}
   #timer.rest .head{flex:1;min-width:0}
   .exmedia img,.exmedia video{height:380px}
+  .exmedia.nomedia{height:380px}
   .hm-wrap{display:flex;flex-direction:column;align-items:center}
 }
 

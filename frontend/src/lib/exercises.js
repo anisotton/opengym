@@ -143,8 +143,11 @@ const GIF_BASE = ENV.VITE_GIF_BASE || 'gif/'
 // the same way the app's other bundled assets (favicon, manifest) already do, offline-safe
 // for the Android/iOS build too.
 const BRILHART_BASE = (ENV.BASE_URL || './') + 'brilhart/'
-export const imgSrc = ex => (ex.src === 'brilhart' ? BRILHART_BASE : IMG_BASE) + ex.img
-export const gifSrc = ex => (ex.src === 'brilhart' ? BRILHART_BASE : GIF_BASE) + ex.gif
+// `file` defaults to the exercise's own top-level img/gif, but a caller showing one of several
+// views (Media.jsx, ISO-1606) passes that view's file name instead — the base path still
+// depends only on `ex.src`, never on which view is on screen.
+export const imgSrc = (ex, file = ex.img) => (ex.src === 'brilhart' ? BRILHART_BASE : IMG_BASE) + file
+export const gifSrc = (ex, file = ex.gif) => (ex.src === 'brilhart' ? BRILHART_BASE : GIF_BASE) + file
 
 // Cardio exercises log time + speed instead of weight × reps.
 export const isCardio = idOrEx => (typeof idOrEx === 'string' ? EXIDX[idOrEx] : idOrEx)?.bp === 'cardio'

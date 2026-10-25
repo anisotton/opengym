@@ -43,9 +43,12 @@ describe('Brazilian Portuguese locale', () => {
     // frontend/: node scripts/pt-br-inheritance-fingerprint.mjs --list
     // ISO-1398: +1 newly inherited key ('Resend' -> 'Reenviar', identical in both pt variants,
     // reviewed — no override needed). E-mail reminder/confirmation redesign: +1 more ('Sent' ->
-    // 'Enviado', same word on both shores — reviewed, no override needed). See the script above
-    // for how to recompute this.
-    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('1b517563d94f3b71d9424465cf582e2fd58c002e85b73745171b236b925d6474')
+    // 'Enviado', same word on both shores — reviewed, no override needed). ISO-1606: +8 more
+    // (the no-media/view-switcher/draft-badge strings — 'Front'/'Costas', 'Draft — steps
+    // pending Brilhart review'/'Rascunho — passos aguardando validação da Brilhart', etc. — same
+    // wording works on both shores, reviewed, no override needed). See the script above for how
+    // to recompute this.
+    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('f536dd0047e669f6218edb873788c6a6d2d062cb9dabc826e96693db7b269cc4')
   })
 
   test('does not leak European Portuguese UI terms', () => {
