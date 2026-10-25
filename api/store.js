@@ -717,7 +717,7 @@ export async function touchPasskeyUse(pool, id, counter) {
  * One row per linked external account — today always `provider = 'google'`. `(provider, subject)`
  * is the row's own primary key (one Google account is never linked to two profiles) and
  * `(provider, user_id)` is uniquely indexed (one Google per profile) — both enforced by
- * migrations/008, which is the real backstop against two requests racing the same link; the
+ * migrations/009, which is the real backstop against two requests racing the same link; the
  * `23505` catch in insertOAuthIdentity is just this call's half of reporting that race cleanly.
  * `otherWays`/`removeOAuthIdentityUnlessLast` follow the exact same "never the last way in" shape
  * as removePassword/removePasskey above, under the same per-account advisory lock, so a Google
