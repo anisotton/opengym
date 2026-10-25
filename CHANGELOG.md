@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+**Security fixes ported from openGym v1.4.2**
+
+- 🔒 **The API base can no longer leave the origin** (GHSA-375x-wfvj-jf7q). A link such as
+  `https://gym.example//evil.example/..%2F/` served the real app with a path that read as another
+  host, so every API call, the passkey sign-in included, went to that host. Runs of slashes now
+  collapse and a base the URL parser would read as another site is refused.
+- 🔒 **Login CSRF on the passkey routes is closed** (GHSA-48ff-v63h-99xr). A cross-site
+  `text/plain` form could complete the attacker's own passkey sign-in in your browser and replace
+  your session with theirs. The passkey routes are origin-checked like every other write, a request
+  body must be declared `application/json` (any other type gets a `415`), and a Bearer only skips
+  the origin check when it verifies on its own and is not a sign-in route.
+- 🔒 **A push subscription cannot be taken over by another account** (GHSA-568g-hg5j-h53q).
+  `POST /api/push/subscribe` moves an endpoint stored for another account only when the request
+  carries that subscription's own keys; otherwise it is a `409` and the row stays. The web app
+  answers a `409` with a fresh subscription, and shows the switch off with the server's reason if
+  that is refused too.
+- 🔒 **The Coach's privilege gate applies on every path that starts a provider runtime**
+  (GHSA-w724-p4hx-jfv9): the admin's test run, the admin card's version check and a job that
+  waited in the queue, and the owner's personal credential is only bound by a job that actually
+  spends. Not applicable here: GHSA-69j8-85pp-mf8j (the coach-week queue), a feature this fork
+  never had.
+
 **Terms of Use and Privacy Policy (ISO-1390)**
 
 - 📜 **The Terms of Use and the Privacy Policy now live inside the app**, at `#/termos` and

@@ -8,7 +8,7 @@ import * as cfgStore from './config.js';
 import * as jobs from './jobs.js';
 import { computeCohort } from './cohort.js';
 import { adapterFor } from './adapters/index.js';
-import { canDropPrivileges } from './adapters/spawn.js';
+import { canDropPrivileges, privilegeRefusal } from './adapters/spawn.js';
 import { DATA_CATEGORIES } from './core/payload.js';
 import { validateBaseUrl, baseUrlFor } from './core/providers.js';
 
@@ -144,8 +144,14 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
       const adapter = adapterFor(cfg.provider);
       // For the runtime-backed providers this asks "is the runtime there"; for an HTTPS one it
       // lists the models with the stored key, which is the round trip the card wants anyway.
+      // Asking a runtime whether it is there means running it (`codex --version`), so the check
+      // answers to the same privilege gate as a job and the test run: without the drop it is not
+      // run, and the card reports the runtime unavailable with the reason.
       const cred = adapter?.spawns === false ? cfgStore.credentialFor(cfgStore.boundUidFor(cfg)) : undefined;
-      const check = adapter ? await adapter.check(cfg, cfgStore.jobEnv(process.env.TMPDIR || '/tmp', cred?.ok ? cred : undefined)) : { ok: false, error: 'unknown provider' };
+      const refusal = privilegeRefusal(adapter);
+      const check = !adapter ? { ok: false, error: 'unknown provider' }
+        : refusal ? { ok: false, error: refusal }
+        : await adapter.check(cfg, cfgStore.jobEnv(process.env.TMPDIR || '/tmp', cred?.ok ? cred : undefined));
       const log = cfg.log || [];
       const today = new Date().toISOString().slice(0, 10);
       json(res, 200, {

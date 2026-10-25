@@ -38,7 +38,7 @@ async function startServer(t) {
   return h;
 }
 
-const send = (h, method, p, headers, body) => fetch(`${h.api}${p}`, { method, headers, body });
+const send = (h, method, p, headers, body) => fetch(`${h.api}${p}`, { method, headers: body != null ? { 'Content-Type': 'application/json', ...headers } : headers, body });
 const status = async (h, method, p, headers, body) => {
   const r = await send(h, method, p, headers, body);
   return { status: r.status, body: await r.json() };

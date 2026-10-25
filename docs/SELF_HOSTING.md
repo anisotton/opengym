@@ -70,6 +70,8 @@ you're poking at the API directly:
   header, so the app's own WebView origin can call the API cross-origin. It never sends
   `Access-Control-Allow-Credentials`, so this doesn't let a browser read your cookie session
   from another origin — only bearer-token requests benefit from it.
+- A request body has to be sent as `Content-Type: application/json`; any other type gets a
+  `415`. `curl -d` sends a form type, so a script needs `-H 'Content-Type: application/json'`.
 
 ## 3. Expose it over HTTPS on your own domain
 

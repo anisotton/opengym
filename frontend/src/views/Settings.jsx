@@ -745,13 +745,17 @@ function PushCard({ S, update, toast }) {
   // "On" means the server holds this browser's subscription, not merely that the browser has
   // one: a row the instance dropped (dead send, rebuilt db.json) left the switch on with nothing
   // ever arriving. syncPushSubscription re-registers on the way; if the server cannot be asked
-  // (offline), the browser's side is the best answer available.
+  // (offline), the browser's side is the best answer available. A server that refused this
+  // browser's subscription, even a fresh one, has answered: the switch is off, with its reason.
   useEffect(() => {
     if (!supported) return
     let gone = false
     syncPushSubscription()
       .then(ok => { if (!gone) setOn(ok) })
-      .catch(() => navigator.serviceWorker.ready.then(reg => reg.pushManager.getSubscription()).then(sub => { if (!gone) setOn(!!sub) }).catch(() => {}))
+      .catch(e => {
+        if (e?.refused) { if (!gone) { setOn(false); toast(e.message) } return }
+        return navigator.serviceWorker.ready.then(reg => reg.pushManager.getSubscription()).then(sub => { if (!gone) setOn(!!sub) }).catch(() => {})
+      })
     return () => { gone = true }
   }, [supported])
 

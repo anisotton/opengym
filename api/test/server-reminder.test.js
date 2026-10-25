@@ -50,7 +50,7 @@ async function startServer(t, subs = []) {
 
 test('PUT /api/data refuses a state whose workouts or routines is not an array', async t => {
   const h = await startServer(t);
-  const put = state => fetch(`${h.api}/api/data`, { method: 'PUT', headers: cookie, body: JSON.stringify({ state }) });
+  const put = state => fetch(`${h.api}/api/data`, { method: 'PUT', headers: { ...cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ state }) });
 
   for (const bad of [{ workouts: {} }, { workouts: 'abc' }, { workouts: 7 }, { workouts: true }, { routines: {} }, { routines: 'r1' }, { workouts: [], routines: {} }]) {
     const r = await put({ _ts: 1, ...bad });

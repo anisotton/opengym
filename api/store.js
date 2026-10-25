@@ -457,14 +457,32 @@ function rowToSub(row) {
   };
 }
 
+// Whoever holds `endpoint` right now — { userId, keys } — or null. The subscribe route asks this
+// before it writes, so a row filed under another account is only ever moved by a caller that
+// sends that subscription's own keys (compared in constant time on the route's side, not here).
+export async function findSub(pool, endpoint) {
+  const { rows } = await pool.query(
+    'SELECT user_id, p256dh, auth FROM push_subscriptions WHERE endpoint = $1', [endpoint]
+  );
+  return rows.length ? { userId: rows[0].user_id, keys: { p256dh: rows[0].p256dh, auth: rows[0].auth } } : null;
+}
+
+// Resolves to whether the row is the caller's afterwards. The ON CONFLICT branch only moves an
+// endpoint to another account when the request carries the keys the row already holds, so a
+// re-send that lost a race against the owner (the route checked a moment ago, the owner's own
+// boot re-filed it since) is refused here too rather than quietly taking the row
+// (GHSA-568g-hg5j-h53q, openGym v1.4.2). Same account, any keys: the plain upsert as before.
 export async function upsertSub(pool, { userId, endpoint, keys, deviceId, created }) {
-  await pool.query(
+  const { rowCount } = await pool.query(
     `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, device_id, created_at)
      VALUES ($1,$2,$3,$4,$5, COALESCE($6, now()))
      ON CONFLICT (endpoint) DO UPDATE SET
-       user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, device_id = EXCLUDED.device_id`,
+       user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, device_id = EXCLUDED.device_id
+     WHERE push_subscriptions.user_id = EXCLUDED.user_id
+        OR (push_subscriptions.p256dh = EXCLUDED.p256dh AND push_subscriptions.auth = EXCLUDED.auth)`,
     [userId, endpoint, keys.p256dh, keys.auth, deviceId || null, created ? new Date(created) : null]
   );
+  return rowCount > 0;
 }
 
 // MAX_SUBS_PER_USER enforcement: drop the oldest rows of this user beyond `max`, keeping the

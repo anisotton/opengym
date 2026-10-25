@@ -155,6 +155,9 @@ export const JOB_ERRORS = {
   restart: 'The server restarted while the Coach was thinking.',
   nostate: 'The Coach couldn’t read your training data.',
   noworkout: 'There is no workout to look at yet — log one first.',
+  // A job the server refused when it came to start it (the process cannot drop privileges):
+  // the same words as the refusal at enqueue (api/coach/routes.js USER_ERROR), not "internal".
+  unprivileged: 'The Coach is switched off on this instance for safety reasons.',
   internal: 'Something went wrong on the server.'
 }
 

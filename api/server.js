@@ -36,7 +36,7 @@ import {
   setLastReminder, deleteUser, upsertUser, backfillPasswordResetBy, setTermsAccepted,
   createSession, getSession, revokeSession,
   createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
-  upsertSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
+  upsertSub, findSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
   removePasskey, touchPasskeyUse, upsertPasskey,
@@ -529,6 +529,13 @@ async function sessionOf(req) {
   const auth = req.headers.authorization || '';
   const cookie = cookieToken(req);
   const tok = cookie || (auth.startsWith('Bearer ') ? auth.slice(7).trim() : null);
+  const s = await sessionUser(tok);
+  return s && { ...s, bearer: !cookie };
+}
+// The session a token (a cookie value or a bearer) stands for — { user, exp, sid } — or null.
+// Split out of sessionOf so the origin check (bearerAuthenticates) can ask whether a bearer
+// authenticates on its own, without the cookie that may sit beside it.
+async function sessionUser(tok) {
   if (!tok) return null;
   const payload = verifySig(tok);
   if (!payload) return null;
@@ -549,7 +556,7 @@ async function sessionOf(req) {
   // payload (it still had to pass the HMAC, so this is belt-and-braces) and is refused outright.
   const claimed = ver === undefined ? 0 : Number(ver);
   if (!Number.isInteger(claimed) || claimed !== sessionVersion(user)) return null;
-  return { user, exp: +exp, bearer: !cookie, sid: sid || null };
+  return { user, exp: +exp, sid: sid || null };
 }
 async function readSession(req) {
   return (await sessionOf(req))?.user || null;
@@ -599,35 +606,68 @@ const clearCookie = COOKIE === LEGACY_COOKIE
 // Content-Type claims, so a hostile page could reach the state-changing routes with a form-style
 // POST that needs no CORS preflight at all.
 //
-// So a state-changing request that came from a browser has to come from ORIGIN. The exemptions
-// below are not holes: each of those routes carries its own credential in the body (a WebAuthn
-// challenge id, a one-shot pairing code), none of them acts on the caller's existing session, and
-// they have to keep working from the mobile WebView, whose origin is never ORIGIN.
+// So a state-changing request that came from a browser has to come from ORIGIN, the passkey
+// routes included. They used to be exempt on the grounds that the challenge id is a credential,
+// but it is the attacker's credential: /api/login/options hands a `cid` to anyone, the challenge
+// is bound to nothing else, and the attacker's own passkey can sign it — so a form on another site
+// could complete their sign-in in the victim's browser, and the Set-Cookie on that response
+// replaced the victim's session with one for the attacker's account (GHSA-48ff-v63h-99xr, openGym
+// v1.4.2). No legitimate caller is cross-origin: a passkey only verifies against ORIGIN, so the
+// mobile WebView could never use these routes anyway.
 //
-// The password routes are deliberately NOT here. A name and a password are a credential too,
+// pair/redeem is exempt, and it has to be: the paired app calls it from its own WebView origin,
+// which is never ORIGIN. It is not a hole. The pairing code in the body is the credential, and
+// the answer sets no cookie: the token comes back in the body, which a cross-site form or a
+// no-cors fetch cannot read.
+//
+// The password routes are deliberately NOT exempt. A name and a password are a credential too,
 // but one a hostile page can know — its own — so an exempt POST /api/login/password would let
 // any site sign a visitor into the attacker's account and collect what they log (login CSRF).
 const CSRF_EXEMPT = new Set([
-  'POST /api/register/options', 'POST /api/register/verify',
-  'POST /api/login/options', 'POST /api/login/verify',
   'POST /api/pair/redeem',
-  // Same reasoning as register/login: each carries its own one-time credential in the body (a
-  // mailed token, or nothing at all for the neutral recover/request) rather than acting on the
-  // caller's session, and the link that reaches account/email/verify or recover/redeem may open
-  // in the mobile shell, whose origin is never ORIGIN.
+  // Each carries its own one-time credential in the body (a mailed token, or nothing at all for
+  // the neutral recover/request) rather than acting on the caller's session, none of them sets a
+  // session cookie, and the link that reaches account/email/verify or recover/redeem may open in
+  // the mobile shell, whose origin is never ORIGIN. A cross-site form still cannot reach them:
+  // readBody refuses a body not declared application/json, the one type a form cannot send.
   'POST /api/account/email/verify', 'POST /api/recover/request', 'POST /api/recover/redeem'
   // POST /api/client-event (ISO-1480) is deliberately NOT here: it only ever fires from
   // navigator.sendBeacon to this same page's own origin (lib/api.js beacon(); MOBILE never
   // calls it), so Sec-Fetch-Site: same-origin already clears it below — exempting it too would
   // let a cross-site page spam the audit log for free, for no caller that actually needs it.
 ]);
+// The routes that answer to the credential in the body and never to a Bearer. No Bearer is the
+// credential that acts there, so none buys the shortcut below: any valid token would do, the
+// attacker's own included.
+const PASSKEY_ROUTES = new Set([
+  'POST /api/register/options', 'POST /api/register/verify',
+  'POST /api/login/options', 'POST /api/login/verify'
+]);
+// The other ways in are the same kind of route: the name and password, the reset code or the
+// device code in the body is the credential, never a Bearer.
+const SIGN_IN_ROUTES = new Set([
+  'POST /api/login/password', 'POST /api/register/password', 'POST /api/login/password-reset',
+  'POST /api/device-link/options', 'POST /api/device-link/verify'
+]);
 const originsMatch = (a, b) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
-function csrfOk(req, key) {
+// Whether a Bearer is the credential that would act on this request: it verifies, and no session
+// cookie sits beside it (sessionOf takes the cookie first, so a cookie is what would act then).
+async function bearerAuthenticates(req) {
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Bearer ') || cookieToken(req)) return false;
+  return !!(await sessionUser(auth.slice(7).trim()));
+}
+async function csrfOk(req, key) {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return true;
   if (CSRF_EXEMPT.has(key)) return true;
   // The paired mobile app authenticates with a Bearer token. A browser never attaches one on its
   // own, so there is no ambient authority for a hostile page to borrow and no origin to check.
-  if ((req.headers.authorization || '').startsWith('Bearer ')) return true;
+  // That holds only when the Bearer is the credential that acts, so it has to authenticate by
+  // itself: a header that merely starts with "Bearer " used to switch the check off, and then
+  // readSession acted on the session cookie next to it — safe only because the CORS preflight
+  // never allows credentials. And it buys nothing on the sign-in routes, where the body carries
+  // the credential and a Bearer never is.
+  if (!PASSKEY_ROUTES.has(key) && !SIGN_IN_ROUTES.has(key) && await bearerAuthenticates(req)) return true;
   // Sec-Fetch-Site is set by the browser itself and no page can forge it, and it states exactly
   // the property wanted here — more precisely than comparing origins can. 'same-origin' is the
   // app talking to its own backend; a hostile page reports 'cross-site'; a sibling subdomain,
@@ -726,6 +766,14 @@ function readBody(req) {
     req.on('end', () => {
       if (over) return;
       if (!chunks.length) return resolve({});
+      // A body has to say it is JSON. The three types a form can send, and the ones a no-cors
+      // fetch can send, are exactly the ones that need no CORS preflight; parsing them anyway
+      // let another site's form reach any route that reads a body, and on the passkey sign-in
+      // that meant setting the victim's session to an account the attacker holds. Every client
+      // in the tree already sends application/json (lib/api.js, sw.js, the sendBeacon Blob).
+      if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '')) {
+        return reject(new HttpError(415, 'content-type must be application/json'));
+      }
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { return reject(new HttpError(400, 'invalid json')); }
@@ -2831,7 +2879,22 @@ const routes = {
     // instance lost — pruned after a dead send — comes back without anyone touching Settings.
     // The same endpoint sent again keeps its original `created` (upsertSub's ON CONFLICT never
     // touches created_at).
-    await upsertSub(pool, { userId: user.id, endpoint: sub.endpoint, keys, deviceId });
+    //
+    // A row filed under another account moves only for a caller that sends its keys. The endpoint
+    // alone is a URL, and whoever learned it could otherwise re-file it as theirs: the owner's
+    // device stops getting their alerts, and the caller's are sent to it instead, encrypted to
+    // keys of the caller's choosing (GHSA-568g-hg5j-h53q, openGym v1.4.2). The keys are what the
+    // browser holds (the auth secret never leaves it and this server), and the legitimate move
+    // carries them: a shared browser signed into a second account re-registers the same
+    // subscription on boot, and the row should follow the person now using it. Refusing that, or
+    // keeping both rows, would leave the first account's reminders arriving on a device somebody
+    // else is using. Compared in constant time here; upsertSub's own WHERE is the atomic backstop
+    // for a row that changed hands between this read and the write.
+    const keyDigest = k => crypto.createHash('sha256').update(`${k?.p256dh}\n${k?.auth}`).digest();
+    const held = await findSub(pool, sub.endpoint);
+    const refused = () => json(res, 409, { error: 'this subscription belongs to another account' });
+    if (held && held.userId !== user.id && !crypto.timingSafeEqual(keyDigest(held.keys), keyDigest(keys))) return refused();
+    if (!await upsertSub(pool, { userId: user.id, endpoint: sub.endpoint, keys, deviceId })) return refused();
     // A browser holds one subscription per device, so this cap is far above real use. Without
     // it a single account could pile up endpoints without limit — every one of them a target
     // sendPush() would then contact.
@@ -3482,7 +3545,14 @@ const server = http.createServer(async (req, res) => {
   if (mm) { key = req.method + ' /api/media/{hash}'; req.mediaHash = mm[1]; }
   const handler = routes[key];
   if (!handler) return json(res, 404, { error: 'not found' });
-  if (!csrfOk(req, key)) {
+  if (!(await csrfOk(req, key))) {
+    // A Bearer that does not verify and no cookie beside it: nothing ambient is in play, the caller
+    // is simply not signed in. That is the paired app once its token is revoked or expired, and it
+    // needs the 401 to know it (lib/api.js callers and the boot path act on the status), not a 403
+    // and a log line that blames ORIGIN. Still refused before any handler runs.
+    if ((req.headers.authorization || '').startsWith('Bearer ') && !cookieToken(req) && !(await bearerAuthenticates(req))) {
+      return json(res, 401, { error: 'not signed in' });
+    }
     // Logged, not audited: this is reachable without a session, and an audit entry per attempt
     // would let anyone fill the log. An operator who has genuinely mis-set ORIGIN needs to see
     // the mismatch, and the container log is where they will look.
