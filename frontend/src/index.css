@@ -372,6 +372,25 @@ h4.sec{
 .btn.xs{padding:5px 10px;width:auto;font-size:13px;border-radius:7px;gap:4px}
 .btn:disabled{opacity:.32;pointer-events:none}
 
+/* ------------------------------------------------- "Sign in with Google" -- (ISO-1595 §1.1)
+   Google's own Identity branding guidelines, not .btn: the Dark theme here is Google's own
+   dark variant (near-black, grey border, near-white text), never a "neutral dark" — that
+   variant does not exist in the kit — and never the blue/colored one. Default (this block) is
+   the Dark theme, since :root with no data-theme attribute is this app's dark default too
+   (see applyPrefs in App.jsx); the light override below matches Google's Light theme. */
+.gsi-btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;
+  min-height:40px;padding:10px 12px;border-radius:4px;font-size:14px;font-weight:500;
+  font-family:Roboto,Arial,sans-serif;letter-spacing:.21px;cursor:pointer;
+  background:#131314;color:#E3E3E3;border:1px solid #747775;
+  transition:background var(--fast);
+}
+.gsi-btn:active{background:#1D1E1F}
+.gsi-btn:disabled{opacity:.5;pointer-events:none}
+.gsi-btn-logo{width:18px;height:18px;flex:0 0 18px}
+:root[data-theme="light"] .gsi-btn{background:#FFFFFF;color:#1F1F1F;border-color:#747775}
+:root[data-theme="light"] .gsi-btn:active{background:#F7F8F8}
+
 /* ----------------------------------------------------------- tab bar ----- */
 /* Nearly opaque, and deliberately so. At the old 72% the page read straight through the bar
    and the labels had to compete with whatever was scrolling behind them — nobody needs to read

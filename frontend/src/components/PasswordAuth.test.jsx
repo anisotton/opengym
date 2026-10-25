@@ -3,7 +3,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { userFromMe } from '../lib/session-user.js'
-import { passwordError, PasswordSignInSheet, PasswordRegisterForm, PasswordRow, PasswordSheet, EmailSheet, looksLikeEmail } from './PasswordAuth.jsx'
+import { passwordError, PasswordSignInSheet, PasswordRegisterForm, PasswordRow, PasswordSheet, looksLikeEmail } from './PasswordAuth.jsx'
 import { normalizeEmail } from '../../../api/password.js'
 import { LEGAL_VERSION } from '../legal/version.js'
 
@@ -14,7 +14,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
    same proof step adding a passkey uses. The API is a stand-in; what each form sends, and what it
    says back in the UI language, is the point. */
 const mocks = vi.hoisted(() => {
-  const state = { webauthn: true, hasData: false, sheets: [], answers: {}, calls: [] }
+  const state = { webauthn: true, hasData: false, sheets: [], answers: {}, calls: [], user: null, config: { password_login: true } }
   state.toast = vi.fn()
   state.setUser = vi.fn()
   // The store's setUserFromMe: the real mapping (set after import below) into the setUser spy.
@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
   state.passwordLogin = vi.fn()
   state.passwordRegister = vi.fn()
   state.passwordResetRedeem = vi.fn()
+  state.beginGoogleAuth = vi.fn()
   state.passkeyAssertion = vi.fn(async () => ({ cid: 'c1', credential: { id: 'k1' } }))
   state.api = vi.fn(async (path, init) => {
     state.calls.push({ path, method: init?.method || 'GET', body: init?.body ? JSON.parse(init.body) : null })
@@ -33,7 +34,7 @@ const mocks = vi.hoisted(() => {
     return a ?? {}
   })
   state.snapshot = () => ({
-    S: {}, config: { password_login: true },
+    S: {}, config: state.config, user: state.user,
     setUser: state.setUser, setUserFromMe: state.setUserFromMe, adoptProfile: state.adoptProfile, pushState: state.pushState, pullState: state.pullState,
   })
   return state
@@ -56,6 +57,7 @@ vi.mock('../lib/api.js', () => ({
   passwordLogin: (...a) => mocks.passwordLogin(...a),
   passwordRegister: (...a) => mocks.passwordRegister(...a),
   passwordResetRedeem: (...a) => mocks.passwordResetRedeem(...a),
+  beginGoogleAuth: (...a) => mocks.beginGoogleAuth(...a),
 }))
 vi.mock('../sheets.jsx', () => ({ askAddDeviceData: vi.fn() }))
 
@@ -90,15 +92,17 @@ beforeEach(() => {
   mocks.sheets.length = 0
   mocks.answers = {}
   mocks.calls.length = 0
+  mocks.user = null
+  mocks.config = { password_login: true }
   for (const f of [mocks.toast, mocks.setUser, mocks.adoptProfile, mocks.pushState, mocks.pullState, mocks.passwordLogin,
-    mocks.passwordRegister, mocks.passwordResetRedeem, mocks.passkeyAssertion, mocks.setUserFromMe]) f.mockClear()
+    mocks.passwordRegister, mocks.passwordResetRedeem, mocks.passkeyAssertion, mocks.setUserFromMe, mocks.beginGoogleAuth]) f.mockClear()
   mocks.userFromMe = userFromMe
 })
 afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { root.unmount(); host.remove() }) }) })
 
 describe('passwordError', () => {
   it('words each server code in the UI language, and a pause with how long it lasts', () => {
-    expect(passwordError(fail(401, { code: 'bad-credentials' }))).toBe('Wrong name, e-mail or password.')
+    expect(passwordError(fail(401, { code: 'bad-credentials' }))).toBe('Wrong e-mail or password.')
     expect(passwordError(fail(400, { code: 'email-invalid' }))).toBe('That is not an e-mail address.')
     expect(passwordError(fail(409, { code: 'email-taken' }))).toBe('Another profile already uses this e-mail address.')
     expect(passwordError(fail(400, { code: 'too-common' }))).toMatch(/too easy to guess/)
@@ -144,7 +148,7 @@ describe('PasswordSignInSheet', () => {
     const host = mount(<PasswordSignInSheet close={close} />)
     type(byPlaceholder(host, 'Name or e-mail'), 'Ana'); type(byPlaceholder(host, 'Password'), 'nope nope nope')
     await submit(host)
-    expect(alertText(host)).toBe('Wrong name, e-mail or password.')
+    expect(alertText(host)).toBe('Wrong e-mail or password.')
     expect(mocks.setUser).not.toHaveBeenCalled()
     expect(close).not.toHaveBeenCalled()
   })
@@ -229,6 +233,7 @@ describe('PasswordRegisterForm', () => {
     mocks.passwordRegister.mockResolvedValue({ id: 'u9', name: 'Cleo' })
     const host = mount(<Harness inviteOnly />)
     type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(byPlaceholder(host, 'E-mail'), 'cleo@example.com')
     type(host.querySelector('input[type="date"]'), '1990-05-05')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
@@ -242,7 +247,7 @@ describe('PasswordRegisterForm', () => {
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
     accept(host)
     await submit(host)
-    expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', '', '1990-05-05', LEGAL_VERSION)
+    expect(mocks.passwordRegister).toHaveBeenCalledWith('Cleo', 'correct horse battery', 'ABC123', 'cleo@example.com', '1990-05-05', LEGAL_VERSION)
     // The acceptance the server recorded in that request (ISO-1390), so Settings shows its date now.
     expect(mocks.setUser).toHaveBeenCalledWith({ id: 'u9', name: 'Cleo', termsVersion: LEGAL_VERSION, termsAcceptedAt: expect.any(String), needsTerms: false })
     expect(Number.isNaN(Date.parse(mocks.setUser.mock.calls[0][0].termsAcceptedAt))).toBe(false)
@@ -250,24 +255,27 @@ describe('PasswordRegisterForm', () => {
     expect(mocks.toast).toHaveBeenCalledWith('Welcome, Cleo')
   })
 
-  it('takes an optional e-mail, checks its shape here, and says when another profile has it', async () => {
+  it('requires an e-mail (ISO-1596), checks its shape, and says when another profile has it', async () => {
     mocks.passwordRegister.mockResolvedValue({ id: 'u9', name: 'Cleo' })
     const host = mount(<Harness />)
-    const mail = byPlaceholder(host, 'E-mail (optional)')
+    const mail = byPlaceholder(host, 'E-mail')
     expect(mail.type).toBe('email')
     expect(mail.getAttribute('autocomplete')).toBe('email')
-    expect(host.textContent).toContain('Lets you sign in with it instead of your name. Nothing is ever sent to it.')
+    expect(host.textContent).toContain('Confirms your account and is the only way to recover access if you lose this device.')
     type(byPlaceholder(host, 'Your name'), 'Cleo')
-    type(mail, 'cleo at example')
     type(host.querySelector('input[type="date"]'), '1990-05-05')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
+    accept(host)
+    await submit(host)
+    expect(alertText(host)).toBe('Enter an e-mail address.')
+    expect(mocks.passwordRegister).not.toHaveBeenCalled()
+    type(mail, 'cleo at example')
     await submit(host)
     expect(alertText(host)).toBe('That is not an e-mail address.')
     expect(mocks.passwordRegister).not.toHaveBeenCalled()
     mocks.passwordRegister.mockRejectedValueOnce(fail(409, { code: 'email-taken' }))
     type(mail, ' cleo@example.com ')
-    accept(host)
     await submit(host)
     expect(mocks.passwordRegister).toHaveBeenLastCalledWith('Cleo', 'correct horse battery', '', 'cleo@example.com', '1990-05-05', LEGAL_VERSION)
     expect(alertText(host)).toBe('Another profile already uses this e-mail address.')
@@ -282,6 +290,7 @@ describe('PasswordRegisterForm', () => {
     expect(box.checked).toBe(false)
     expect(button(host, 'Create profile').disabled).toBe(true)
     type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(byPlaceholder(host, 'E-mail'), 'cleo@example.com')
     type(host.querySelector('input[type="date"]'), '1990-05-05')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
@@ -294,6 +303,7 @@ describe('PasswordRegisterForm', () => {
   it('a submit with the terms box unticked never reaches passwordRegister', async () => {
     const host = mount(<Harness />)
     type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(byPlaceholder(host, 'E-mail'), 'cleo@example.com')
     type(host.querySelector('input[type="date"]'), '1990-05-05')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
@@ -305,6 +315,7 @@ describe('PasswordRegisterForm', () => {
     mocks.passwordRegister.mockRejectedValue(fail(409, { code: 'name-taken' }))
     const host = mount(<Harness />)
     type(byPlaceholder(host, 'Your name'), 'Ana')
+    type(byPlaceholder(host, 'E-mail'), 'ana@example.com')
     type(host.querySelector('input[type="date"]'), '1990-05-05')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
@@ -317,6 +328,7 @@ describe('PasswordRegisterForm', () => {
   it('a minor birth date disables Create profile, shows the exact message, and sends nothing', async () => {
     const host = mount(<Harness />)
     type(byPlaceholder(host, 'Your name'), 'Cleo')
+    type(byPlaceholder(host, 'E-mail'), 'cleo@example.com')
     type(host.querySelector('input[type="date"]'), '2015-06-01')
     type(byPlaceholder(host, 'Password'), 'correct horse battery')
     type(byPlaceholder(host, 'Repeat the password'), 'correct horse battery')
@@ -348,42 +360,16 @@ describe('Settings → Password', () => {
     expect(none.textContent).toBe('')
   })
 
-  it('the sign-in e-mail sits right under the password, with the address when there is one', async () => {
-    const titles = host => [...host.querySelectorAll('.lrow-t')].map(e => e.textContent)
-    const subs = host => [...host.querySelectorAll('.lrow-s')].map(e => e.textContent)
-    mocks.answers['GET /api/account/password'] = { set: true, setAt: null, passkeys: 1, name: 'Ana', nameTaken: false, email: 'ana@example.com' }
+  // ISO-1598: a profile with neither a passkey nor a password, but a Google account linked, can
+  // still see the row and confirm with Google instead of being hidden outright.
+  it('a profile with no passkey but a linked Google account still gets the row', async () => {
+    mocks.answers['GET /api/account/password'] = { set: false, setAt: null, passkeys: 0, name: 'Ana', nameTaken: false }
+    mocks.webauthn = false
+    mocks.user = { google: { email: 'ana@gmail.com' } }
+    mocks.config = { password_login: true, google_login: true }
     const host = mount(<PasswordRow />)
     await settle()
-    expect(titles(host)).toEqual(['Password', 'Sign-in e-mail'])
-    expect(subs(host)[1]).toBe('Sign in with “ana@example.com” instead of your name')
-    mocks.answers['GET /api/account/password'] = { set: true, setAt: null, passkeys: 0, name: 'Ana', nameTaken: false, email: null }
-    const unset = mount(<PasswordRow />)
-    await settle()
-    expect(subs(unset)[1]).toBe('Not set — sign in with an e-mail instead of your name.')
-    act(() => [...unset.querySelectorAll('.lrow')].find(r => r.textContent.includes('Sign-in e-mail')).click())
-    const sheet = mount(mocks.sheets.at(-1).render(() => {}))
-    expect(sheet.querySelector('h3').textContent).toBe('Add a sign-in e-mail')
-  })
-
-  // The server signs in by an address only for a profile with a password (emailHolder in
-  // api/server.js), so a passkey-only profile, or one whose name is blocked, is not offered one;
-  // an address saved while a password existed stays reachable, and says it is asleep.
-  it('the sign-in e-mail row needs a password, and a saved address without one says it does not sign in', async () => {
-    const titles = host => [...host.querySelectorAll('.lrow-t')].map(e => e.textContent)
-    const subs = host => [...host.querySelectorAll('.lrow-s')].map(e => e.textContent)
-    mocks.answers['GET /api/account/password'] = { set: false, setAt: null, passkeys: 1, name: 'Ana', nameTaken: false, email: null }
-    const passkeyOnly = mount(<PasswordRow />)
-    await settle()
-    expect(titles(passkeyOnly)).toEqual(['Password'])
-    mocks.answers['GET /api/account/password'] = { set: false, setAt: null, passkeys: 1, name: 'Ana', nameTaken: true, email: null }
-    const blocked = mount(<PasswordRow />)
-    await settle()
-    expect(titles(blocked)).toEqual(['Password'])
-    mocks.answers['GET /api/account/password'] = { set: false, setAt: null, passkeys: 1, name: 'Ana', nameTaken: false, email: 'ana@example.com' }
-    const kept = mount(<PasswordRow />)
-    await settle()
-    expect(titles(kept)).toEqual(['Password', 'Sign-in e-mail'])
-    expect(subs(kept)[1]).toBe('“ana@example.com” is saved, but signs in only once this profile has a password.')
+    expect(rowTitle(host)).toBe('Password')
   })
 
   it('a first password is confirmed with the passkey and sent with its assertion', async () => {
@@ -521,102 +507,17 @@ describe('Settings → Password → Remove', () => {
   })
 })
 
-/* Settings → Sign-in e-mail: the address first, checked here, then the owner's proof (proveOwner in
-   api/server.js) — the password or a passkey of this profile — which carries the save. Removing
-   takes the same proof. Nothing is sent before the proof. */
-describe('Settings → Sign-in e-mail', () => {
-  const posts = () => mocks.calls.filter(c => c.path === '/api/account/email')
-  function open(status = { set: true, passkeys: 1, name: 'Ana', email: null }) {
-    const close = vi.fn(), done = vi.fn()
-    return { host: mount(<EmailSheet status={status} close={close} done={done} />), close, done }
-  }
-
-  it('checks the address before asking for proof, then saves it with the password as proof', async () => {
-    mocks.answers['POST /api/account/email'] = { ok: true, email: 'ana@example.com' }
-    const { host, close, done } = open()
-    const input = byPlaceholder(host, 'E-mail address')
-    expect(input.type).toBe('email')
-    expect(input.getAttribute('autocomplete')).toBe('email')
-    expect(host.textContent).toContain('Nothing is ever sent to it')
-    type(input, 'not an address')
-    await submit(host)
-    expect(alertText(host)).toBe('That is not an e-mail address.')
-    expect(byPlaceholder(host, 'Current password')).toBeNull()
-    type(byPlaceholder(host, 'E-mail address'), ' ana@example.com ')
-    await submit(host)
-    // The proof step: nothing sent yet.
-    expect(host.textContent).toContain('ana@example.com')
-    expect(host.textContent).toContain('First confirm that it is you.')
-    expect(posts()).toEqual([])
-    type(byPlaceholder(host, 'Current password'), 'correct horse battery')
-    await click(host, 'Save')
-    expect(posts()).toEqual([{ path: '/api/account/email', method: 'POST', body: { email: 'ana@example.com', current: 'correct horse battery' } }])
-    expect(close).toHaveBeenCalled()
-    expect(done).toHaveBeenCalled()
-    expect(mocks.toast).toHaveBeenCalledWith('E-mail saved')
-  })
-
-  it('or with a passkey; an address another profile uses is said on the proof step', async () => {
-    mocks.answers['POST /api/account/email'] = fail(409, { code: 'email-taken' })
-    const { host, close } = open({ set: false, passkeys: 1, name: 'Ana', email: null })
-    type(byPlaceholder(host, 'E-mail address'), 'ana@example.com')
-    await submit(host)
-    // No password on this profile: the passkey is the only proof offered.
-    expect(byPlaceholder(host, 'Current password')).toBeNull()
-    await click(host, 'Confirm with a passkey')
-    expect(mocks.passkeyAssertion).toHaveBeenCalledTimes(1)
-    expect(posts()).toEqual([{ path: '/api/account/email', method: 'POST', body: { email: 'ana@example.com', cid: 'c1', credential: { id: 'k1' } } }])
-    expect(alertText(host)).toBe('Another profile already uses this e-mail address.')
-    expect(close).not.toHaveBeenCalled()
-    await click(host, 'Back')
-    expect(byPlaceholder(host, 'E-mail address').value).toBe('ana@example.com')
-  })
-
-  it('changing to the address it already has is caught here', async () => {
-    const { host } = open({ set: true, passkeys: 1, name: 'Ana', email: 'ana@example.com' })
-    expect(host.querySelector('h3').textContent).toBe('Change sign-in e-mail')
-    expect(byPlaceholder(host, 'E-mail address').value).toBe('ana@example.com')
-    type(byPlaceholder(host, 'E-mail address'), 'ANA@example.com')
-    await submit(host)
-    expect(alertText(host)).toBe('That is already your sign-in e-mail.')
-  })
-
-  it('the address it already has is recognised the way the server folds it (NFKC), not only by case', async () => {
-    const { host } = open({ set: true, passkeys: 1, name: 'Ana', email: 'ana@example.com' })
-    type(byPlaceholder(host, 'E-mail address'), '\uFF21na@example.com')   // a full-width "A"
-    await submit(host)
-    expect(alertText(host)).toBe('That is already your sign-in e-mail.')
-    expect(posts()).toEqual([])
-  })
-
+// ISO-1596 retired the old, optional, never-sent-to "sign-in e-mail" (#118, EmailRow/EmailSheet)
+// along with the separate DELETE /api/account/email it called — the account's one verified
+// e-mail (AccountEmail.jsx) is the only e-mail there is now. `looksLikeEmail` itself is still used
+// there, in PasswordRegisterForm and in Login.jsx, so its parity with the server's own check stays
+// covered on its own.
+describe('looksLikeEmail', () => {
   it('looks at an address the way the server does, so nothing it accepts is refused here or the other way round', () => {
     const cases = ['ana@example.com', ' Ana@Example.COM ', '\uFF21na@example.com', 'a.b+c@sub.example.co', 'ana@example.c', 'ana@example',
       'ana@@example.com', 'a b@example.com', 'ana@.example.com', 'ana@-example.com', 'ana@example..com', 'a..b@example.com',
       '"ana"@example.com', 'ana@exa,mple.com', 'ana@example.c0m', 'x'.repeat(65) + '@example.com', 'a@' + 'b'.repeat(250) + '.com',
-      'ana@exämple.de', 'ana@example.com.', '', '@example.com', 'ana@']
+      'ana@ex\u00e4mple.de', 'ana@example.com.', '', '@example.com', 'ana@']
     for (const c of cases) expect(looksLikeEmail(c), JSON.stringify(c)).toBe(normalizeEmail(c) !== null)
-  })
-
-  it('removing asks for the same proof, then removes', async () => {
-    mocks.answers['DELETE /api/account/email'] = { ok: true, email: null }
-    const { host, close, done } = open({ set: true, passkeys: 1, name: 'Ana', email: 'ana@example.com' })
-    act(() => button(host, 'Remove e-mail').click())
-    const removeClose = vi.fn()
-    const sheet = mount(mocks.sheets.at(-1).render(removeClose))
-    expect(sheet.querySelector('h3').textContent).toBe('Remove your sign-in e-mail?')
-    expect(sheet.textContent).toContain('Afterwards you sign in with your profile name only.')
-    expect(posts()).toEqual([])
-    type(byPlaceholder(sheet, 'Current password'), 'correct horse battery')
-    await click(sheet, 'Remove')
-    expect(posts()).toEqual([{ path: '/api/account/email', method: 'DELETE', body: { current: 'correct horse battery' } }])
-    expect(removeClose).toHaveBeenCalled()
-    expect(close).toHaveBeenCalled()
-    expect(done).toHaveBeenCalled()
-    expect(mocks.toast).toHaveBeenCalledWith('E-mail removed')
-  })
-
-  it('no remove button while there is no address', () => {
-    const { host } = open()
-    expect(button(host, 'Remove e-mail')).toBeUndefined()
   })
 })

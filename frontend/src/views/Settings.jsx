@@ -33,6 +33,7 @@ import { DeleteAccountRow } from '../components/DeleteAccount.jsx'
 import { Section, Row, SelectRow, Switch, Segmented, Button } from '../components/ui.jsx'
 import SignupFlow from '../components/SignupFlow.jsx'
 import { AccountEmailRow } from '../components/AccountEmail.jsx'
+import { GoogleRow } from '../components/GoogleAccount.jsx'
 
 export default function Settings() {
   const nav = useNavigate()
@@ -315,16 +316,14 @@ export default function Settings() {
             ? ({ monthly: t('Monthly'), quarterly: t('Quarterly'), yearly: t('Yearly') })[billing.plan] || null
             : t("Your subscription isn't active — you can view and export your history, but new workouts won't be logged.")}
           accessory="chevron" onClick={() => nav('/configuracoes')} />}
-        <PasskeysRow state={passkeys.st} changed={credsChanged} />
-        <DeviceLinkRow state={passkeys.st} />
         <MyTeacherRow />
-        {/* ISO-1397's own POST /api/account/email is a different handler, registered only while
-            PASSWORD_LOGIN is off — on, that path is PasswordRow's legacy sign-in address (#118),
-            which this row has nothing to do with. */}
-        {!pwOn && <AccountEmailRow user={user} />}
+        {/* ISO-1596: the account's one verified e-mail is universal now, PASSWORD_LOGIN on or
+            off — and it is not itself a "way to sign in" (ISO-1595 §0/§5), so it stays in this
+            section rather than the "Ways to sign in" one right below. PasskeysRow/DeviceLinkRow
+            moved there too (ISO-1598) — they are not duplicated here. */}
+        <AccountEmailRow user={user} />
         <Row icon="link" iconTint="var(--blue)" title={t('Pair the mobile app')} subtitle={t('Connect the Brilhart Fitness app on your phone to this account.')} accessory="chevron"
           onClick={() => useUI.getState().openSheet(close => <PairSheet close={close} />)} />
-        {pwOn && <PasswordRow version={credsV} />}
         <Row icon="signOut" iconTint="var(--red)" title={t('Sign out')} danger onClick={signOutHere} />
         <Row icon="shield" iconTint="var(--red)" title={t('Sign out everywhere')} subtitle={t('Ends this profile’s sessions on all your devices.')} danger onClick={signOutEverywhere} />
         <AccountIdRow id={user.id} />
@@ -343,6 +342,22 @@ export default function Settings() {
         <Row icon="lock" iconTint="var(--grey)" title={t('Passkeys not supported in this browser.')} />
         <KeptChangesRows />
       </>}
+    </Section>}
+
+    {/* ---------- ways to sign in (ISO-1595 §5): password, passkeys, Google, in that order.
+        A Capacitor profile that never linked Google has nothing to show here (Password/Passkeys/
+        DeviceLink are all web-only sign-in methods) and the section itself disappears — but one
+        that already linked Google from the browser still gets to see that link, read-only
+        (GoogleRow's own MOBILE branch, docs/MOBILE.md), so the section can't be gated on !MOBILE
+        alone; it has to survive long enough for GoogleRow to decide — but only when GoogleRow
+        will actually render something: an instance that turned google_login back off since the
+        link was made has nothing left to show either (GoogleRow's own `!googleOn` check), and the
+        section must not render empty under its title. */}
+    {user && !DEMO && (!MOBILE || (!!user.google && !!config?.google_login)) && <Section title={t('Ways to sign in')}>
+      {!MOBILE && pwOn && <PasswordRow version={credsV} />}
+      {!MOBILE && <PasskeysRow state={passkeys.st} changed={credsChanged} />}
+      <GoogleRow user={user} googleOn={!!config?.google_login} passkeysState={passkeys.st} />
+      {!MOBILE && <DeviceLinkRow state={passkeys.st} />}
     </Section>}
     {!user && !DEMO && !MOBILE && <p className="sect-f" style={{ marginTop: -18, marginBottom: 22 }}>{t('Guest mode — data lives only in this browser.')}</p>}
 

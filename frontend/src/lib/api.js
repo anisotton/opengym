@@ -2,6 +2,7 @@
 import { t } from './i18n-core.js'
 import { MOBILE } from './mobile.js'
 import { appBase } from './app-base.js'
+import { savePendingReauth } from './google-reauth.js'
 
 export const IS_APPLE = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)
 export const IS_ANDROID = /Android/.test(navigator.userAgent)
@@ -321,17 +322,17 @@ export function reportWebauthnFailure(flow, step, kind, { elapsedMs, isSecureCon
 // these answers with the same session cookie a passkey sign-in sets, so callers treat the user
 // they return exactly alike.
 const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) })
-// `name` is whatever was typed in "Name or e-mail": it goes in the original `name` field, which
-// the server matches against the profile's sign-in e-mail when it holds an "@" and against the
-// name otherwise — so the app and a server a version apart still understand each other.
-export async function passwordLogin(name, password) {
-  return (await post('/api/login/password', { name, password })).user
+// `identifier` is whatever was typed in the e-mail/password screen's one field: sent as
+// `identifier` (ISO-1596 — what the app sends), which the server looks up as an e-mail first when
+// it holds an "@" and as a profile name otherwise, so an account from before e-mail was required
+// still signs in by name.
+export async function passwordLogin(identifier, password) {
+  return (await post('/api/login/password', { identifier, password })).user
 }
-// `email` is optional, and sent only when there is one: a server from before the field would
-// otherwise ignore it without a word, which is the same thing. `birthDate` is required (ISO-1521),
-// the same contract as passkeyRegister above.
+// `email` is required (ISO-1596 — the same verified address passkey signup has required since
+// ISO-1397). `birthDate` is required (ISO-1521), the same contract as passkeyRegister above.
 export async function passwordRegister(name, password, code, email, birthDate, termsVersion) {
-  return (await post('/api/register/password', { name, password, code: code || '', ...(email ? { email } : {}), birthDate, termsVersion })).user
+  return (await post('/api/register/password', { name, password, code: code || '', email, birthDate, termsVersion })).user
 }
 export async function passwordResetRedeem(name, code, next) {
   return (await post('/api/login/password-reset', { name, code, next })).user
@@ -343,12 +344,11 @@ export async function termsAccept(version) {
   return post('/api/account/terms/accept', { version })
 }
 
-/* ---------------------------------------- verified e-mail + recovery (ISO-1397/1398) --------
+/* ---------------------------------------- verified e-mail + recovery (ISO-1397/1398/1596) ----
    The account's own e-mail: confirmed by link after signup, re-sendable, and — on an account
-   from before this phase — set for the first time. Distinct from PasswordAuth.jsx's EmailRow,
-   the older, unrelated sign-in address (#118), which is never sent to and only exists while
-   PASSWORD_LOGIN is on; this is the ISO-1397 route of the same name, registered only while that
-   flag is off. */
+   from before this phase — set for the first time. ISO-1596 made this the only `/api/account/
+   email` handler, PASSWORD_LOGIN on or off — the older, optional, never-sent-to sign-in address
+   (#118, once PasswordAuth.jsx's EmailRow) is retired. */
 export async function accountEmailVerify(token) {
   return post('/api/account/email/verify', { token })
 }
@@ -365,11 +365,13 @@ export async function accountEmailSet(email, proof) {
 export async function recoverRequest(email) {
   return post('/api/recover/request', { email })
 }
-// Burns the recovery token for a fresh device-link code ({code, expires}) — the same shape
-// POST /api/account/device-link returns, so the caller finishes with the existing device-link
-// pair (deviceLinkOptions/deviceLinkVerify below) to create a passkey on this device.
-export async function recoverRedeem(token) {
-  return post('/api/recover/redeem', { token })
+// Burns the recovery token either way (ISO-1596): with no `password`, for a fresh device-link
+// code ({code, expires}) — the same shape POST /api/account/device-link returns, so the caller
+// finishes with the existing device-link pair (deviceLinkOptions/deviceLinkVerify below) to create
+// a passkey on this device; with one, the token sets it directly and signs in ({user}), same as
+// POST /api/login/password. The caller (RecoverAccess.jsx) decides which by whether it passes one.
+export async function recoverRedeem(token, password) {
+  return post('/api/recover/redeem', password ? { token, password } : { token })
 }
 // The device-link pair itself (components/Passkeys.jsx's DeviceLinkRedeemSheet calls the same
 // two routes inline) — named here too since RecoverAccess.jsx has no code of its own to type in,
@@ -379,6 +381,54 @@ export async function deviceLinkOptions(code) {
 }
 export async function deviceLinkVerify(code, cid, credential, name) {
   return post('/api/device-link/verify', { code, cid, credential, name })
+}
+
+/* -------------------------------------------- "Sign in with Google" (ISO-1597/ISO-1598) ------
+   Every one of these ends in, or answers, a full-page navigation — never a popup, never a new
+   tab (the UX doc, ISO-1595 §4, is explicit about this) — so there is nothing here resembling a
+   WebAuthn ceremony's cid/credential pair to keep in the store. `beginGoogleAuth` is the one call
+   site every button that starts a round trip uses (Login.jsx's login/signup, ProveOwner's
+   reauth); the browser leaves this origin entirely, so nothing after it runs. `pending`, when
+   given, is what survives the round trip (lib/google-reauth.js, sessionStorage) for App.jsx's
+   resume effect to read back once `google=reauth-ok&proof=…` lands. */
+export function googleStartUrl(intent) {
+  return appBase().replace(/\/$/, '') + '/api/auth/google/start?intent=' + intent
+}
+export function beginGoogleAuth(intent, pending) {
+  if (pending) savePendingReauth(pending)
+  window.location.href = googleStartUrl(intent)
+}
+// Settings → Conta → Google, "link": proves ownership first (the same OwnerProof adding a
+// passkey takes) and only then gets the URL to navigate to — a bare GET could carry neither.
+export async function googleLinkStart(proof) {
+  return post('/api/account/google/start', proof)
+}
+// Finishing a Google signup once there was no account to match: the pending ticket lives in its
+// own cookie (gauth_signup, set by GET /api/auth/google/callback) — this app never reads or sends
+// it directly, the browser carries it like any other cookie.
+export async function registerGoogle(payload) {
+  return (await post('/api/register/google', payload)).user
+}
+export async function unlinkGoogle(proof) {
+  return api('/api/account/google', { method: 'DELETE', body: JSON.stringify(proof) })
+}
+// The resume itself (App.jsx's effect, once per `google=reauth-ok&proof=…` landing): the one
+// request each kind of pending action needed all along, now that the proof exists. 'add-passkey'
+// hands back creation options instead of finishing anything — the ceremony itself still needs its
+// own fresh tap, which a browser navigation cannot carry forward (components/Passkeys.jsx).
+// 'delete-account' is not here: useStore's own deleteAccount also clears this device's local copy
+// on success, which a framework-agnostic helper has no business doing — App.jsx calls that action
+// directly, with this same googleProof shape, instead of coming through here.
+export async function resumeGoogleReauth(action, proof) {
+  const g = { googleProof: proof }
+  switch (action.kind) {
+    case 'remove-password': return api('/api/account/password', { method: 'DELETE', body: JSON.stringify(g) })
+    case 'unlink-google': return unlinkGoogle(g)
+    case 'set-password': return post('/api/account/password', { next: action.next, ...g })
+    case 'set-email': return post('/api/account/email', { email: action.email, ...g })
+    case 'add-passkey': return post('/api/account/passkeys/options', g)
+    default: throw failure('Unknown pending action', 'bad-response', 0)
+  }
 }
 
 /* -------------------------------------------- billing (Stripe, ISO-1393/ISO-1395) ------------
