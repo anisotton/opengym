@@ -26,3 +26,4 @@ frontend/bundle-size.json
 # Playwright MCP screenshots / local e-mail previews
 .playwright-mcp/
 api/mail-preview/
+.superpowers/
