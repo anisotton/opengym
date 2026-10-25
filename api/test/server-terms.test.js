@@ -162,7 +162,7 @@ test('register/password (PASSWORD_LOGIN=1) follows the same rule', async t => {
   assert.equal(me.status, 200);
   // ISO-1596: the e-mail fields are always there now too, PASSWORD_LOGIN or not — the terms
   // fields were never the only ones unconditional, that was just true before this pass.
-  assert.deepEqual(Object.keys(me.body), ['user', 'email', 'emailVerified', 'needsEmail', 'termsVersion', 'termsAcceptedAt', 'needsTerms'],
+  assert.deepEqual(Object.keys(me.body), ['user', 'email', 'emailVerified', 'needsEmail', 'termsVersion', 'termsAcceptedAt', 'needsTerms', 'google'],
     'the terms and e-mail fields are both there with PASSWORD_LOGIN on');
   assert.equal(me.body.termsVersion, VERSION);
   assert.ok(isIso(me.body.termsAcceptedAt), me.body.termsAcceptedAt);

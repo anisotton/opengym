@@ -231,12 +231,16 @@ async function hasLivePassword(client, id) {
 // hash, or a WebAuthn ceremony), so a passkey removal landing in that window left nothing. Both
 // the password and the passkey count are read fresh here, inside the per-account lock
 // removePasskey now takes too (ISO-1592), so whichever of the two commits second always sees the
-// other's result rather than a pre-race read.
-export async function removePasswordUnlessLast(pool, id) {
+// other's result rather than a pre-race read. `googleCounts` is GOOGLE_LOGIN (ISO-1597) — a server
+// setting, not account data, so it is safe for the caller to hand in from before any await;
+// whether this account currently *has* a linked Google identity is account data, read fresh here
+// instead, under the same lock, same split as removePasskey's own `passwordCounts`.
+export async function removePasswordUnlessLast(pool, id, googleCounts = false) {
   const run = async client => {
     if (!(await hasLivePassword(client, id))) return { ok: true }; // already gone — nothing to refuse
     const { rows } = await client.query('SELECT count(*)::int AS n FROM passkeys WHERE user_id = $1', [id]);
-    if (rows[0].n < 1) return { error: 'the password is the only way into this profile', code: 'last-way-in' };
+    const otherWays = rows[0].n + (googleCounts && await hasLiveOAuthIdentity(client, id, 'google') ? 1 : 0);
+    if (otherWays < 1) return { error: 'the password is the only way into this profile', code: 'last-way-in' };
     await client.query('UPDATE users SET password_hash = NULL, password_set_at = NULL WHERE id = $1', [id]);
     return { ok: true };
   };
@@ -682,16 +686,18 @@ export async function passkeyRemovalRefused(pool, userId, credId, otherWays = 0)
   return null;
 }
 
-// The authoritative check, atomic. `passwordCounts` is PASSWORD_LOGIN — a server setting, not
-// account data, so it's safe for the caller to hand in from before any await; whether this
-// account currently *has* a password is account data, and is read fresh here instead, inside the
-// same per-account lock removePasswordUnlessLast takes, so the two never both see "the other one
-// still covers me" for the same instant (ISO-1592 — server.js used to pass a password flag read
-// from a user snapshot taken before proveOwner's await, exactly the gap a concurrent password
-// removal could land in).
-export async function removePasskey(pool, userId, credId, passwordCounts = false) {
+// The authoritative check, atomic. `passwordCounts` is PASSWORD_LOGIN and `googleCounts` is
+// GOOGLE_LOGIN (ISO-1597) — server settings, not account data, so they're safe for the caller to
+// hand in from before any await; whether this account currently *has* a password or a linked
+// Google identity is account data, and is read fresh here instead, inside the same per-account
+// lock removePasswordUnlessLast/removeOAuthIdentityUnlessLast take, so none of the three ever see
+// "one of the others still covers me" for the same instant (ISO-1592 — server.js used to pass a
+// password flag read from a user snapshot taken before proveOwner's await, exactly the gap a
+// concurrent removal could land in).
+export async function removePasskey(pool, userId, credId, passwordCounts = false, googleCounts = false) {
   const run = async client => {
-    const otherWays = passwordCounts && (await hasLivePassword(client, userId)) ? 1 : 0;
+    const otherWays = (passwordCounts && await hasLivePassword(client, userId) ? 1 : 0)
+      + (googleCounts && await hasLiveOAuthIdentity(client, userId, 'google') ? 1 : 0);
     const refused = await passkeyRemovalRefused(client, userId, credId, otherWays);
     if (refused) return refused;
     const { rows } = await client.query('DELETE FROM passkeys WHERE id = $1 AND user_id = $2 RETURNING *', [credId, userId]);
@@ -705,6 +711,82 @@ export async function removePasskey(pool, userId, credId, passwordCounts = false
 // back; now its own write, since a read is never the same object twice.
 export async function touchPasskeyUse(pool, id, counter) {
   await pool.query('UPDATE passkeys SET counter = $1, last_used_at = now() WHERE id = $2', [counter, id]);
+}
+
+/* ---------- oauth identities (ISO-1597) ----------
+ * One row per linked external account — today always `provider = 'google'`. `(provider, subject)`
+ * is the row's own primary key (one Google account is never linked to two profiles) and
+ * `(provider, user_id)` is uniquely indexed (one Google per profile) — both enforced by
+ * migrations/008, which is the real backstop against two requests racing the same link; the
+ * `23505` catch in insertOAuthIdentity is just this call's half of reporting that race cleanly.
+ * `otherWays`/`removeOAuthIdentityUnlessLast` follow the exact same "never the last way in" shape
+ * as removePassword/removePasskey above, under the same per-account advisory lock, so a Google
+ * unlink racing a password or passkey removal always sees the other's committed result rather
+ * than a pre-race snapshot.
+ */
+
+function rowToOAuthIdentity(row) {
+  return {
+    provider: row.provider, subject: row.subject, userId: row.user_id,
+    ...(row.email ? { email: row.email } : {}),
+    created: row.created_at.toISOString(),
+    ...(row.last_used_at ? { lastUsed: row.last_used_at.toISOString() } : {})
+  };
+}
+
+async function hasLiveOAuthIdentity(client, userId, provider) {
+  const { rows } = await client.query(
+    'SELECT 1 FROM oauth_identities WHERE user_id = $1 AND provider = $2', [userId, provider]
+  );
+  return rows.length > 0;
+}
+
+// Pass a transaction client in place of `pool` to insert alongside the user row a fresh Google
+// signup creates (POST /api/register/google) — same idea as insertPasskey/createEmailToken.
+export async function insertOAuthIdentity(pool, { provider, subject, userId, email }) {
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO oauth_identities (provider, subject, user_id, email, last_used_at)
+       VALUES ($1,$2,$3,$4, now()) RETURNING *`,
+      [provider, subject, userId, email || null]
+    );
+    return { ok: true, row: rowToOAuthIdentity(rows[0]) };
+  } catch (e) {
+    if (e.code === '23505') return { error: 'already linked', code: 'already-linked' }; // unique_violation
+    throw e;
+  }
+}
+
+export async function findOAuthIdentityBySubject(pool, provider, subject) {
+  const { rows } = await pool.query(
+    'SELECT * FROM oauth_identities WHERE provider = $1 AND subject = $2', [provider, subject]
+  );
+  return rows.length ? rowToOAuthIdentity(rows[0]) : null;
+}
+
+export async function findOAuthIdentityByUser(pool, provider, userId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM oauth_identities WHERE provider = $1 AND user_id = $2', [provider, userId]
+  );
+  return rows.length ? rowToOAuthIdentity(rows[0]) : null;
+}
+
+export async function touchOAuthIdentityUse(pool, provider, subject) {
+  await pool.query('UPDATE oauth_identities SET last_used_at = now() WHERE provider = $1 AND subject = $2', [provider, subject]);
+}
+
+// The authoritative, atomic unlink — same shape as removePasswordUnlessLast. `passwordCounts` is
+// PASSWORD_LOGIN, read fresh (account data) under the lock exactly like removePasskey's own flag.
+export async function removeOAuthIdentityUnlessLast(pool, userId, provider, passwordCounts = false) {
+  const run = async client => {
+    if (!(await hasLiveOAuthIdentity(client, userId, provider))) return { ok: true }; // already gone
+    const { rows } = await client.query('SELECT count(*)::int AS n FROM passkeys WHERE user_id = $1', [userId]);
+    const otherWays = rows[0].n + (passwordCounts && await hasLivePassword(client, userId) ? 1 : 0);
+    if (otherWays < 1) return { error: 'connecting with Google is the only way into this profile', code: 'last-way-in' };
+    await client.query('DELETE FROM oauth_identities WHERE user_id = $1 AND provider = $2', [userId, provider]);
+    return { ok: true };
+  };
+  return withWayInLock(pool, userId, run);
 }
 
 /* ---------- e-mail tokens (ISO-1397) ----------

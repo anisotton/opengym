@@ -188,7 +188,7 @@ test('GET /api/me reports email/emailVerified/needsEmail; confirming the link se
   // ISO-1390's terms fields ride along; their own values are server-terms.test.js's subject.
   assert.equal(typeof me1.body.termsAcceptedAt, 'string');
   assert.deepEqual(me1.body, { user, email: 'ada@example.com', emailVerified: false, needsEmail: false,
-    termsVersion: '2026-10-18', termsAcceptedAt: me1.body.termsAcceptedAt, needsTerms: false });
+    termsVersion: '2026-10-18', termsAcceptedAt: me1.body.termsAcceptedAt, needsTerms: false, google: null });
 
   const { token } = h.mailedLink('verificar-email');
   const v = await h.req('POST', '/api/account/email/verify', { body: { token }, ip });
@@ -210,7 +210,7 @@ test('an old account (no e-mail) needs one; a wrong confirmation token is refuse
   await h.seedOldAccount('u_old', 'Grandfathered');
   const me = await h.req('GET', '/api/me', { cookie: mintSession('u_old'), ip: '198.51.100.30' });
   assert.deepEqual(me.body, { user: { id: 'u_old', name: 'Grandfathered', admin: false }, email: null, emailVerified: false, needsEmail: true,
-    termsVersion: null, termsAcceptedAt: null, needsTerms: true });
+    termsVersion: null, termsAcceptedAt: null, needsTerms: true, google: null });
 
   const ip = '198.51.100.31';
   // 20 free wrong guesses, then the 21st is the one whose own failure locks the address — the
