@@ -60,3 +60,15 @@ describe('the tab bar across a store write', () => {
     expect(tabs()[0].className).toBe('on')
   })
 })
+
+describe('the 6th "Students" tab (ISO-1610)', () => {
+  it('is absent for a student account, present for a teacher — the other 5 stay either way', () => {
+    act(() => { root.render(<TabBar onStart={() => {}} />) })
+    expect(tabs()).toHaveLength(5)
+
+    useStore.setState({ user: { id: 1, name: 'test', role: 'teacher' } })
+    act(() => { root.render(<TabBar onStart={() => {}} />) })
+    expect(tabs()).toHaveLength(6)
+    expect(tabs()[5].querySelector('span').textContent).toBe('Students')
+  })
+})

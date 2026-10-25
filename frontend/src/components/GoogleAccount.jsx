@@ -75,7 +75,7 @@ function UnlinkGoogleSheet({ linked, passkeysState, close }) {
     <div className="small" style={{ marginBottom: 6, fontWeight: 600, overflowWrap: 'anywhere' }}>{linked.email}</div>
     <div className="muted small" style={{ marginBottom: 6 }}>{t('Afterwards, Google sign-in stops working for this profile. Your password and passkeys keep working.')}</div>
     <div className="dim small" style={{ marginBottom: 14 }}>{t('First confirm that it is you.')}</div>
-    <ProveOwner passkey={passkeysState?.passkeys?.length > 0} password={!!passkeysState?.password} explain={explainUnlink} danger submitText={t('Unlink')} onProof={remove} />
+    <ProveOwner passkey={passkeysState?.passkeys?.length > 0} password={!!passkeysState?.password} explain={explainUnlink} danger submitText={t('Unlink Google')} onProof={remove} />
     <div style={{ height: 8 }} />
     <Button type="button" variant="ghost" className="dim" onClick={close}>{t('Cancel')}</Button>
   </>

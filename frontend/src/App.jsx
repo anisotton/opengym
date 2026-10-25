@@ -51,6 +51,10 @@ import Admin from './views/Admin.jsx'
 import CoachChat from './views/CoachChat.jsx'
 import CoachIntake from './views/CoachIntake.jsx'
 import CoachSetup from './views/CoachSetup.jsx'
+import Students from './views/Students.jsx'
+import StudentDetail from './views/StudentDetail.jsx'
+import TeacherLibrary from './views/TeacherLibrary.jsx'
+import TeacherInviteAccept from './views/TeacherInviteAccept.jsx'
 
 // last known scrollY per route, so back-navigation can put the page where it was
 const scrollPositions = new Map()
@@ -274,6 +278,12 @@ function Shell() {
   if (loc.pathname === '/termos') return <><div id="app" className="vfade"><Legal id="termos" /></div><Modals /><Toast /></>
   if (loc.pathname === '/privacidade') return <><div id="app" className="vfade"><Legal id="privacidade" /></div><Modals /><Toast /></>
   if (loc.pathname === '/recuperar') return <><div id="app" className="vfade"><RecoverAccess /></div><Modals /><Toast /></>
+  // The invite-accept screen (ISO-1594/ISO-1610) owns its own signed-out state (a short prompt,
+  // then the ordinary Login in place) rather than falling through to the generic `!authed`
+  // branch below, which would show Login with no mention of the invite at all. Checked ahead of
+  // googleBusy below: the Google redirect always lands on #/configuracoes (never on this path),
+  // but keeping the specific route first means that stays true even if that ever changes.
+  if (loc.pathname.startsWith('/professor/convite/')) return <><div id="app" className="vfade"><TeacherInviteAccept /></div><Modals /><Toast /></>
   // Processing a signed-in Google result (above): avoids a one-frame flash of whatever
   // #/configuracoes would otherwise render (SettingsPlan, api/billing.js's own route) before the
   // effect above lands on Settings itself.
@@ -326,6 +336,12 @@ function Shell() {
               <Route path="/coach/intake" element={<CoachIntake />} />
               <Route path="/coach/proposal" element={<Navigate to="/coach" replace />} />
               <Route path="/coach/setup" element={<CoachSetup />} />
+              {/* Teacher-only (ISO-1594/ISO-1610) — same gated-redirect pattern as /admin below.
+                  A teacher is also always a student of their own account (D11); only the role
+                  check gates this, never anything about the account's own training data. */}
+              <Route path="/alunos" element={user?.role === 'teacher' ? <Students /> : <Navigate to="/home" replace />} />
+              <Route path="/alunos/biblioteca" element={user?.role === 'teacher' ? <TeacherLibrary /> : <Navigate to="/home" replace />} />
+              <Route path="/alunos/:id" element={user?.role === 'teacher' ? <StudentDetail /> : <Navigate to="/home" replace />} />
               <Route path="/admin" element={user?.admin ? <Admin /> : <Navigate to="/home" replace />} />
               <Route path="*" element={<Navigate to="/home" replace />} />
             </Routes>

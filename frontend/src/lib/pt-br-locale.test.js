@@ -49,8 +49,13 @@ describe('Brazilian Portuguese locale', () => {
     // wording works on both shores, reviewed, no override needed; one of the 8, 'Back', was
     // renamed to 'Rear' after review caught it shadowing the Coach nav button's existing 'Back'
     // key, which is why this is a separate +1 bump rather than folded into the count above).
+    // ISO-1594/ISO-1610: +1 more ('Recommended by your teacher' -> 'Recomendado pelo seu
+    // professor', the teacher/student recommended-Program card on Home — same wording works on
+    // both shores, reviewed, no override needed; every other new string this feature added (the
+    // other 134, plus the unrelated pre-existing "People under 18..." gap it incidentally also
+    // translated) already has its own pt-BR override, so only this one moved the inherited set).
     // See the script above for how to recompute this.
-    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('8ea97736d76416f027d2421d4a334b4285acb66064a8cb517cbe9fd7512848fa')
+    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('50073e5e0aa195b63faafba001abefb24ddf98ad643e04d5f05ae45512d362b1')
   })
 
   test('does not leak European Portuguese UI terms', () => {
