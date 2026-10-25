@@ -13,7 +13,7 @@ import { tempData, spawnApi } from './helpers.mjs';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
 const ORIGIN = 'http://localhost:8080';
-const VERSION = '2026-10-18';
+const VERSION = '2026-10-25';
 const b64u = b => Buffer.from(b).toString('base64url');
 const sha = b => crypto.createHash('sha256').update(b).digest();
 
