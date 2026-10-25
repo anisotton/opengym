@@ -341,12 +341,20 @@ export default function Settings() {
       </>}
     </Section>}
 
-    {/* ---------- ways to sign in (ISO-1595 §5): password, passkeys, Google, in that order ---------- */}
-    {user && !MOBILE && !DEMO && <Section title={t('Ways to sign in')}>
-      {pwOn && <PasswordRow version={credsV} />}
-      <PasskeysRow state={passkeys.st} changed={credsChanged} />
+    {/* ---------- ways to sign in (ISO-1595 §5): password, passkeys, Google, in that order.
+        A Capacitor profile that never linked Google has nothing to show here (Password/Passkeys/
+        DeviceLink are all web-only sign-in methods) and the section itself disappears — but one
+        that already linked Google from the browser still gets to see that link, read-only
+        (GoogleRow's own MOBILE branch, docs/MOBILE.md), so the section can't be gated on !MOBILE
+        alone; it has to survive long enough for GoogleRow to decide — but only when GoogleRow
+        will actually render something: an instance that turned google_login back off since the
+        link was made has nothing left to show either (GoogleRow's own `!googleOn` check), and the
+        section must not render empty under its title. */}
+    {user && !DEMO && (!MOBILE || (!!user.google && !!config?.google_login)) && <Section title={t('Ways to sign in')}>
+      {!MOBILE && pwOn && <PasswordRow version={credsV} />}
+      {!MOBILE && <PasskeysRow state={passkeys.st} changed={credsChanged} />}
       <GoogleRow user={user} googleOn={!!config?.google_login} passkeysState={passkeys.st} />
-      <DeviceLinkRow state={passkeys.st} />
+      {!MOBILE && <DeviceLinkRow state={passkeys.st} />}
     </Section>}
     {!user && !DEMO && !MOBILE && <p className="sect-f" style={{ marginTop: -18, marginBottom: 22 }}>{t('Guest mode — data lives only in this browser.')}</p>}
 
