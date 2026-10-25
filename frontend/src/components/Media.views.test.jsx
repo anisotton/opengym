@@ -45,6 +45,10 @@ describe('BuiltinMedia — an exercise with 2 views', () => {
     expect(buttons).toHaveLength(2)
     expect(buttons[0].getAttribute('aria-pressed')).toBe('true')
     expect(buttons[1].getAttribute('aria-pressed')).toBe('false')
+    // Not the literal word 'Back': that source string is already the Coach nav button's key in
+    // every locale pack, and would silently resolve to its translation instead (ISO-1604 review).
+    expect(buttons[0].textContent).toBe('Front')
+    expect(buttons[1].textContent).toBe('Rear')
   })
 
   it('switching views does not touch play state: paused stays paused, on the new view\'s still', () => {

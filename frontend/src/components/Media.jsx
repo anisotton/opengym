@@ -36,15 +36,22 @@ function MuscleLegend() {
 // Segmented Frente/Costas control for the Brilhart exercises. Not the shared <Segmented> from
 // ui.jsx: it needs to float over the media in a corner with its own translucent styling (to
 // read on top of any GIF), not sit in the document flow like every other use of it.
+//
+// The source string is 'Rear', not 'Back': the app translates by literal English string, and
+// 'Back' was already taken by the Coach's navigation button in every locale pack (its own,
+// differently-worded translation — 'Voltar', 'Zurück'…). Reusing it silently shadowed the new
+// body-view wording with whichever one happened to sit later in the object literal (the review
+// that caught this, ISO-1604, found pt.js showing "Voltar" on this control). `v.key` itself
+// (the data model's view id, 'front'/'back') is unrelated and stays as-is.
 function ViewSwitch({ views, view, onChange }) {
   return (
     <div className="gifviews" style={{ '--n': views.length, '--i': view }} onClick={e => e.stopPropagation()}>
       <span className="gv-sel" aria-hidden="true" />
       {views.map((v, i) => (
         <button key={v.key} className={i === view ? 'on' : ''} aria-pressed={i === view}
-          aria-label={v.key === 'back' ? t('Show back view') : t('Show front view')}
+          aria-label={v.key === 'back' ? t('Show rear view') : t('Show front view')}
           onClick={() => onChange(i)}>
-          {v.key === 'back' ? t('Back') : t('Front')}
+          {v.key === 'back' ? t('Rear') : t('Front')}
         </button>
       ))}
     </div>

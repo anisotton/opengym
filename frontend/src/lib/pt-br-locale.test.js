@@ -46,9 +46,11 @@ describe('Brazilian Portuguese locale', () => {
     // 'Enviado', same word on both shores — reviewed, no override needed). ISO-1606: +8 more
     // (the no-media/view-switcher/draft-badge strings — 'Front'/'Costas', 'Draft — steps
     // pending Brilhart review'/'Rascunho — passos aguardando validação da Brilhart', etc. — same
-    // wording works on both shores, reviewed, no override needed). See the script above for how
-    // to recompute this.
-    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('f536dd0047e669f6218edb873788c6a6d2d062cb9dabc826e96693db7b269cc4')
+    // wording works on both shores, reviewed, no override needed; one of the 8, 'Back', was
+    // renamed to 'Rear' after review caught it shadowing the Coach nav button's existing 'Back'
+    // key, which is why this is a separate +1 bump rather than folded into the count above).
+    // See the script above for how to recompute this.
+    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('8ea97736d76416f027d2421d4a334b4285acb66064a8cb517cbe9fd7512848fa')
   })
 
   test('does not leak European Portuguese UI terms', () => {

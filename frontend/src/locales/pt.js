@@ -82,9 +82,9 @@ export default {
   'Also trains': 'Também trabalha',
   // --- no-media / Brilhart view switcher (ISO-1606) ---
   'Front': 'Frente',
-  'Back': 'Costas',
+  'Rear': 'Costas',
   'Show front view': 'Ver vista de frente',
-  'Show back view': 'Ver vista de costas',
+  'Show rear view': 'Ver vista de costas',
   'Draft — steps pending Brilhart review': 'Rascunho — passos aguardando validação da Brilhart',
   'No image available for this exercise': 'Sem imagem disponível para este exercício',
   'Muscle map for this exercise': 'Mapa muscular deste exercício',
