@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { checkForUpdate, fetchLatest, sha256, resetUpdateCheck, UPDATE_FEED } from './update.js'
+import { checkForUpdate, sha256, resetUpdateCheck, fetchChecksum } from './update.js'
 
 // __APP_VERSION__ is defined at build time by vite.config.js (reads package.json).
 // In the test environment vitest applies the same define, so it's available here.
@@ -25,35 +25,11 @@ describe('sha256', () => {
   })
 })
 
-describe('checkForUpdate — disabled (no UPDATE_FEED configured for this fork)', () => {
+describe('checkForUpdate', () => {
   let originalFetch
-  beforeEach(() => { originalFetch = globalThis.fetch; globalThis.fetch = vi.fn(); resetUpdateCheck() })
+
+  beforeEach(() => { originalFetch = globalThis.fetch; resetUpdateCheck() })
   afterEach(() => { globalThis.fetch = originalFetch })
-
-  it('is off by default', () => {
-    expect(UPDATE_FEED).toBeFalsy()
-  })
-
-  it('resolves without ever calling fetch', async () => {
-    const result = await checkForUpdate()
-    expect(globalThis.fetch).not.toHaveBeenCalled()
-    expect(result).toEqual({ hasUpdate: false, latestVersion: __APP_VERSION__, apkUrl: null, hashUrl: null })
-  })
-
-  it('stays disabled across repeated calls and resetUpdateCheck()', async () => {
-    await checkForUpdate()
-    resetUpdateCheck()
-    await checkForUpdate()
-    expect(globalThis.fetch).not.toHaveBeenCalled()
-  })
-})
-
-describe('fetchLatest — the fetch-and-compare mechanism, kept working for when a feed exists', () => {
-  let originalFetch
-  beforeEach(() => { originalFetch = globalThis.fetch })
-  afterEach(() => { globalThis.fetch = originalFetch })
-
-  const FEED = 'https://example.com/api/v4/projects/1/releases'
 
   function mockFetch(body, status = 200) {
     globalThis.fetch = vi.fn(() => Promise.resolve({
@@ -62,10 +38,17 @@ describe('fetchLatest — the fetch-and-compare mechanism, kept working for when
       json: () => Promise.resolve(body),
     }))
   }
+  const asset = (name, url = 'https://github.com/x/releases/download/v9/' + name) => ({ name, browser_download_url: url })
+
+  it('asks GitHub for the latest published release (never a draft or a beta)', async () => {
+    mockFetch({ tag_name: 'v' + __APP_VERSION__, assets: [] })
+    await checkForUpdate()
+    expect(globalThis.fetch.mock.calls[0][0]).toBe('https://api.github.com/repos/anisotton/opengym/releases/latest')
+  })
 
   it('reports no update when the latest release matches the current version', async () => {
-    mockFetch([{ tag_name: 'v' + __APP_VERSION__, assets: { links: [] } }])
-    const result = await fetchLatest(FEED)
+    mockFetch({ tag_name: 'v' + __APP_VERSION__, assets: [] })
+    const result = await checkForUpdate()
     expect(result.hasUpdate).toBe(false)
     expect(result.latestVersion).toBe(__APP_VERSION__)
     expect(result.apkUrl).toBe(null)
@@ -78,180 +61,105 @@ describe('fetchLatest — the fetch-and-compare mechanism, kept working for when
     // is not guaranteed to be lower than whatever is currently running.
     const [maj, min, patch] = __APP_VERSION__.split('+')[0].split('.').map(s => parseInt(s, 10) || 0)
     const older = 'v' + [maj, min, Math.max(0, patch - 1)].join('.')
-    mockFetch([{ tag_name: older, assets: { links: [] } }])
-    const result = await fetchLatest(FEED)
+    mockFetch({ tag_name: older, assets: [] })
+    const result = await checkForUpdate()
     expect(result.hasUpdate).toBe(false)
     expect(result.latestVersion).toBe(older.slice(1))
   })
 
   it('reports an update when the latest release is newer', async () => {
-    mockFetch([{ tag_name: 'v99.0.0', assets: { links: [] } }])
-    const result = await fetchLatest(FEED)
+    mockFetch({ tag_name: 'v99.0.0', assets: [] })
+    const result = await checkForUpdate()
     expect(result.hasUpdate).toBe(true)
     expect(result.latestVersion).toBe('99.0.0')
-  })
-
-  it('strips the v prefix from the tag name', async () => {
-    mockFetch([{ tag_name: 'v99.1.2', assets: { links: [] } }])
-    const result = await fetchLatest(FEED)
-    expect(result.latestVersion).toBe('99.1.2')
   })
 
   it('handles tag names without a v prefix', async () => {
-    mockFetch([{ tag_name: '99.0.0', assets: { links: [] } }])
-    const result = await fetchLatest(FEED)
+    mockFetch({ tag_name: '99.1.2', assets: [] })
+    const result = await checkForUpdate()
     expect(result.hasUpdate).toBe(true)
-    expect(result.latestVersion).toBe('99.0.0')
+    expect(result.latestVersion).toBe('99.1.2')
   })
 
-  it('finds the APK download URL from release asset links', async () => {
-    const apkUrl = 'https://example.com/project/-/releases/v2.0.0/downloads/app.apk'
-    mockFetch([{
-      tag_name: 'v99.0.0',
-      assets: { links: [{ url: apkUrl, direct_asset_url: apkUrl }] }
-    }])
-    const result = await fetchLatest(FEED)
-    expect(result.apkUrl).toBe(apkUrl)
+  // What api.github.com returned for releases/latest on 2026-10-10 (v1.4.0, trimmed): the APK
+  // and its checksum as release assets. The checksum file also ends in neither .apk nor
+  // anything else the APK match could take.
+  const REAL_RELEASE = {
+    tag_name: 'v1.4.0',
+    assets: [
+      { name: 'openGym-1.4.0.apk', browser_download_url: 'https://github.com/DuarteSantos8/openGym/releases/download/v1.4.0/openGym-1.4.0.apk' },
+      { name: 'openGym-1.4.0.apk.sha256', browser_download_url: 'https://github.com/DuarteSantos8/openGym/releases/download/v1.4.0/openGym-1.4.0.apk.sha256' },
+    ],
+  }
+
+  it('finds the APK and its checksum in a real GitHub release payload', async () => {
+    mockFetch(REAL_RELEASE)
+    const result = await checkForUpdate()
+    expect(result.latestVersion).toBe('1.4.0')
+    expect(result.apkUrl).toBe('https://github.com/DuarteSantos8/openGym/releases/download/v1.4.0/openGym-1.4.0.apk')
+    expect(result.hashUrl).toBe('https://github.com/DuarteSantos8/openGym/releases/download/v1.4.0/openGym-1.4.0.apk.sha256')
   })
 
-  it('prefers direct_asset_url over url for APK links', async () => {
-    mockFetch([{
-      tag_name: 'v99.0.0',
-      assets: {
-        links: [{
-          url: 'https://redirect.example/app.apk',
-          direct_asset_url: 'https://direct.example/app.apk'
-        }]
-      }
-    }])
-    const result = await fetchLatest(FEED)
-    expect(result.apkUrl).toBe('https://direct.example/app.apk')
+  it('does not take the checksum for the APK when it is listed first', async () => {
+    mockFetch({ tag_name: 'v99.0.0', assets: [asset('a.apk.sha256'), asset('sbom.json'), asset('a.apk')] })
+    const result = await checkForUpdate()
+    expect(result.apkUrl).toMatch(/\/a\.apk$/)
+    expect(result.hashUrl).toMatch(/\/a\.apk\.sha256$/)
   })
 
-  it('returns null apkUrl when no .apk link exists', async () => {
-    mockFetch([{
-      tag_name: 'v99.0.0',
-      assets: { links: [{ url: 'https://example.com/changelog.md', direct_asset_url: 'https://example.com/changelog.md' }] }
-    }])
-    const result = await fetchLatest(FEED)
+  it('returns null URLs when the release has no APK or checksum', async () => {
+    mockFetch({ tag_name: 'v99.0.0', assets: [asset('changelog.md')] })
+    const result = await checkForUpdate()
     expect(result.hasUpdate).toBe(true)
     expect(result.apkUrl).toBe(null)
-  })
-
-  it('finds the .sha256 hash URL from release asset links', async () => {
-    const hashUrl = 'https://example.com/project/-/releases/v2.0.0/downloads/app.apk.sha256'
-    mockFetch([{
-      tag_name: 'v99.0.0',
-      assets: {
-        links: [
-          { url: 'https://example.com/app.apk', direct_asset_url: 'https://example.com/app.apk' },
-          { url: hashUrl, direct_asset_url: hashUrl },
-        ]
-      }
-    }])
-    const result = await fetchLatest(FEED)
-    expect(result.hashUrl).toBe(hashUrl)
-  })
-
-  it('finds hash URL by link name containing sha256', async () => {
-    mockFetch([{
-      tag_name: 'v99.0.0',
-      assets: {
-        links: [
-          { name: 'APK', url: 'https://example.com/app.apk', direct_asset_url: 'https://example.com/app.apk' },
-          { name: 'SHA256 checksum', url: 'https://example.com/checksum.txt', direct_asset_url: 'https://example.com/checksum.txt' },
-        ]
-      }
-    }])
-    const result = await fetchLatest(FEED)
-    expect(result.hashUrl).toBe('https://example.com/checksum.txt')
-  })
-
-  // A real GitLab-API-shaped release payload (assets.links, generic-package checksum listed
-  // BEFORE the APK) — the detection must not confuse the two regardless of order.
-  const REAL_RELEASE = [
-    {
-      "tag_name": "v1.3.1",
-      "name": "app v1.3.1",
-      "assets": {
-        "count": 7,
-        "sources": [
-          { "format": "zip", "url": "https://example.com/archive/v1.3.1/app-v1.3.1.zip" },
-        ],
-        "links": [
-          {
-            "id": 12790840,
-            "name": "Container images (api + web)",
-            "url": "https://example.com/container_registry",
-            "direct_asset_url": "https://example.com/container_registry",
-            "link_type": "image"
-          },
-          {
-            "id": 12790839,
-            "name": "app-1.3.1.apk.sha256 (checksum)",
-            "url": "https://example.com/packages/generic/app-android/1.3.1/app-1.3.1.apk.sha256",
-            "direct_asset_url": "https://example.com/packages/generic/app-android/1.3.1/app-1.3.1.apk.sha256",
-            "link_type": "other"
-          },
-          {
-            "id": 12790838,
-            "name": "app-1.3.1.apk (Android, sideload)",
-            "url": "https://example.com/packages/generic/app-android/1.3.1/app-1.3.1.apk",
-            "direct_asset_url": "https://example.com/packages/generic/app-android/1.3.1/app-1.3.1.apk",
-            "link_type": "package"
-          }
-        ]
-      }
-    }
-  ]
-
-  it('finds the APK and its checksum in a real GitLab-shaped release payload', async () => {
-    mockFetch(REAL_RELEASE)
-    const result = await fetchLatest(FEED)
-    expect(result.latestVersion).toBe('1.3.1')
-    expect(result.apkUrl).toBe('https://example.com/packages/generic/app-android/1.3.1/app-1.3.1.apk')
-    expect(result.hashUrl).toBe('https://example.com/packages/generic/app-android/1.3.1/app-1.3.1.apk.sha256')
-  })
-
-  it('returns null hashUrl when no hash link exists', async () => {
-    mockFetch([{
-      tag_name: 'v99.0.0',
-      assets: { links: [{ url: 'https://example.com/app.apk', direct_asset_url: 'https://example.com/app.apk' }] }
-    }])
-    const result = await fetchLatest(FEED)
     expect(result.hashUrl).toBe(null)
   })
 
-  it('returns no update when the releases array is empty', async () => {
-    mockFetch([])
-    const result = await fetchLatest(FEED)
+  it('returns no update when the repository has no release yet (404)', async () => {
+    mockFetch({ message: 'Not Found' }, 404)
+    const result = await checkForUpdate()
     expect(result.hasUpdate).toBe(false)
     expect(result.latestVersion).toBe(__APP_VERSION__)
-    expect(result.hashUrl).toBe(null)
   })
 
-  it('throws when the feed responds with an error status', async () => {
+  it('throws when the API responds with an error status', async () => {
     mockFetch(null, 500)
-    await expect(fetchLatest(FEED)).rejects.toThrow('Release feed 500')
+    await expect(checkForUpdate()).rejects.toThrow('GitHub API 500')
   })
 
   it('throws on network failure', async () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error('Network error')))
-    await expect(fetchLatest(FEED)).rejects.toThrow('Network error')
+    await expect(checkForUpdate()).rejects.toThrow('Network error')
   })
 })
 
-describe('semver comparison (via fetchLatest behavior)', () => {
+describe('fetchChecksum (web)', () => {
   let originalFetch
   beforeEach(() => { originalFetch = globalThis.fetch })
   afterEach(() => { globalThis.fetch = originalFetch })
+  const serve = text => { globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, text: () => Promise.resolve(text) })) }
 
-  const FEED = 'https://example.com/api/v4/projects/1/releases'
+  it('reads the hash out of a sha256sum line', async () => {
+    serve('EC2822' + 'a'.repeat(58) + '  Brilhart Fitness-1.4.0.apk\n')
+    expect(await fetchChecksum('https://x/a.apk.sha256')).toBe('ec2822' + 'a'.repeat(58))
+  })
+
+  it('gives null for anything that is not a SHA-256, or no URL', async () => {
+    serve('<html>not found</html>')
+    expect(await fetchChecksum('https://x/a.apk.sha256')).toBe(null)
+    expect(await fetchChecksum(null)).toBe(null)
+  })
+})
+
+describe('semver comparison (via checkForUpdate behavior)', () => {
+  let originalFetch
+  beforeEach(() => { originalFetch = globalThis.fetch; resetUpdateCheck() })
+  afterEach(() => { globalThis.fetch = originalFetch })
 
   function mockRelease(tag) {
     globalThis.fetch = vi.fn(() => Promise.resolve({
       ok: true, status: 200,
-      json: () => Promise.resolve([{ tag_name: tag, assets: { links: [] } }]),
+      json: () => Promise.resolve({ tag_name: tag, assets: [] }),
     }))
   }
 
@@ -259,7 +167,7 @@ describe('semver comparison (via fetchLatest behavior)', () => {
   // when package.json bumps. bump(2, +1) raises the patch; bump(0, +1) raises the major.
   // Read without its build metadata, the way compareSemver reads it: a build that sets
   // APP_BUILD (#244) runs this suite as "1.3.8+<build>", and then it checks the installed side.
-  const [MAJ, MIN, PATCH] = __APP_VERSION__.split('+')[0].split('.').map(s => parseInt(s, 10) || 0)
+  const [MAJ, MIN, PATCH] = __APP_VERSION__.split('+')[0].split('.').map(s => parseInt(s, 10) || 0)   // '0.0.0-alpha' here
   const bump = (idx, by) => {
     const parts = [MAJ, MIN, PATCH]
     parts[idx] += by
@@ -268,17 +176,17 @@ describe('semver comparison (via fetchLatest behavior)', () => {
 
   it('detects a patch bump as an update', async () => {
     mockRelease(bump(2, 1))
-    expect((await fetchLatest(FEED)).hasUpdate).toBe(true)
+    expect((await checkForUpdate()).hasUpdate).toBe(true)
   })
 
   it('detects a minor bump as an update', async () => {
     mockRelease(bump(1, 1))
-    expect((await fetchLatest(FEED)).hasUpdate).toBe(true)
+    expect((await checkForUpdate()).hasUpdate).toBe(true)
   })
 
   it('detects a major bump as an update', async () => {
     mockRelease(bump(0, 1))
-    expect((await fetchLatest(FEED)).hasUpdate).toBe(true)
+    expect((await checkForUpdate()).hasUpdate).toBe(true)
   })
 
   // A version may say which build it came from, as semver build metadata ("1.3.8+2026-09-18.2").
@@ -293,22 +201,21 @@ describe('semver comparison (via fetchLatest behavior)', () => {
 
   it('judges a tag that carries build metadata on its numbers alone', async () => {
     mockRelease(tagged(MAJOR, MINOR, PATCH_N + 1))
-    expect((await fetchLatest(FEED)).hasUpdate).toBe(true)
+    expect((await checkForUpdate()).hasUpdate).toBe(true)
 
-    // Same numeric version as running (build metadata aside), built from the exact running
-    // version string rather than reconstructed from parsed ints — so a pre-release suffix like
-    // "-alpha" round-trips exactly in the echoed latestVersion instead of being dropped.
-    const sameTag = 'v' + __APP_VERSION__.split('+')[0] + BUILD
-    mockRelease(sameTag)
-    const same = await fetchLatest(FEED)
+    resetUpdateCheck()
+    mockRelease(tagged(MAJOR, MINOR, PATCH_N))
+    const same = await checkForUpdate()
     expect(same.hasUpdate).toBe(false)                                   // the running release
-    expect(same.latestVersion).toBe(__APP_VERSION__.split('+')[0] + BUILD)   // echoed as it came
+    expect(same.latestVersion).toBe(tagged(MAJOR, MINOR, PATCH_N).slice(1))   // echoed as it came
 
+    resetUpdateCheck()
     mockRelease(tagged(MAJOR, Math.max(0, MINOR - 1), 0))
-    expect((await fetchLatest(FEED)).hasUpdate).toBe(false)
+    expect((await checkForUpdate()).hasUpdate).toBe(false)
 
+    resetUpdateCheck()
     mockRelease(tagged(MAJOR + 1, 0, 0))
-    expect((await fetchLatest(FEED)).hasUpdate).toBe(true)
+    expect((await checkForUpdate()).hasUpdate).toBe(true)
   })
 
   it('does not flag an older patch as an update', async () => {
@@ -316,13 +223,13 @@ describe('semver comparison (via fetchLatest behavior)', () => {
     mockRelease('v' + [MAJ, MIN, Math.max(0, PATCH - 1)].join('.'))
     // Only meaningful when we could actually go lower; when patch is 0 this equals current,
     // which correctly reports no update either way.
-    expect((await fetchLatest(FEED)).hasUpdate).toBe(false)
+    expect((await checkForUpdate()).hasUpdate).toBe(false)
   })
 
   it('does not flag an older minor as an update', async () => {
     // A version guaranteed lower than any 1.x+ release: same major, minor 0, patch 0,
     // minus one on the minor when possible.
     mockRelease('v' + [MAJ, Math.max(0, MIN - 1), 0].join('.'))
-    expect((await fetchLatest(FEED)).hasUpdate).toBe(false)
+    expect((await checkForUpdate()).hasUpdate).toBe(false)
   })
 })
