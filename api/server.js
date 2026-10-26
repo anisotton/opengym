@@ -558,7 +558,7 @@ setInterval(async () => {
       if ((S.workouts || []).some(w => w?.d === now.date)) continue;
       if (excusedOn(S, now.date)) continue; // noted as sick, away, … (nudge.js excusedOn)
       const rid = effectiveRoutineId(S, now.date);
-      if (!rid) { sum.settled = now.date; continue; } // rest day — nothing planned
+      if (!rid) continue; // rest day — nothing planned
       const routine = (S.routines || []).find(r => r?.id === rid);
       console.log('reminder firing', user.id, rid);
       user.lastReminder = now.date;

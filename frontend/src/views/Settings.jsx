@@ -908,10 +908,11 @@ export default function Settings({ page = null, find = null, via = null, entryKe
           <DeviceLinkRow state={passkeys.st} />
           <AccountIdRow id={user.id} />
           <Row icon="signOut" iconTint="var(--red)" title={t('Disconnect')} danger onClick={disconnect} />
-          {/* A paired phone has an account too (App Store rule 5.1.1(v)): the same row, the same
-              flow, as the last row of the block — a phone kept local has none; "Reset everything"
-              in Data & backup wipes it. */}
-          <DeleteAccountRow doExport={doExport} doExportZip={doExportZip} hasMedia={hasMedia} passkeysState={passkeys.st} />
+          {/* No "Delete account" row here yet: the sheet proves ownership with a passkey or a
+              password (DeleteAccount.jsx), and a WebView cannot run the passkey ceremony against
+              the server's RP_ID — upstream answers that with a device proof (DeviceConfirm +
+              proof 'device' on the server), which the fork's DELETE /api/account does not take.
+              Until that is ported, the phone's account is deleted from a signed-in browser. */}
         </>}
       </ServerSyncSection>}
 

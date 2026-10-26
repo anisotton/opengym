@@ -885,7 +885,7 @@ export const PT_BR_OVERRIDES = {
   // --- connection indicator, Server & sync, changes not on the server yet ---
   'Waiting to sync': 'Aguardando sincronização',
   'Offline. The server can’t be reached': 'Offline. Não é possível acessar o servidor',
-  'Your server’s address answered with something other tha Brilhart Fitness (HTTP {0}). Your changes are kept here.': 'O endereço do seu servidor respondeu com algo que não é o Brilhart Fitness (HTTP {0}). Suas alterações ficam aqui.',
+  'Your server’s address answered with something other than Brilhart Fitness (HTTP {0}). Your changes are kept here.': 'O endereço do seu servidor respondeu com algo que não é o Brilhart Fitness (HTTP {0}). Suas alterações ficam aqui.',
   'Your server answered with an error (HTTP {0}). Your changes are kept here.': 'Seu servidor respondeu com um erro (HTTP {0}). Suas alterações ficam aqui.',
   'Your server no longer accepts this browser. Your changes are kept here.': 'Seu servidor não aceita mais este navegador. Suas alterações ficam aqui.',
   'This phone is no longer paired with your server. Your changes are kept here.': 'Este celular não está mais pareado com seu servidor. Suas alterações ficam aqui.',

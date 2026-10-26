@@ -188,6 +188,7 @@ test('a day that owed nothing is asked again once the stored state changes', asy
   await seedUserState(h.databaseUrl, 'u_test_1', goodState(late.hhmm, { week: {} }));
   await wait(1500);
   assert.equal(firings(h.log), 0, `a rest day stays silent:\n${h.log}`);
+  assert.doesNotMatch(h.log, /ReferenceError|TypeError/, `the rest-day pass must not throw inside the tick:\n${h.log}`);
   await seedUserState(h.databaseUrl, 'u_test_1', goodState(late.hhmm), 2);
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline && !firings(h.log)) await wait(300);

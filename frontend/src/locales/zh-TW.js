@@ -1407,7 +1407,7 @@ export default {
   'Back online and synced with the server.': '已重新連線，並已與伺服器同步。',
   'This phone is not connected to a server.': '此手機目前尚未連線至伺服器。',
   'The server did not answer in time.': '伺服器未於時限內回應。',
-  'The server answered with something other tha Brilhart Fitness data.': '伺服器回傳的內容非 Brilhart Fitness 標準資料。',
+  'The server answered with something other than Brilhart Fitness data.': '伺服器回傳的內容非 Brilhart Fitness 標準資料。',
   // --- combine-routines sheet + custom-exercise equipment (v1.3.6) ---
   '{0} added ({1})': '已新增 {0}（{1}）',
   'already added': '已加入',
@@ -1418,7 +1418,7 @@ export default {
   'Waiting to sync': '等待同步中',
   'Offline. The server can’t be reached': '離線中。無法連線至伺服器',
   'Not a Brilhart Fitness answer (HTTP {0})': '非 Brilhart Fitness 系統回應 (HTTP {0})',
-  'Your server’s address answered with something other tha Brilhart Fitness (HTTP {0}). Your changes are kept here.': '伺服器位址回傳了異常回應 (HTTP {0})。你所作的修改將妥善保存在本機。',
+  'Your server’s address answered with something other than Brilhart Fitness (HTTP {0}). Your changes are kept here.': '伺服器位址回傳了異常回應 (HTTP {0})。你所作的修改將妥善保存在本機。',
   'Server error (HTTP {0})': '伺服器發生錯誤 (HTTP {0})',
   'Your server answered with an error (HTTP {0}). Your changes are kept here.': '伺服器傳回錯誤代碼 (HTTP {0})。你的修改目前保留在裝置端。',
   'The server refuses this browser': '伺服器拒絕了此瀏覽器的連線請求',

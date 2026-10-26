@@ -1484,7 +1484,7 @@ export default {
   'Back online and synced with the server.': 'আবার অনলাইনে, সার্ভারের সাথে সিঙ্ক হয়েছে।',
   'This phone is not connected to a server.': 'এই ফোন কোনো সার্ভারের সাথে সংযুক্ত নয়।',
   'The server did not answer in time.': 'সার্ভার সময়মতো উত্তর দেয়নি।',
-  'The server answered with something other tha Brilhart Fitness data.': 'সার্ভার Brilhart Fitness ডেটা ছাড়া অন্য কিছু দিয়ে উত্তর দিয়েছে।',
+  'The server answered with something other than Brilhart Fitness data.': 'সার্ভার Brilhart Fitness ডেটা ছাড়া অন্য কিছু দিয়ে উত্তর দিয়েছে।',
   // --- combine-routines sheet + custom-exercise equipment (v1.3.6) ---
   '{0} added ({1})': '{0} যোগ হয়েছে ({1})',
   'already added': 'ইতিমধ্যে যোগ করা',
@@ -1495,7 +1495,7 @@ export default {
   'Waiting to sync': 'সিঙ্কের অপেক্ষায়',
   'Offline. The server can’t be reached': 'অফলাইন। সার্ভারে পৌঁছানো যাচ্ছে না',
   'Not a Brilhart Fitness answer (HTTP {0})': 'Brilhart Fitness-এর উত্তর নয় (HTTP {0})',
-  'Your server’s address answered with something other tha Brilhart Fitness (HTTP {0}). Your changes are kept here.': 'আপনার সার্ভারের ঠিকানা Brilhart Fitness ছাড়া অন্য কিছু দিয়ে উত্তর দিয়েছে (HTTP {0})। আপনার পরিবর্তনগুলো এখানে রাখা আছে।',
+  'Your server’s address answered with something other than Brilhart Fitness (HTTP {0}). Your changes are kept here.': 'আপনার সার্ভারের ঠিকানা Brilhart Fitness ছাড়া অন্য কিছু দিয়ে উত্তর দিয়েছে (HTTP {0})। আপনার পরিবর্তনগুলো এখানে রাখা আছে।',
   'Server error (HTTP {0})': 'সার্ভার ত্রুটি (HTTP {0})',
   'Your server answered with an error (HTTP {0}). Your changes are kept here.': 'আপনার সার্ভার একটি ত্রুটি দিয়ে উত্তর দিয়েছে (HTTP {0})। আপনার পরিবর্তনগুলো এখানে রাখা আছে।',
   'The server refuses this browser': 'সার্ভার এই ব্রাউজার প্রত্যাখ্যান করছে',

@@ -306,15 +306,17 @@ describe('leaving the server', () => {
   })
 })
 
-/* "Delete account" (App Store rule 5.1.1(v); the fork's own row and flow, ISO-1449 — the sheet
-   itself, its proof and the trip home once the account is gone are DeleteAccount.test.jsx's):
-   wherever there is a server account, a paired phone or a signed-in browser, and nowhere there
-   is none. */
+/* "Delete account" (the fork's own row and flow, ISO-1449 — the sheet itself, its proof and the
+   trip home once the account is gone are DeleteAccount.test.jsx's): in a signed-in browser, where
+   the owner can prove it with a passkey or a password. Not on a paired phone: the WebView cannot
+   run the passkey ceremony against the server's RP_ID and the fork's DELETE /api/account has no
+   device proof yet (upstream's DeviceConfirm), so a row there would open a flow that cannot end
+   (ISO-1592 follow-up). */
 describe('deleting the account', () => {
-  it('a paired phone and a signed-in browser both have the row', async () => {
+  it('a signed-in browser has the row; a paired phone does not', async () => {
     const phone = mount(<Settings page="account" />)
     await act(async () => {})
-    expect(rowByTitle(phone, 'Delete account')).toBeTruthy()
+    expect(rowByTitle(phone, 'Delete account')).toBeUndefined()
 
     mocks.MOBILE = false
     const page = mount(<Settings page="account" />)

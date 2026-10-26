@@ -34,4 +34,16 @@ describe('the product name in the app', () => {
     }
     expect(hits, hits.join('\n')).toEqual([])
   })
+
+  // A mechanical "openGym" → "Brilhart Fitness" pass once ate the article next to it ("an openGym"
+  // → "an Brilhart", "than openGym" → "tha Brilhart"); the words around the name stay words.
+  it('leaves the words around the name intact', () => {
+    const hits = []
+    for (const file of walk(SRC)) {
+      readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+        if (/\b(tha|an) Brilhart Fitness/.test(line)) hits.push(`${relative(SRC, file)}:${i + 1}: ${line.trim().slice(0, 100)}`)
+      })
+    }
+    expect(hits, hits.join('\n')).toEqual([])
+  })
 })
