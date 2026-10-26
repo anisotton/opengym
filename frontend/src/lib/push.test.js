@@ -323,6 +323,75 @@ describe('the device id the worker re-registers with', () => {
   })
 })
 
+// Since the server refuses to move an endpoint filed under another account unless the caller
+// sends that row's own keys (409), a browser that holds the endpoint with other keys could never
+// register again, and the switch read "on" from the browser's side all the while. The way out is
+// a fresh subscription: a new endpoint and new keys, which nobody else can hold.
+describe('a subscription the server has under another account', () => {
+  const conflict = () => refusal(409, 'this subscription belongs to another account')
+
+  it('is replaced by a fresh one, which is sent once more', async () => {
+    const { syncPushSubscription } = await import('./push.js')
+    const old = makeSub(KEY)
+    sub = old
+    serverHas = false
+    subscribeAnswers.push(conflict())
+    expect(await syncPushSubscription()).toBe(true)
+    expect(old.unsubscribe).toHaveBeenCalledTimes(1)
+    expect(reg.pushManager.subscribe).toHaveBeenCalledTimes(1)
+    expect(new Uint8Array(reg.pushManager.subscribe.mock.calls[0][0].applicationServerKey)).toEqual(new Uint8Array(keyBytes(KEY)))
+    expect(posts()).toEqual(['https://push.example/e1', 'https://push.example/e2'])
+    expect(calls.at(-1)[2].subscription.keys).toEqual({ p256dh: 'p2', auth: 'a2' })
+    expect(sub.endpoint).toBe('https://push.example/e2')     // the browser keeps the fresh one
+  })
+
+  it('turning the switch on goes the same way', async () => {
+    const { enablePush } = await import('./push.js')
+    sub = makeSub(KEY)                                        // subscribe() hands back the one it has
+    reg.pushManager.subscribe.mockImplementationOnce(async () => sub)
+    subscribeAnswers.push(conflict())
+    await expect(enablePush()).resolves.toBeUndefined()
+    expect(posts()).toEqual(['https://push.example/e1', 'https://push.example/e2'])
+    expect(sub.endpoint).toBe('https://push.example/e2')
+  })
+
+  it('a fresh one refused as well is dropped, and the caller gets the server\'s words and `refused`', async () => {
+    const { syncPushSubscription } = await import('./push.js')
+    sub = makeSub(KEY)
+    serverHas = false
+    subscribeAnswers.push(conflict(), refusal(400, 'push endpoint not allowed'))
+    const e = await syncPushSubscription().catch(x => x)
+    expect(e).toBeInstanceOf(Error)
+    expect(e).toMatchObject({ message: 'push endpoint not allowed', status: 400, refused: true })
+    expect(posts()).toHaveLength(2)                           // one retry, never a loop
+    expect(sub).toBeNull()                                    // no subscription the server does not hold
+  })
+
+  it('a retry that never reaches the server is not the server refusing, and leaves nothing behind', async () => {
+    const { enablePush } = await import('./push.js')
+    subscribeAnswers.push(conflict(), new TypeError('Failed to fetch'))
+    const e = await enablePush().catch(x => x)
+    expect(e).toBeInstanceOf(TypeError)
+    expect(e.message).toBe('Failed to fetch')
+    expect(e.refused).toBeUndefined()
+    expect(sub).toBeNull()
+  })
+
+  it('any other failure is not retried and is thrown as it was', async () => {
+    const { syncPushSubscription } = await import('./push.js')
+    const old = makeSub(KEY)
+    sub = old
+    serverHas = false
+    subscribeAnswers.push(refusal(500, 'HTTP 500'))
+    const e = await syncPushSubscription().catch(x => x)
+    expect(e).toMatchObject({ message: 'HTTP 500', status: 500 })
+    expect(e.refused).toBeUndefined()
+    expect(old.unsubscribe).not.toHaveBeenCalled()
+    expect(reg.pushManager.subscribe).not.toHaveBeenCalled()
+    expect(posts()).toHaveLength(1)
+  })
+})
+
 describe('pushSupported', () => {
   it('needs the service worker, PushManager, Notification and an https origin', async () => {
     const { pushSupported } = await import('./push.js')

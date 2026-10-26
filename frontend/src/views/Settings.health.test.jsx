@@ -43,7 +43,7 @@ vi.mock('../lib/mobile.js', () => ({
   isAndroid: () => Promise.resolve(mocks.android),
   shareExport: vi.fn(), syncReminder: vi.fn(),
 }))
-vi.mock('../lib/update.js', () => ({ checkForUpdate: () => Promise.resolve({ hasUpdate: false }), downloadAndInstall: vi.fn() }))
+vi.mock('../lib/update.js', () => ({ checkForUpdate: () => Promise.resolve({ hasUpdate: false }), downloadAndInstall: vi.fn(), UPDATE_FEED: null }))
 vi.mock('../lib/health-sync.js', () => ({
   healthStatus: () => Promise.resolve(mocks.status),
   loadHealth: () => Promise.resolve(mocks.health),
@@ -135,5 +135,34 @@ describe('Settings — Health Connect', () => {
     expect(writeSwitch()).toBeUndefined()
     await act(async () => { row('Install Health Connect').click() })
     expect(mocks.openHealthConnect).toHaveBeenCalledTimes(1)
+  })
+})
+
+// The iPhone app: the same card for Apple Health, the switch the Apple Watch app goes by too.
+describe('Settings — Apple Health', () => {
+  beforeEach(() => { mocks.android = false; mocks.status = { status: 'available', granted: false, platform: 'ios' } })
+  const appleSwitch = () => row('Write to Apple Health')?.querySelector('[role="switch"]')
+
+  it('is there on the iPhone app, in Apple Health words', async () => {
+    await mount()
+    expect(appleSwitch().getAttribute('aria-checked')).toBe('false')
+    expect(row('Health Connect')).toBeUndefined()
+    await act(async () => { appleSwitch().click() })
+    expect(mocks.enableHealth).toHaveBeenCalledTimes(1)
+    expect(mocks.toast).toHaveBeenCalledWith('Writing to Apple Health')
+    expect(row('Open Apple Health')).toBeTruthy()
+  })
+
+  it('asks in Apple Health words before turning it off', async () => {
+    mocks.health = { on: true, written: {}, error: null }
+    await mount()
+    act(() => { appleSwitch().click() })
+    expect(mocks.menuSheet.mock.calls[0][0].title).toBe('Stop writing to Apple Health?')
+  })
+
+  it('is not there on an iPhone without Apple Health', async () => {
+    mocks.status = { status: 'unsupported', granted: false, platform: 'ios' }
+    await mount()
+    expect(appleSwitch()).toBeUndefined()
   })
 })

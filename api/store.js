@@ -117,7 +117,8 @@ function rowToUser(row) {
       : {}),
     ...(row.last_pull_at ? { lastPull: row.last_pull_at.getTime() } : {}),
     ...(row.extra?.lastReminder ? { lastReminder: row.extra.lastReminder } : {}),
-    ...(row.extra?.lastNudge ? { lastNudge: row.extra.lastNudge } : {})
+    ...(row.extra?.lastNudge ? { lastNudge: row.extra.lastNudge } : {}),
+    ...(row.extra?.owner === true ? { owner: true } : {})
   };
 }
 
@@ -168,7 +169,8 @@ export async function setTermsAccepted(pool, id, version, at) {
 function extraOf(user) {
   return {
     ...(user.invitedBy ? { invitedBy: user.invitedBy } : {}),
-    ...(user.lastReminder ? { lastReminder: user.lastReminder } : {})
+    ...(user.lastReminder ? { lastReminder: user.lastReminder } : {}),
+    ...(user.owner === true ? { owner: true } : {})
   };
 }
 
@@ -319,6 +321,27 @@ export async function setStripeCustomerId(pool, id, customerId) {
 export async function getUserIdByStripeCustomer(pool, customerId) {
   const { rows } = await pool.query('SELECT id FROM users WHERE stripe_customer_id = $1', [customerId]);
   return rows.length ? rows[0].id : null;
+}
+
+// Appoint or remove an admin (one owner, many admins — openGym v1.4.2). Revoking also drops the
+// owner mark, so a demoted owner leaves the instance to the next in line (server.js ownerFrom).
+export async function setAdminFlag(pool, id, admin) {
+  await pool.query(
+    admin ? 'UPDATE users SET admin = true WHERE id = $1'
+          : "UPDATE users SET admin = false, extra = extra - 'owner' WHERE id = $1",
+    [id]
+  );
+}
+
+// Hand the owner role on: exactly one row carries the mark afterwards.
+export async function setOwnerFlag(pool, id) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("UPDATE users SET extra = extra - 'owner' WHERE extra ? 'owner'");
+    await client.query("UPDATE users SET extra = jsonb_set(extra, '{owner}', 'true'::jsonb) WHERE id = $1", [id]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
 // How many accounts exist — FIRST_USER_ADMIN's "the instance had no profiles at all" test.

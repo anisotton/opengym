@@ -177,3 +177,33 @@ test('a null entry in workouts or routines does not cost that profile its remind
   assert.equal(firings(h.log), 1, h.log);
   assert.doesNotMatch(h.log, /reminder tick u_test_1 TypeError/, h.log);
 });
+
+// The tick keeps a few bytes per user and reads a whole state only while a window is open and
+// something could still be sent. "Nothing owed today" is remembered for the row as it is, so a
+// change to the row (here: a rest day turned into a training day) has to be read again.
+test('a day that owed nothing is asked again once the stored state changes', async t => {
+  const late = hhmmMinusMinutes(2);
+  if (!late.sameDay) return t.skip('just after midnight UTC — a same-day window cannot be set up');
+  const h = await startServer(t, [sub]);
+  await seedUserState(h.databaseUrl, 'u_test_1', goodState(late.hhmm, { week: {} }));
+  await wait(1500);
+  assert.equal(firings(h.log), 0, `a rest day stays silent:\n${h.log}`);
+  await seedUserState(h.databaseUrl, 'u_test_1', goodState(late.hhmm), 2);
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline && !firings(h.log)) await wait(300);
+  assert.equal(firings(h.log), 1, h.log);
+});
+
+test('a disabled profile gets no reminder', async t => {
+  const late = hhmmMinusMinutes(2);
+  if (!late.sameDay) return t.skip('just after midnight UTC — a same-day window cannot be set up');
+  const h = await startServer(t, [sub]);
+  // Disabled on the users row itself (ISO-1403): the tick reads the accounts from PostgreSQL on
+  // every pass, so no restart is needed for it to see the flag.
+  const pool = new pg.Pool({ connectionString: h.databaseUrl });
+  try { await pool.query('UPDATE users SET disabled = true WHERE id = $1', ['u_test_1']); }
+  finally { await pool.end(); }
+  await seedUserState(h.databaseUrl, 'u_test_1', goodState(late.hhmm));
+  await wait(1500);
+  assert.equal(firings(h.log), 0, h.log);
+});

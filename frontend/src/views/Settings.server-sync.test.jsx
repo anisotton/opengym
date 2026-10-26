@@ -42,7 +42,9 @@ vi.mock('../store/useUI.js', () => {
 })
 vi.mock('react-router-dom', () => ({ useNavigate: () => to => mocks.navs.push(to), Link: ({ children }) => <a>{children}</a> }))
 vi.mock('../lib/api.js', () => ({
-  api: vi.fn(() => Promise.resolve({})), webauthnOK: () => true, passkeyLogin: vi.fn(), passkeyRegister: vi.fn(), IS_ANDROID: false,
+  // The passkey list is asked of the server on opening Account: the fork's "Delete account" row
+  // (DeleteAccount.jsx) renders only once that answer is in, so the mock gives an empty one.
+  api: vi.fn(path => Promise.resolve(path === '/api/account/passkeys' ? { passkeys: [], password: false } : {})), webauthnOK: () => true, passkeyLogin: vi.fn(), passkeyRegister: vi.fn(), IS_ANDROID: false,
 }))
 vi.mock('../lib/push.js', () => ({ pushSupported: () => false, enablePush: vi.fn(), disablePush: vi.fn(), sendTestPush: vi.fn() }))
 vi.mock('../lib/wakelock.js', () => ({ wakeLockSupported: () => false }))
@@ -301,5 +303,30 @@ describe('leaving the server', () => {
     mocks.signOutAll.mockRejectedValueOnce(new Error('HTTP 502'))
     await act(async () => { await confirm().onConfirm() })
     expect(mocks.toast).toHaveBeenLastCalledWith('Couldn’t sign out everywhere. You’re still signed in.')
+  })
+})
+
+/* "Delete account" (App Store rule 5.1.1(v); the fork's own row and flow, ISO-1449 — the sheet
+   itself, its proof and the trip home once the account is gone are DeleteAccount.test.jsx's):
+   wherever there is a server account, a paired phone or a signed-in browser, and nowhere there
+   is none. */
+describe('deleting the account', () => {
+  it('a paired phone and a signed-in browser both have the row', async () => {
+    const phone = mount(<Settings page="account" />)
+    await act(async () => {})
+    expect(rowByTitle(phone, 'Delete account')).toBeTruthy()
+
+    mocks.MOBILE = false
+    const page = mount(<Settings page="account" />)
+    await act(async () => {})
+    expect(rowByTitle(page, 'Delete account')).toBeTruthy()
+  })
+
+  it('no account, no row: a phone kept local, and a guest in a browser', async () => {
+    mocks.user = null
+    mocks.sync = sync('local', { server: null })
+    expect(rowByTitle(mount(<Settings page="account" />), 'Delete account')).toBeUndefined()
+    mocks.MOBILE = false
+    expect(rowByTitle(mount(<Settings page="account" />), 'Delete account')).toBeUndefined()
   })
 })

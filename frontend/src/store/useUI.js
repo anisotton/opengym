@@ -260,16 +260,19 @@ export const useUI = create((set, get) => ({
     set({ toastMsg: msg, toastSticky: sticky, toastAction: withAction ? { label: action, run: onAction, id: toastSeq } : null })
     if (!sticky) runToast(set)
   },
-  dismissToast() {
-    clearTimeout(toastTm); toastTm = null
-    set({ toastMsg: '', toastSticky: false, toastAction: null })
-  },
   runToastAction() {
     const act = get().toastAction
     if (!act) return
     clearTimeout(toastTm)
     set({ toastMsg: '', toastAction: null })
     act.run()
+  },
+  // The toast's ×: gone now, its action with it (what it would have undone stays done). Also the
+  // only way out for a sticky toast (ISO-1480).
+  dismissToast() {
+    clearTimeout(toastTm); toastTm = null
+    toastPaused = false
+    set({ toastMsg: '', toastSticky: false, toastAction: null })
   },
   pauseToast() {
     if (!get().toastAction || toastPaused) return

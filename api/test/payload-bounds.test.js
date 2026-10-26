@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { tempData, sampleState, daysAgo } from './helpers.mjs';
+import { tempData, sampleState, daysAgo, D } from './helpers.mjs';
 
 tempData();
 const payload = await import('../coach/core/payload.js');
@@ -144,7 +144,7 @@ const planAndLogFields = {
   'logged entry id': S => { S.workouts[0].entries[0].id = INJECT; },
   'logged target': S => { S.workouts[0].entries[0].target = { sets: INJECT, reps: INJECT, sec: INJECT, weight: INJECT }; },
   'logged set values': S => { Object.assign(S.workouts[0].entries[0].sets[0], { w: INJECT, r: INJECT, sec: INJECT, min: INJECT, speed: INJECT, rir: INJECT, rpe: INJECT }); },
-  'body-weight weigh-in': S => { S.bodyweight.push({ d: '2026-07-21', w: INJECT }, { d: '2026-07-21' + INJECT, w: 80 }); },
+  'body-weight weigh-in': S => { S.bodyweight.push({ d: D('2026-07-21'), w: INJECT }, { d: D('2026-07-21') + INJECT, w: 80 }); },
   'target body weight': S => { S.targetW = INJECT; }
 };
 

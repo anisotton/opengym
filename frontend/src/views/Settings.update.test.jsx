@@ -13,7 +13,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 // default (a real build ships it null — no feed of its own yet — which is covered directly in
 // update.test.js) so this file keeps testing the row/section behavior once a feed exists.
 const mocks = vi.hoisted(() => {
-  const state = { S: null, MOBILE: false, android: false, UPDATE_FEED: 'https://example.com/releases' }
+  const state = { S: null, MOBILE: false, android: false, channel: 'sideload', UPDATE_FEED: 'https://example.com/releases' }
   state.snapshot = () => ({
     S: state.S,
     user: null,
@@ -57,6 +57,7 @@ vi.mock('../lib/update.js', () => ({
   downloadAndInstall: vi.fn(),
   get UPDATE_FEED() { return mocks.UPDATE_FEED },
 }))
+vi.mock('../lib/channel.js', () => ({ selfUpdates: () => Promise.resolve(mocks.channel === 'sideload') }))
 vi.mock('./MobileOnboarding.jsx', () => ({ ConnectSheet: () => null }))
 vi.mock('../sheets.jsx', () => ({
   starterPlanSheet: vi.fn(), confirmSheet: (...a) => mocks.confirmSheet(...a), importFromApp: vi.fn(),
@@ -74,6 +75,7 @@ beforeEach(() => {
   mocks.MOBILE = false
   mocks.android = false
   mocks.UPDATE_FEED = 'https://example.com/releases'
+  mocks.channel = 'sideload'
   mocks.checkForUpdate.mockClear()
   mocks.confirmSheet.mockClear()
   host = document.createElement('div')
@@ -88,7 +90,7 @@ afterEach(() => {
 // The effect resolves two promises (isAndroid, then checkForUpdate) before the row can render.
 const mount = async () => {
   await act(async () => { root.render(<Settings page="about" />) })
-  await act(async () => { await Promise.resolve(); await Promise.resolve() })
+  await act(async () => { for (let i = 0; i < 4; i++) await Promise.resolve() })
 }
 const updateRow = () => [...host.querySelectorAll('.lrow')].find(r => r.textContent.includes('Update to Brilhart Fitness v9.9.9'))
 const checkRow = () => [...host.querySelectorAll('.lrow')].find(r => r.textContent.includes('Check for updates'))
@@ -113,6 +115,16 @@ describe('Settings — in-app update check', () => {
     mocks.MOBILE = true
     mocks.android = true
     mocks.UPDATE_FEED = null
+    await mount()
+    expect(mocks.checkForUpdate).not.toHaveBeenCalled()
+    expect(updateRow()).toBeUndefined()
+    expect(checkRow()).toBeUndefined()
+  })
+
+  it('Google Play build: Play installs the updates, so no check and no row', async () => {
+    mocks.MOBILE = true
+    mocks.android = true
+    mocks.channel = 'play'
     await mount()
     expect(mocks.checkForUpdate).not.toHaveBeenCalled()
     expect(updateRow()).toBeUndefined()

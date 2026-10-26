@@ -24,6 +24,7 @@ const USER_ERROR = {
   shared: cfgStore.SHARED_ACCOUNT_REFUSAL,
   unprivileged: 'the Coach is switched off on this instance for safety reasons'
 };
+const hostOf = url => { try { return url ? new URL(url).host : null; } catch { return null; } };
 const HTTP_FOR = { off: 503, busy: 409, cap: 429, consent: 403, shared: 409, unprivileged: 503 };
 
 export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
@@ -54,6 +55,10 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
       json(res, 200, {
         provider: cfg.provider,
         providerLabel: cfgStore.providerMeta(cfg).label,
+        // Where an HTTPS provider's requests go, host only: the app asks once per provider and
+        // host before anything is sent there, and a compatible endpoint is only nameable by it.
+        // Never the path, and the base URL cannot carry credentials (validateBaseUrl).
+        host: hostOf(baseUrlFor(cfg.provider, cfg)),
         categories: DATA_CATEGORIES,
         version: 1
       });
@@ -266,7 +271,16 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
           Math.min(cfgStore.MAX_OUTPUT_TOKENS_CEILING, +body.maxOutputTokens || current.maxOutputTokens)
         );
       }
-      cfgStore.save(patch);
+      const hostOf = cfg => { try { return new URL(baseUrlFor(target, cfg) || '').host; } catch { return ''; } };
+      const before = hostOf(current);
+      const saved = cfgStore.save(patch);
+      // The stored key is never read back, and it should not leave by another door either: sent
+      // to a new host it is handed to whoever runs that host on the next model list or job. A
+      // different host for the same provider means the key is entered again.
+      if (patch.providerOptions && before && hostOf(saved) !== before && saved.auth?.[target]) {
+        cfgStore.saveAuth(target, null);
+        console.log('coach: stored key for', target, 'cleared, endpoint host changed');
+      }
       json(res, 200, { ok: true });
     },
 

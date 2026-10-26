@@ -26,11 +26,11 @@ import {
   normalizeEmail, maskEmail
 } from './password.js';
 import { createBackoff, createWindow } from './rate-limit.js';
-import { MAX_PASSKEYS } from './passkeys-store.js';
+import { MAX_PASSKEYS, transportsOf } from './passkeys-store.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE, sniffMedia } from './media.js';
 import { connectAndMigrate, withTransaction } from './db.js';
 import {
-  getUserState, getUserStateRev, getUserStateWid, putUserState, countUsers, setLastNudge,
+  getUserState, getUserStateRev, getUserStateWid, putUserState, countUsers, setLastNudge, setAdminFlag, setOwnerFlag,
   getUserById, getAllUsers, createUser, setPassword, removePasswordUnlessLast, rehashPassword,
   setPasswordReset, bumpSessionVersion, setEmail, markEmailVerified, setDisabled, touchLastPull,
   setLastReminder, deleteUser, upsertUser, backfillPasswordResetBy, setTermsAccepted,
@@ -118,6 +118,7 @@ async function claimFirstAdmin(client, req, user) {
   await client.query('SELECT pg_advisory_xact_lock(7001)');
   if ((await countUsers(client)) !== 0) return;
   user.admin = true;
+  user.owner = true;
   audit(req, 'admin.first-user', { user });
 }
 // Guest mode ("Continue without account") keeps everything in the browser and never touches this
@@ -185,6 +186,29 @@ function readBootDb() {
   db.invites = db.invites || []; db.deviceLinks = db.deviceLinks || [];
   return db;
 }
+// One owner per instance, any number of admins (openGym v1.4.2). Admins run the place day to day
+// (users, invites, the Coach); the owner is the one admin the others cannot act on: only the
+// owner appoints or removes admins, deletes an admin's account, hands the role on, or clears the
+// activity log. Without this any admin could delete every other admin and then wipe the log of
+// having done it. The owner is whoever carries `owner: true` in users.extra (the first profile
+// under FIRST_USER_ADMIN, or a handover); an instance from before the role has none, so it falls
+// to the first ADMIN_UIDS entry that has a profile, then to the oldest admin record. The users
+// table is the source; `ownerIdCache` is what isOwner reads, so publicUser stays synchronous —
+// recomputed at boot, on every reminder tick from the users it already loaded, and right after
+// each route that can change the answer (refreshOwner).
+let ownerIdCache = null;
+function ownerFrom(users) {
+  const flagged = users.find(u => u.owner === true && isAdmin(u));
+  if (flagged) return flagged.id;
+  const fromEnv = ADMIN_UIDS.find(id => users.some(u => u.id === id));
+  if (fromEnv) return fromEnv;
+  return users.find(isAdmin)?.id || null;
+}
+async function refreshOwner() {
+  ownerIdCache = ownerFrom(await getAllUsers(pool));
+  return ownerIdCache;
+}
+const isOwner = user => !!user && isAdmin(user) && user.id === ownerIdCache;
 // Flushed before and after the rename (durable.js): a host reset must not bring back the file
 // the client was told had been replaced. Only the files still on disk use it (Coach, media,
 // vapid.json); the profile documents themselves are rows in PostgreSQL.
@@ -291,6 +315,7 @@ function isPrivateAddr(ip) {
     if (a === 192 && b === 168) return true;                      // private
     if (a === 192 && b === 0) return true;                        // 192.0.0.0/24, 192.0.2.0/24
     if (a === 100 && b >= 64 && b <= 127) return true;            // CGNAT
+    if (a === 198 && (b === 18 || b === 19)) return true;         // benchmarking 198.18.0.0/15
     if (a >= 224) return true;                                    // multicast + reserved
     return false;
   }
@@ -304,7 +329,17 @@ function isPrivateAddr(ip) {
   }
   if (g.slice(0, 7).every(x => x === 0) && g[7] <= 1) return true; // unspecified, loopback
   if ((g[0] & 0xffc0) === 0xfe80) return true;                    // link-local fe80::/10
+  if ((g[0] & 0xffc0) === 0xfec0) return true;                    // site-local fec0::/10 (deprecated, still routed by some)
   if ((g[0] & 0xfe00) === 0xfc00) return true;                    // unique local fc00::/7
+  if ((g[0] & 0xff00) === 0xff00) return true;                    // multicast ff00::/8
+  // The forms that carry an IPv4 address inside: on a host with NAT64 or a 6to4 relay they reach
+  // that IPv4 address, so they are judged by it. 64:ff9b:1::/48 is the local-use NAT64 prefix,
+  // which only ever translates into a network of the operator's own.
+  const v4 = (hi, lo) => isPrivateAddr(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+  if (g.slice(0, 6).every(x => x === 0)) return v4(g[6], g[7]);          // IPv4-compatible ::a.b.c.d
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every(x => x === 0)) return v4(g[6], g[7]); // NAT64 64:ff9b::/96
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true;       // local-use NAT64 64:ff9b:1::/48
+  if (g[0] === 0x2002) return v4(g[1], g[2]);                            // 6to4 2002::/16
   return false;
 }
 
@@ -413,10 +448,19 @@ async function sendPush(userId, payload, deviceId) {
 // In memory only — an API restart drops whatever is pending.
 const restTimers = new Map(); // `${userId}:${deviceId}` -> Timeout
 const restKey = (userId, deviceId) => `${userId}:${deviceId || ''}`;
+// A browser holds one device id, so a person has a timer or two pending, never more than the
+// devices they train with. Each request with a new id used to leave another hour-long timer (and
+// its push to every id-less subscription) behind, without limit; past this many, the oldest goes.
+const MAX_REST_TIMERS_PER_USER = 5;
 function scheduleRestTimer(userId, deviceId, sec, lang) {
   const k = restKey(userId, deviceId);
   const t = restTimers.get(k);
   if (t) clearTimeout(t);
+  restTimers.delete(k);                     // re-inserted below, so the map stays oldest first
+  const mine = [...restTimers.keys()].filter(x => x.startsWith(userId + ':'));
+  for (const old of mine.slice(0, Math.max(0, mine.length - MAX_REST_TIMERS_PER_USER + 1))) {
+    clearTimeout(restTimers.get(old)); restTimers.delete(old);
+  }
   restTimers.set(k, setTimeout(() => {
     restTimers.delete(k);
     sendPush(userId, restTimerPush(lang), deviceId);
@@ -493,8 +537,10 @@ setInterval(async () => {
   // land before `pool` exists at all.
   if (!pool) return;
   usersCache = await getAllUsers(pool);
+  ownerIdCache = ownerFrom(usersCache);
   const withPush = await getUserIdsWithPush(pool);
   for (const user of usersCache) {
+    if (user.disabled) continue;            // locked out everywhere, reminders included
     if (!withPush.has(user.id)) continue;
     // One user's state is one user's problem: a shape this tick cannot read is logged and
     // skipped, not allowed to take the process — and everyone else's reminders — down with it.
@@ -512,7 +558,7 @@ setInterval(async () => {
       if ((S.workouts || []).some(w => w?.d === now.date)) continue;
       if (excusedOn(S, now.date)) continue; // noted as sick, away, … (nudge.js excusedOn)
       const rid = effectiveRoutineId(S, now.date);
-      if (!rid) continue; // rest day — nothing planned
+      if (!rid) { sum.settled = now.date; continue; } // rest day — nothing planned
       const routine = (S.routines || []).find(r => r?.id === rid);
       console.log('reminder firing', user.id, rid);
       user.lastReminder = now.date;
@@ -551,10 +597,15 @@ function verifySig(token) {
 // as before this table existed. That includes every cookie a test forges directly against SECRET
 // without going through a real login: nothing here requires a `sessions` row to exist.
 const sessionVersion = user => user.sv || 0;
-async function makeSession(user, userAgent) {
+// A fifth field says what the token was made for: `c` a browser's cookie, `b` a paired phone's
+// bearer. Both verify the same way and either works in either place, but only a phone's token is
+// renewed (GET /api/me): a cookie value replayed as a bearer used to be traded for a fresh 90-day
+// token whenever it was past half its life, so a stolen cookie never had to expire. Tokens from
+// before the field have none and are renewed as before; the cookies among them expire on their own.
+async function makeSession(user, userAgent, kind = 'b') {
   const exp = Date.now() + SESSION_DAYS * 86400000;
   const sid = await createSession(pool, { userId: user.id, expiresAt: exp, userAgent });
-  return sign(`${user.id}:${exp}:${sessionVersion(user)}:${sid}`);
+  return sign(`${user.id}:${exp}:${sessionVersion(user)}:${sid}:${kind}`);
 }
 // With the __Host- prefix the *browser* guarantees the cookie is host-only (no Domain attribute
 // is even allowed) — which is what stops a sibling subdomain, e.g. anything-else.example.com
@@ -600,14 +651,17 @@ async function sessionOf(req) {
   const s = await sessionUser(tok);
   return s && { ...s, bearer: !cookie };
 }
-// The session a token (a cookie value or a bearer) stands for — { user, exp, sid } — or null.
-// Split out of sessionOf so the origin check (bearerAuthenticates) can ask whether a bearer
+// The session a token (a cookie value or a bearer) stands for — { user, exp, sid, kind } — or
+// null. Split out of sessionOf so the origin check (bearerAuthenticates) can ask whether a bearer
 // authenticates on its own, without the cookie that may sit beside it.
 async function sessionUser(tok) {
   if (!tok) return null;
   const payload = verifySig(tok);
   if (!payload) return null;
-  const [uid, exp, ver, sid] = payload.split(':');
+  let [uid, exp, ver, sid, kind] = payload.split(':');
+  // A token in upstream's own shape (`uid:exp:sv:kind`, no sessions row) reads its fourth field
+  // as the kind; a session id is never one letter.
+  if (kind === undefined && (sid === 'b' || sid === 'c')) { kind = sid; sid = undefined; }
   if (!uid || +exp < Date.now()) return null;
   // A fourth field is a real sessions row (ISO-1403) — revoked (POST /api/logout) or gone
   // (nothing prunes this table yet, but a wiped database would leave old cookies pointing at
@@ -624,7 +678,7 @@ async function sessionUser(tok) {
   // payload (it still had to pass the HMAC, so this is belt-and-braces) and is refused outright.
   const claimed = ver === undefined ? 0 : Number(ver);
   if (!Number.isInteger(claimed) || claimed !== sessionVersion(user)) return null;
-  return { user, exp: +exp, sid: sid || null };
+  return { user, exp: +exp, sid: sid || null, kind: kind || null };
 }
 async function readSession(req) {
   return (await sessionOf(req))?.user || null;
@@ -655,9 +709,15 @@ async function requireAdmin(req, res) {
   if (!isAdmin(user)) { audit(req, 'admin.denied', { ok: false, user }); json(res, 403, { error: 'forbidden' }); return null; }
   return user;
 }
+async function requireOwner(req, res) {
+  const user = await requireAdmin(req, res); if (!user) return null;
+  await refreshOwner();   // decided on every call, never from a stale cache
+  if (!isOwner(user)) { audit(req, 'admin.denied', { ok: false, user }); json(res, 403, { error: 'only the owner can do this' }); return null; }
+  return user;
+}
 const expireCookie = name => `${name}=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
 async function sessionCookie(user, userAgent) {
-  const fresh = `${COOKIE}=${await makeSession(user, userAgent)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
+  const fresh = `${COOKIE}=${await makeSession(user, userAgent, 'c')}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
   // Signing in also retires any pre-upgrade cookie, so nobody is left carrying an unprefixed one
   // (or a shadowing copy of it) alongside the new session.
   return COOKIE === LEGACY_COOKIE ? [fresh] : [fresh, expireCookie(LEGACY_COOKIE)];
@@ -1310,7 +1370,7 @@ async function loginTarget(body) {
 }
 const acctKey = u => 'acct:' + u.id;
 const passkeyCount = u => countPasskeys(pool, u.id);
-const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u) });
+const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u), ...(isOwner(u) ? { owner: true } : {}) });
 const POLICY_ERRORS = {
   'too-short': `the password needs at least ${MIN_LENGTH} characters`,
   'too-long': `the password can have at most ${MAX_LENGTH} characters`,
@@ -1457,6 +1517,10 @@ async function removeEmail(req, res, user, body) {
   json(res, 200, { ok: true, email: null });
 }
 
+// Everything of an account, gone for good: the user record, their passkeys, push subscriptions,
+// device links and live presence, and outside db.json their training history, any Coach
+// credential and their photos and videos. The admin's delete and the account's own both end here.
+
 const passwordRoutes = {
   'POST /api/login/password': async (req, res) => {
     const body = await readBody(req);
@@ -1543,7 +1607,13 @@ const passwordRoutes = {
     const problem = passwordProblem(body.password, name);
     if (problem) return policyError(res, problem);
     const taken = () => json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
-    if (await nameTaken(name)) return taken();
+    // A name is also matched against every sign-in e-mail (nameTaken), so a name that is an
+    // address is the e-mail question asked through the name field: it waits for the hash below
+    // and counts against the address like the e-mail field does, or it would answer "in use" for
+    // any address at once and without limit.
+    const nameIsAddress = name.includes('@');
+    if (nameIsAddress && addressPaused(req, res, 'email')) return;
+    if (!nameIsAddress && await nameTaken(name)) return taken();
     // An e-mail is optional here. One already in use counts against the address, the way it
     // does in Settings: this route needs no session, so it is the cheaper place to ask. Whether
     // it is in use is only answered after the hash and the invite check that follows it, so on
@@ -1564,7 +1634,11 @@ const passwordRoutes = {
       auditFail(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
       return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
     }
-    if (await nameTaken(name)) return taken();
+    if (await nameTaken(name)) {
+      // No name in the row: it is an address, and the log keeps none (maskEmail is for owners).
+      if (nameIsAddress) { strikeAddress(req, 'email'); auditFail(req, 'auth.register.fail', { ok: false, msg: 'email-taken' }); }
+      return taken();
+    }
     if (email && await emailTaken(email)) return emailRefused();
     const created = new Date().toISOString();
     const user = {
@@ -1584,6 +1658,7 @@ const passwordRoutes = {
         await createUser(client, user);
         if (INVITE_ONLY && !(await consumeInvite(client, code, user.id))) throw new InviteRaceError();
       });
+      if (user.owner) await refreshOwner();
     } catch (e) {
       if (e instanceof InviteRaceError) {
         auditFail(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
@@ -1804,6 +1879,13 @@ const passwordRoutes = {
 // Sessions are not tied to the passkey that opened them — a session is `uid:expiry:version`,
 // nothing more — so removing a passkey stops it signing in again but does not end a session it
 // already opened. "Sign out everywhere" does that, and Settings says so where a passkey is removed.
+// The last admin may not delete their own profile while anyone else is on the instance: nobody
+// could run it from the app afterwards. Alone on it, they may go.
+const lastAdminLeaving = async u => {
+  if (!isAdmin(u)) return false;
+  const users = await getAllUsers(pool);
+  return users.length > 1 && users.filter(isAdmin).length <= 1;
+};
 const passkeyState = async u => {
   const passkeys = await listPasskeys(pool, u.id);
   // `password`: whether the password can confirm an addition or a removal (proveOwner) — only
@@ -1863,7 +1945,9 @@ const passkeyRoutes = {
   'GET /api/account/passkeys': async (req, res) => {
     const user = await readSession(req);
     if (!user) return notSignedIn(res);
-    json(res, 200, await passkeyState(user));
+    // `deleteBlocked`: the profile's own delete would be refused before any proof is looked at,
+    // so the delete sheet says so up front instead of after a passkey or password prompt.
+    json(res, 200, { ...(await passkeyState(user)), ...((await lastAdminLeaving(user)) ? { deleteBlocked: 'last-admin' } : {}) });
   },
 
   // Adding one from Settings, step one: the proof, then the options. The proof is spent here; the
@@ -2256,6 +2340,17 @@ setInterval(() => {
   MEDIA_BURST.sweep(); MEDIA_SWEEPS.sweep();
   for (const [k, until] of mediaThrottleNoted) if (until < Date.now()) mediaThrottleNoted.delete(k);
 }, 600000).unref();
+// Every one of these makes the server send pushes, one per subscription of the account. A
+// person taps "send test" a few times and starts a rest after each set; a loop does neither.
+const PUSH_TESTS = createWindow({ max: 10, windowMs: 600000 });
+const REST_TIMER_SETS = createWindow({ max: 60, windowMs: 60000 });
+setInterval(() => { PUSH_TESTS.sweep(); REST_TIMER_SETS.sweep(); }, 600000).unref();
+function pushThrottled(res, win, user) {
+  const wait = win.take(user.id);
+  if (!wait) return false;
+  json(res, 429, { error: 'too many requests, try again later', code: 'locked', retryAfter: wait }, { 'Retry-After': String(wait) });
+  return true;
+}
 function mediaThrottle(req, user, win) {
   const wait = win.take(user.id);
   if (!wait) return;
@@ -2601,9 +2696,11 @@ const routes = {
     const s = await sessionOf(req);
     if (!s) return json(res, 401, { error: 'not signed in' });
     const { user } = s;
-    const renew = s.bearer && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
+    // Only a phone's token is renewed (`kind` b, or none from before the mark): a cookie replayed
+    // as a bearer is accepted but never traded for a fresh one.
+    const renew = s.bearer && s.kind !== 'c' && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
     json(res, 200, {
-      user: { id: user.id, name: user.name, admin: isAdmin(user) },
+      user: publicUser(user),
       // ISO-1397: what the app needs to show "confirm your e-mail" or ask for one at all — an
       // account from before this phase has neither field until its owner sets one. Left out
       // entirely while PASSWORD_LOGIN is on: `email` there is the older, unrelated sign-in
@@ -2723,7 +2820,7 @@ const routes = {
       id: credential.id,
       publicKey: Buffer.from(credential.publicKey).toString('base64url'),
       counter: credential.counter || 0,
-      transports: body.credential?.response?.transports || [],
+      transports: transportsOf(body.credential?.response?.transports),
       // What Settings → Passkeys shows (#95); a passkey from before then has neither.
       created: user.created, lastUsed: user.created
     };
@@ -2749,6 +2846,7 @@ const routes = {
         if (added.error) throw new HttpError(409, added.error);
         await createEmailToken(client, user.id, 'verify', hashEmailToken(verifyToken), VERIFY_TTL_MS);
       });
+      if (user.owner) await refreshOwner();
     } catch (e) {
       if (e instanceof InviteRaceError) {
         auditFail(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'invite-invalid' });
@@ -2768,7 +2866,7 @@ const routes = {
     }
     audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? c.code : null });
     await mailVerification(user, verifyToken);
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   'POST /api/login/options': async (req, res) => {
@@ -2828,7 +2926,7 @@ const routes = {
       return json(res, 403, { error: 'this account has been disabled', code: 'disabled' });
     }
     audit(req, 'auth.login.ok', { user });
-    json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
   // Revokes the session row this cookie names (ISO-1403) — a real logout, not just clearing the
@@ -2861,6 +2959,9 @@ const routes = {
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
 
+  // The account's own delete is DELETE /api/account (ISO-1447), above: the fork's own route, with the
+  // Stripe clean-up outbox; upstream's POST /api/account/delete is deliberately not offered.
+
   // Mobile app pairing: called from an already signed-in browser tab (Settings → "Pair the
   // mobile app") to mint a short code the phone can redeem below.
   'POST /api/pair/create': async (req, res) => {
@@ -2892,7 +2993,7 @@ const routes = {
       return json(res, 400, { error: 'invalid or expired code', code: 'pair-invalid' });
     }
     audit(req, 'auth.pair.ok', { user });
-    json(res, 200, { token: await makeSession(user, req.headers['user-agent']), user: { id: user.id, name: user.name, admin: isAdmin(user) } });
+    json(res, 200, { token: await makeSession(user, req.headers['user-agent']), user: publicUser(user) });
   },
 
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.
@@ -2934,6 +3035,21 @@ const routes = {
     // (server-state-read-cost.test.js), since every open client asks this every half minute.
     const { rev, wid } = await getUserStateWid(pool, user.id);
     json(res, 200, { rev, ...(wid ? { wid } : {}) });
+  },
+
+  'GET /api/nudge-check': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const date = new URL(req.url, 'http://x').searchParams.get('date') || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date + 'T00:00:00Z'))) {
+      return json(res, 400, { error: 'date must be YYYY-MM-DD', code: 'date-invalid' });
+    }
+    const doc = (await readState(user.id)) || {};
+    const workouts = Array.isArray(doc.workouts) ? doc.workouts : [];
+    const done = workouts.some(w => w && w.d === date) || excusedOn(doc, date);
+    let nudge = false;
+    try { nudge = !done && !!nudgeFor(doc, date); } catch { nudge = true; }   // unreadable: keep what the phone planned
+    json(res, 200, { date, done, nudge, rev: doc._rev || 0 });
   },
 
   'PUT /api/data': async (req, res) => {
@@ -3105,6 +3221,7 @@ const routes = {
   'POST /api/push/test': async (req, res) => {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
+    if (pushThrottled(res, PUSH_TESTS, user)) return;
     await sendPush(user.id, testPush((await readState(user.id))?.lang));
     json(res, 200, { ok: true });
   },
@@ -3112,6 +3229,7 @@ const routes = {
   'POST /api/push/rest-timer': async (req, res) => {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
+    if (pushThrottled(res, REST_TIMER_SETS, user)) return;
     const body = await readBody(req);
     // Validated before it is clamped: the clamp used to run first, which turned a missing or
     // unusable value into a 1-second push and made the 400 below unreachable. `Number()` only
@@ -3170,7 +3288,7 @@ const routes = {
       const S = (await readState(u.id)) || {};
       return {
         id: u.id, name: u.name, created: u.created || null,
-        disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null,
+        disabled: !!u.disabled, admin: isAdmin(u), owner: isOwner(u), invitedBy: u.invitedBy || null,
         lastSync: lastSyncOf(u, S),
         hasPush: await hasPush(pool, u.id),
         // Was: the live routine name and set-by-set progress (livePresence(u.id)). Whether a
@@ -3196,7 +3314,7 @@ const routes = {
     const S = (await readState(u.id)) || {};
     json(res, 200, {
       user: {
-        id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null,
+        id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), owner: isOwner(u), invitedBy: u.invitedBy || null,
         // Only on an instance with password sign-in: whether they have one, and until when an
         // unused reset code is good.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {})
@@ -3235,8 +3353,11 @@ const routes = {
     if (!u) return json(res, 404, { error: 'no such user' });
     if (u.id === admin.id) return json(res, 400, { error: 'you cannot delete your own account' });
     if (isAdmin(u) && (await getAllUsers(pool)).filter(isAdmin).length <= 1) return json(res, 400, { error: 'cannot delete the last admin' });
+    if (isOwner(u)) return json(res, 400, { error: 'the owner cannot be deleted; hand the role to another admin first' });
+    if (isAdmin(u) && !isOwner(admin)) { audit(req, 'admin.denied', { ok: false, user: admin, target: u }); return json(res, 403, { error: 'only the owner can delete an admin' }); }
     const name = u.name;
     await deleteAccount(u);
+    await refreshOwner();
     // Logged with the name, because the id is about to mean nothing to anyone reading this back —
     // the admin themselves (who did it) is still just `user: admin`, their own id and name.
     audit(req, 'admin.user.delete', { user: admin, msg: name });
@@ -3267,8 +3388,41 @@ const routes = {
       return json(res, 400, { error: 'you are the last admin — make someone else admin first', code: 'last-admin' });
     }
     await deleteAccount(fresh);
+    await refreshOwner();
     audit(req, 'account.delete', { uid: fresh.id });
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
+  },
+
+  // Appoint or remove an admin. Owner only, never on themselves, and not for an admin named in
+  // ADMIN_UIDS: that one comes back on the next restart whatever the table says, so the switch
+  // would lie. A disabled account is enabled first, so nobody is promoted while locked out.
+  'POST /api/admin/user/role': async (req, res) => {
+    const owner = await requireOwner(req, res); if (!owner) return;
+    const body = await readBody(req);
+    const u = await getUserById(pool, text(body.id));
+    if (!u) return json(res, 404, { error: 'no such user' });
+    if (u.id === owner.id) return json(res, 400, { error: 'the owner stays an admin' });
+    if (typeof body.admin !== 'boolean') return json(res, 400, { error: 'admin must be true or false' });
+    if (ADMIN_UIDS.includes(u.id)) return json(res, 400, { error: 'this admin is set in ADMIN_UIDS on the server' });
+    if (body.admin && u.disabled) return json(res, 400, { error: 'enable the account first' });
+    await setAdminFlag(pool, u.id, body.admin);
+    await refreshOwner();
+    audit(req, body.admin ? 'admin.role.grant' : 'admin.role.revoke', { user: owner, target: u });
+    json(res, 200, { ok: true, id: u.id, admin: body.admin || ADMIN_UIDS.includes(u.id) });
+  },
+
+  // Hand the owner role to another admin. The old owner stays an admin.
+  'POST /api/admin/owner': async (req, res) => {
+    const owner = await requireOwner(req, res); if (!owner) return;
+    const body = await readBody(req);
+    const u = await getUserById(pool, text(body.id));
+    if (!u) return json(res, 404, { error: 'no such user' });
+    if (u.id === owner.id) return json(res, 400, { error: 'you already are the owner' });
+    if (!isAdmin(u) || u.disabled) return json(res, 400, { error: 'make them an admin first' });
+    await setOwnerFlag(pool, u.id);
+    await refreshOwner();
+    audit(req, 'admin.owner.transfer', { user: owner, target: u });
+    json(res, 200, { ok: true, id: u.id });
   },
 
   'GET /api/admin/invites': async (req, res) => {
@@ -3544,8 +3698,9 @@ const routes = {
   // Deleting the log is itself logged, and auditSeq is not reset — so a clear always leaves a
   // visible gap in the ids and can't be used to quietly erase a trace. There is no export route:
   // ./data/audit.log already is the export, in a format jq reads directly.
+  // Owner only: an admin who could clear it could erase the trace of what they did.
   'POST /api/admin/audit/clear': async (req, res) => {
-    const admin = await requireAdmin(req, res); if (!admin) return;
+    const admin = await requireOwner(req, res); if (!admin) return;
     try { fs.unlinkSync(auditFile); } catch { /* nothing logged yet */ }
     auditCount = 0;
     audit(req, 'admin.audit.clear', { user: admin });
@@ -3739,6 +3894,12 @@ const server = http.createServer(async (req, res) => {
   let url;
   try { url = new URL(req.url, 'http://x'); }
   catch { return json(res, 400, { error: 'bad request' }); }
+  // The path routed on has to be the path that was sent. The URL parser turns a backslash into a
+  // slash and resolves dot segments; nginx does neither, so `/api/media/..\data` matched nginx's
+  // media block (its body size and buffering) and reached `/api/data` here. Any rule the proxy
+  // keys on the path could be stepped around the same way. No client sends such a path.
+  const sent = req.url.split('?')[0];
+  if (sent.startsWith('/') && sent !== url.pathname) return json(res, 400, { error: 'bad request' });
   let key = req.method + ' ' + url.pathname;
   // The one route with a parameter in its path. Mapped onto its template key here so the table
   // above stays a plain lookup, and so csrfOk and the catch-all see one name for every file.
@@ -3806,6 +3967,7 @@ async function listen() {
     // same idea as setProposalHook above: a setter, since jobs.js is imported (and its own
     // setInterval-driven callers may already be ticking) before any pool exists.
     coachJobs.setPool(pool);
+    await refreshOwner();
     console.log(`postgres ready (${r.count} migration${r.count === 1 ? '' : 's'} applied)`);
   } catch (e) {
     console.error('postgres connection/migration failed:', e.message);
@@ -3856,6 +4018,7 @@ async function listen() {
   for (const c of db.creds) {
     try { await upsertPasskey(pool, c); } catch (e) { console.error('could not migrate passkey into postgres', c.id, e.message); }
   }
+  await refreshOwner();   // the users are all in now, imported ones included
   // The port is read back off the listener rather than echoed from PORT, so the line states the
   // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose
   // it (the tests spawn the server that way, and so does anyone running two instances on one

@@ -87,8 +87,11 @@ info:
       this API at all).
     - `ADMIN_UIDS=<uid>,<uid>`: user ids treated as admins (a `"admin": true` flag on
       the user record in `db.json` works too). Admins get the `/api/admin/*` routes.
+      One admin is the owner: the record with `"owner": true`, else the first
+      `ADMIN_UIDS` entry with a profile, else the oldest admin. Only the owner appoints
+      and removes admins, deletes an admin, hands the role on and clears the audit log.
     - `FIRST_USER_ADMIN` (default off; `1` turns it on): the first profile registered
-      on an instance with no profiles gets that `"admin": true` flag. Decided at
+      on an instance with no profiles gets that `"admin": true` flag and is the owner. Decided at
       registration only, never applied to an instance that already has profiles.
     - `AUDIT_LOG` (default on), `AUDIT_MAX` (default 5000 events), `AUDIT_DAYS`
       (default 90), `AUDIT_IP` (`off` | `net` | `full`, default off) shape the audit
@@ -2165,6 +2168,45 @@ paths:
               example: { error: "invalid signature" }
         '404': { $ref: '#/components/responses/BillingOff' }
 
+  /api/nudge-check:
+    get:
+      tags: [data]
+      operationId: nudgeCheck
+      summary: Whether a day was trained or excused (the phone's background check)
+      description: |
+        Asked by the phone app in the background before a missed-day nudge or a workout-day
+        reminder it scheduled on itself fires, so a day trained on another device is not
+        nudged. A few bytes instead of the whole document: `done` is true when a workout is
+        dated that day or the day carries a note; `nudge` is whether the server's copy of the
+        nudge rule would still nudge that day (false once it is done, or when the plan has no
+        session for it); `rev` is the profile's revision. Nothing of the workouts themselves.
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema: { type: string, format: date }
+          description: The day, YYYY-MM-DD, in the phone's own calendar.
+      responses:
+        '200':
+          description: How that day stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  date: { type: string, format: date }
+                  done: { type: boolean }
+                  nudge: { type: boolean }
+                  rev: { type: integer }
+              example: { date: "2026-09-14", done: true, nudge: false, rev: 7 }
+        '400':
+          description: '`date-invalid`: not a YYYY-MM-DD date.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: "date must be YYYY-MM-DD", code: "date-invalid" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /api/media/{hash}:
     parameters:
       - name: hash
@@ -2827,8 +2869,9 @@ paths:
         an active Stripe subscription and customer, uploaded photos and videos
         (`DATA_DIR/uploads/<uid>/`) and any Coach credential stored for them. Not
         reversible — `/api/admin/user/disable` is the reversible one. An admin cannot
-        delete their own account (use `DELETE /api/account` instead), and the last admin
-        cannot be deleted. Audited by name, since the id stops meaning anything.
+        delete their own account (use `DELETE /api/account` instead), the last admin and
+        the owner cannot be deleted, and only the owner deletes another admin. Audited by
+        name, since the id stops meaning anything.
       requestBody:
         required: true
         content:
@@ -2849,7 +2892,7 @@ paths:
                   ok: { type: boolean, const: true }
                   id: { type: string }
         '400':
-          description: Your own account, or the last admin.
+          description: Your own account, the last admin, or the owner.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2862,6 +2905,90 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: "no such user" }
+
+  /api/admin/user/role:
+    post:
+      tags: [admin]
+      operationId: adminUserRole
+      summary: 'Owner: make someone an admin, or remove the role'
+      description: >-
+        Owner only (403 for any other admin). Not on the owner themselves, not on an
+        admin named in `ADMIN_UIDS` (the server would restore them on restart), and a
+        disabled account is enabled before it can be promoted. Removing the role keeps
+        the account and its data.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, admin]
+              properties:
+                id: { type: string, description: The user id. }
+                admin: { type: boolean }
+      responses:
+        '200':
+          description: Changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  id: { type: string }
+                  admin: { type: boolean }
+        '400':
+          description: The owner, an `ADMIN_UIDS` admin, a disabled account, or no boolean.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No user with that id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/owner:
+    post:
+      tags: [admin]
+      operationId: adminOwnerTransfer
+      summary: 'Owner: hand the owner role to another admin'
+      description: >-
+        Owner only. The target must already be an enabled admin; the previous owner
+        stays an admin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: The user id. }
+      responses:
+        '200':
+          description: Handed over.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  id: { type: string }
+        '400':
+          description: Yourself, or not an enabled admin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No user with that id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/admin/invites:
     get:
@@ -3408,9 +3535,9 @@ paths:
     post:
       tags: [admin]
       operationId: adminAuditClear
-      summary: 'Admin: clear the activity log'
+      summary: 'Owner: clear the activity log'
       description: >-
-        Deletes the log file. The clear is itself the first event of the fresh log,
+        Owner only, so no other admin can erase a trace of what they did. Deletes the log file. The clear is itself the first event of the fresh log,
         and event ids are never reset, so a wipe always leaves a visible id gap.
       responses:
         '200':
@@ -3448,6 +3575,13 @@ paths:
                 properties:
                   provider: { type: string, description: "Provider id, e.g. `anthropic`." }
                   providerLabel: { type: string }
+                  host:
+                    type: string
+                    nullable: true
+                    description: >-
+                      Host the provider's requests go to (an HTTPS provider's base URL, host and
+                      port only), or null for a runtime provider. The app asks the user once per
+                      provider and host before the first request.
                   categories:
                     type: array
                     items: { type: string, enum: [plan, training, bodyweight, profile, prefs] }
@@ -3456,6 +3590,7 @@ paths:
               example:
                 provider: anthropic
                 providerLabel: Claude
+                host: api.anthropic.com
                 categories: [plan, training, bodyweight, profile, prefs]
                 version: 1
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -3817,6 +3952,8 @@ paths:
       description: |
         Checks the runtime, then asks the model for one fixed JSON object and validates
         the shape that comes back. That is the whole path a job takes, on nobody's profile.
+        A runtime-backed provider is refused, without spawning anything, when the
+        privilege drop cannot be performed, exactly as a job would be.
 
         Always 200: the outcome is in the body, because "the provider refused" is an
         answer to the question the button asks, not a failure of the request. An HTTPS
@@ -4152,6 +4289,14 @@ components:
         lastWayIn:
           type: boolean
           description: Removing any one passkey would be refused (409 `last-way-in`).
+        deleteBlocked:
+          type: string
+          enum: [last-admin]
+          description: >-
+            Present when deleting this profile (`POST /api/account/delete`) would be refused
+            before any proof is checked: `last-admin`, the only admin while other profiles
+            remain. The delete sheet says so before asking for a passkey or the password; the
+            delete itself still checks.
       example:
         passkeys: [{ id: "g3Xq…", name: "Laptop", created: "2026-09-23T10:00:00.000Z", lastUsed: "2026-09-23T10:00:00.000Z", transports: [internal] }]
         password: false
@@ -4174,6 +4319,7 @@ components:
       properties:
         id: { type: string, description: Stable user id (16 base64url chars). }
         name: { type: string }
+        owner: { type: boolean, description: Present (true) only for the instance owner. }
         admin: { type: boolean }
       example: { id: "Zk3q9XyPbA2LmN0v", name: "Ada", admin: false }
 
@@ -4435,7 +4581,14 @@ components:
             This instance keeps the files a logged workout's `media` list names too, not only a
             custom exercise's. Absent on an instance from before; the app then offers photos and
             videos on custom exercises only.
-      example: { imageMB: 2, gifMB: 8, videoMB: 40, videoSec: 60, quotaMB: 200, workouts: true }
+        days:
+          type: boolean
+          const: true
+          description: >-
+            This instance also keeps the files of progress photos filed under a day
+            (`dayPhotos`, a photo for a day without a workout). Absent on an instance from
+            before; the app then only adds photos to logged workouts there.
+      example: { imageMB: 2, gifMB: 8, videoMB: 40, videoSec: 60, quotaMB: 200, workouts: true, days: true }
 
     MediaUsage:
       type: object
@@ -4547,6 +4700,7 @@ components:
         name: { type: string }
         created: { oneOf: [{ type: string }, { type: 'null' }], description: ISO timestamp. }
         disabled: { type: boolean }
+        owner: { type: boolean, description: The one admin who manages the others. }
         admin: { type: boolean }
         invitedBy:
           oneOf: [{ type: string }, { type: 'null' }]
@@ -4582,6 +4736,7 @@ components:
             name: { type: string }
             created: { oneOf: [{ type: string }, { type: 'null' }] }
             disabled: { type: boolean }
+            owner: { type: boolean, description: The one admin who manages the others. }
             admin: { type: boolean }
             invitedBy: { oneOf: [{ type: string }, { type: 'null' }] }
             password: { type: boolean, description: PASSWORD_LOGIN instances only. }
@@ -4695,7 +4850,7 @@ components:
           description: |
             Event name. Currently one of:
             `auth.register.ok|fail|denied`, `auth.login.ok|fail`, `auth.logout`,
-            `auth.logout.all`, `auth.pair.create|ok|fail`,
+            `auth.logout.all`, `auth.account.delete`, `auth.pair.create|ok|fail`,
             `admin.denied`, `admin.user.disable|enable`,
             `admin.invite.create|revoke`, `admin.audit.clear`.
         ok: { type: boolean, description: false for failed/denied attempts. }

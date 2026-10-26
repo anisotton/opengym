@@ -83,6 +83,9 @@ export async function spawnApi(t, { dataDir, env = {}, nodeArgs = [], ipc = fals
   const h = { log: '', dataDir: dir, databaseUrl, dropDatabase: cleanup };
   child.stdout.on('data', d => h.log += d);
   child.stderr.on('data', d => h.log += d);
+  // API_TEST_LOG=1 mirrors the child's output to the runner's stderr: a 500 whose stack only
+  // reached h.log is otherwise invisible unless the failing assertion happens to print it.
+  if (process.env.API_TEST_LOG) { child.stdout.pipe(process.stderr); child.stderr.pipe(process.stderr); }
   t.after(() => { child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }); });
   h.port = await boundPort(child, () => h.log);
   h.api = `http://127.0.0.1:${h.port}`;
@@ -169,6 +172,27 @@ export function daysAgo(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
+}
+
+/* Fixture dates that follow the calendar.
+ *
+ * The Coach reads a window that ends today (MAX_WEEKS back from now), so a literal fixture date
+ * walks out of it one day and every review test reads an empty log: ten tests failed on
+ * 2026-10-12 for no other reason than the date. D() moves a fixture date by whole weeks, the
+ * same number for every date in a run, so the newest fixture day (FIXTURE_ANCHOR) lands in the
+ * last seven days before today (UTC, as the payload's own dates are). Weekdays and the gaps
+ * between fixture dates stay exactly as written, and nothing lands in the future.
+ * Write fixtures as D('2026-07-20'), and assertions about them the same way. */
+export const FIXTURE_ANCHOR = '2026-07-20';
+const DAY_MS = 86400000;
+const shiftWeeks = (() => {
+  const today = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  const anchor = Date.parse(FIXTURE_ANCHOR + 'T00:00:00Z');
+  return Math.floor((today - DAY_MS - anchor) / (7 * DAY_MS));
+})();
+export function D(iso) {
+  const t = Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z');
+  return new Date(t + shiftWeeks * 7 * DAY_MS).toISOString().slice(0, 10) + String(iso).slice(10);
 }
 
 /** A profile that has consented and has some history — the usual starting point. */

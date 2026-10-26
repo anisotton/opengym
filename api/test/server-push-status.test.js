@@ -179,3 +179,63 @@ test('another account cannot take over a subscription without its keys; the same
   assert.deepEqual(await status(h, endpoint, other), { subscribed: true, deviceId: null });
   assert.equal((await h.subs()).length, 1);
 });
+
+// Each rest timer is an hour-long setTimeout and a push when it rings. A new device id per
+// request used to leave one more behind every time, without limit.
+test('an account keeps at most five rest timers; the oldest give way', async t => {
+  const h = await startServer(t, [{ userId: 'u_test_1', endpoint: 'https://localhost/any', keys, created: new Date().toISOString() }]);
+  const sent = () => (h.log.match(/push send failed u_test_1/g) || []).length;
+  for (let i = 0; i < 8; i++) {
+    assert.equal((await post(h, '/api/push/rest-timer', { seconds: 1, deviceId: `dev_cap0000${i}` })).status, 200);
+  }
+  await new Promise(r => setTimeout(r, 2500));
+  assert.equal(sent(), 5, `three were dropped before they rang:\n${h.log}`);
+});
+
+test('rest timers and test pushes are throttled per account', async t => {
+  const h = await startServer(t);
+  let last;
+  for (let i = 0; i < 61; i++) last = await post(h, '/api/push/rest-timer', { seconds: 3600, deviceId: 'dev_phone000' });
+  assert.equal(last.status, 429);
+  assert.ok(Number(last.headers.get('retry-after')) >= 1);
+  assert.equal((await post(h, '/api/push/rest-timer', { seconds: 3600 }, other)).status, 200, 'another account has its own budget');
+  for (let i = 0; i < 10; i++) assert.equal((await post(h, '/api/push/test', {})).status, 200);
+  assert.equal((await post(h, '/api/push/test', {})).status, 429);
+});
+
+// The URL parser makes `\` a slash and resolves `..`, nginx does not: a path the proxy matched
+// as one route must not reach another one here.
+test('a path that only normalizes into a route is refused', async t => {
+  const h = await startServer(t);
+  const net = await import('node:net');
+  const raw = p => new Promise((resolve, reject) => {
+    const s = net.connect(h.port, '127.0.0.1', () => s.write(`GET ${p} HTTP/1.1\r\nHost: x\r\nCookie: ${cookie.Cookie}\r\nConnection: close\r\n\r\n`));
+    let out = ''; s.on('data', d => out += d); s.on('end', () => resolve(out.split(' ')[1])); s.on('error', reject);
+  });
+  assert.equal(await raw('/api/media/..\\data'), '400');
+  assert.equal(await raw('/api/media/../data'), '400');
+  assert.equal(await raw('/api/x/./../data'), '400');
+  assert.equal(await raw('/api/data'), '200');
+  assert.equal(await raw('/api/push/status?endpoint=a/../b'), '200');
+});
+
+// A browser's cookie and a phone's token are made the same way, and either is accepted in either
+// place. Only a phone's token is renewed, or a cookie copied off a browser could be replayed as a
+// bearer and traded for a fresh one for as long as anybody liked.
+test('GET /api/me renews a phone token past half its life, never a cookie replayed as one', async t => {
+  const h = await startServer(t);
+  const mint = (kind, daysLeft) => {
+    const payload = `u_test_1:${Date.now() + daysLeft * 86400000}:0${kind ? ':' + kind : ''}`;
+    return payload + '.' + crypto.createHmac('sha256', SECRET).update(payload).digest('base64url');
+  };
+  const me = async tok => (await fetch(`${h.api}/api/me`, { headers: { Authorization: `Bearer ${tok}` } })).json();
+  assert.ok((await me(mint('b', 10))).token, 'a phone token is renewed');
+  assert.ok((await me(mint('', 10))).token, 'a token from before the mark is renewed as before');
+  const renewed = (await me(mint('', 10))).token;
+  // This fork's tokens carry a sessions row id before the kind (ISO-1403): uid:exp:sv:sid:kind.
+  assert.match(Buffer.from(renewed).toString(), /^u_test_1:\d+:0:[0-9a-f-]{36}:b\./, 'and comes back as a phone token');
+  const cookie = await me(mint('c', 10));
+  assert.equal(cookie.user.id, 'u_test_1', 'a cookie still works as a bearer');
+  assert.equal(cookie.token, undefined, 'but is not renewed');
+  assert.equal((await me(mint('b', 80))).token, undefined, 'nothing is renewed early');
+});
