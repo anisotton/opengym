@@ -2533,4 +2533,7 @@ export default {
   // --- import with no account: workouts on this device ---
   'This device has 1 workout that is not in this backup. Replacing deletes it.': '此裝置上有 1 筆訓練紀錄不在此備份中。覆蓋將會刪除它。',
   'This device has {0} workouts that are not in this backup. Replacing deletes them.': '此裝置上有 {0} 筆訓練紀錄不在此備份中。覆蓋將會將其全數刪除。',
+  // Restored after the openGym v1.4.2 merge (dropped as dead keys; still used by SignupFlow, Settings, ServerSync).
+  'Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.': '選一個名字，然後用{0}確認。密碼金鑰會保存在你的裝置上，不需要密碼。',
+  'Play sounds when the phone is on silent': '手機靜音時仍播放聲音',
 }

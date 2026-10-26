@@ -2548,4 +2548,7 @@ export default {
   // --- import with no account: workouts on this device ---
   'This device has 1 workout that is not in this backup. Replacing deletes it.': 'Su questo dispositivo c’è 1 allenamento che non è in questo backup. Sostituire lo elimina.',
   'This device has {0} workouts that are not in this backup. Replacing deletes them.': 'Su questo dispositivo ci sono {0} allenamenti che non sono in questo backup. Sostituire li elimina.',
+  // Restored after the openGym v1.4.2 merge (dropped as dead keys; still used by SignupFlow, Settings, ServerSync).
+  'Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.': 'Scegli un nome e conferma con {0}. La passkey viene salvata sul tuo dispositivo — nessuna password.',
+  'Play sounds when the phone is on silent': 'Riproduci i suoni anche con il telefono in silenzioso',
 }

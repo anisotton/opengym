@@ -2548,4 +2548,7 @@ export default {
   // --- import with no account: workouts on this device ---
   'This device has 1 workout that is not in this backup. Replacing deletes it.': '이 기기에 이 백업에 없는 운동이 1개 있습니다. 바꾸면 삭제됩니다.',
   'This device has {0} workouts that are not in this backup. Replacing deletes them.': '이 기기에 이 백업에 없는 운동이 {0}개 있습니다. 바꾸면 삭제됩니다.',
+  // Restored after the openGym v1.4.2 merge (dropped as dead keys; still used by SignupFlow, Settings, ServerSync).
+  'Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.': '이름을 정한 뒤 {0}(으)로 확인하세요. 패스키는 기기에 저장됩니다 — 비밀번호가 필요 없어요.',
+  'Play sounds when the phone is on silent': '무음 모드에서도 소리 재생',
 }

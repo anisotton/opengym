@@ -2559,4 +2559,7 @@ export default {
   // --- import with no account: workouts on this device ---
   'This device has 1 workout that is not in this backup. Replacing deletes it.': 'อุปกรณ์นี้มีการออกกำลังกาย 1 รายการที่ไม่อยู่ในข้อมูลสำรองนี้ การแทนที่จะลบรายการนั้น',
   'This device has {0} workouts that are not in this backup. Replacing deletes them.': 'อุปกรณ์นี้มีการออกกำลังกาย {0} รายการที่ไม่อยู่ในข้อมูลสำรองนี้ การแทนที่จะลบรายการเหล่านั้น',
+  // Restored after the openGym v1.4.2 merge (dropped as dead keys; still used by SignupFlow, Settings, ServerSync).
+  'Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.': 'ตั้งชื่อแล้วยืนยันด้วย {0} พาสคีย์จะถูกเก็บไว้ในเครื่องคุณ — ไม่ต้องใช้รหัสผ่าน',
+  'Play sounds when the phone is on silent': 'เล่นเสียงแม้โทรศัพท์อยู่ในโหมดเงียบ',
 }

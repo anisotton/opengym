@@ -1645,6 +1645,10 @@ export const PT_BR_OVERRIDES = {
   // --- import with no account: workouts on this device ---
   'This device has 1 workout that is not in this backup. Replacing deletes it.': 'Este dispositivo tem 1 treino que não está neste backup. Substituir exclui esse treino.',
   'This device has {0} workouts that are not in this backup. Replacing deletes them.': 'Este dispositivo tem {0} treinos que não estão neste backup. Substituir exclui esses treinos.',
+  // Restored after the openGym v1.4.2 merge (dropped as dead keys; still used by SignupFlow, Settings, ServerSync).
+  'Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.': 'Escolha um nome e confirme com {0}. A chave de acesso fica salva no seu dispositivo — não é preciso usar senha.',
+  'Play sounds when the phone is on silent': 'Tocar sons com o celular no silencioso',
+  'Connecting…': 'Conectando…',
 }
 
 export default { ...pt, ...PT_BR_OVERRIDES }

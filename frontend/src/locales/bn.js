@@ -2616,4 +2616,7 @@ export default {
   // --- import with no account: workouts on this device ---
   'This device has 1 workout that is not in this backup. Replacing deletes it.': 'এই ডিভাইসে ১টি ওয়ার্কআউট আছে যা এই ব্যাকআপে নেই। প্রতিস্থাপন করলে এটি মুছে যাবে।',
   'This device has {0} workouts that are not in this backup. Replacing deletes them.': 'এই ডিভাইসে {0}টি ওয়ার্কআউট আছে যা এই ব্যাকআপে নেই। প্রতিস্থাপন করলে এগুলো মুছে যাবে।',
+  // Restored after the openGym v1.4.2 merge (dropped as dead keys; still used by SignupFlow, Settings, ServerSync).
+  'Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.': 'একটি নাম বেছে নিন, তারপর {0} দিয়ে নিশ্চিত করুন। পাসকি আপনার ডিভাইসে সংরক্ষিত থাকে — কোনো পাসওয়ার্ড লাগে না।',
+  'Play sounds when the phone is on silent': 'ফোন সাইলেন্ট থাকলেও শব্দ বাজান',
 }

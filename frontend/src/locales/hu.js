@@ -2551,4 +2551,7 @@ export default {
   // --- import with no account: workouts on this device ---
   'This device has 1 workout that is not in this backup. Replacing deletes it.': 'Ezen az eszközön 1 edzés van, amely nincs ebben a mentésben. A csere törli.',
   'This device has {0} workouts that are not in this backup. Replacing deletes them.': 'Ezen az eszközön {0} edzés van, amely nincs ebben a mentésben. A csere törli őket.',
+  // Restored after the openGym v1.4.2 merge (dropped as dead keys; still used by SignupFlow, Settings, ServerSync).
+  'Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.': 'Válassz egy nevet, majd erősítsd meg ezzel: {0}. A jelszókulcs az eszközödön tárolódik — jelszóra nincs szükség.',
+  'Play sounds when the phone is on silent': 'Hangok lejátszása akkor is, ha a telefon némítva van',
 }

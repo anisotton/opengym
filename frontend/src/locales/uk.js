@@ -2547,4 +2547,7 @@ export default {
   // --- import with no account: workouts on this device ---
   'This device has 1 workout that is not in this backup. Replacing deletes it.': 'На цьому пристрої є 1 тренування, якого немає в цій копії. Заміна його видалить.',
   'This device has {0} workouts that are not in this backup. Replacing deletes them.': 'На цьому пристрої є тренування, яких немає в цій копії ({0}). Заміна їх видалить.',
+  // Restored after the openGym v1.4.2 merge (dropped as dead keys; still used by SignupFlow, Settings, ServerSync).
+  'Play sounds when the phone is on silent': 'Відтворювати звуки, коли телефон у беззвучному режимі',
+  'Pick a name, then confirm with {0}. The passkey is saved in your device — no password needed.': 'Вибери ім’я і підтверди через {0}. Ключ доступу зберігається на пристрої — пароль не потрібен.',
 }
