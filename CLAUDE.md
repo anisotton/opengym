@@ -20,7 +20,8 @@ web/       multi-stage Dockerfile (builds frontend → nginx) + nginx.conf.templ
 mcp/       optional MCP server — read-only stdio bridge exposing a user's workouts/1RM/muscle
            balance to LLM clients (Claude Desktop, Cursor…). Not part of the Docker build; only
            runs when an LLM client spawns it.
-media/     exercise img/gif, gitignored, fetched at runtime by the `media` compose service.
+catalogue/ the exercise database (5,632 exercises, i18n) and its media (`catalogue/media`, still
+           and clip, committed; baked into the web image — Gym visual licence in its NOTICE.md).
 website/   static project site (plain HTML/CSS/JS), deployed separately.
 kubernetes/ example manifests (docs/SELF_HOSTING_KUBERNETES.md).
 docs/      guides indexed in docs/README.md (FAQ, SELF_HOSTING*, MOBILE, AI_COACH, DATA_IMPORTS, API);
@@ -30,7 +31,7 @@ docs/      guides indexed in docs/README.md (FAQ, SELF_HOSTING*, MOBILE, AI_COAC
 ## Commands
 
 ```bash
-# Local stack (api + web + media, prebuilt or built from source)
+# Local stack (db + api + web, prebuilt or built from source)
 cp .env.example .env
 docker compose up -d --build
 
@@ -193,17 +194,24 @@ WebAuthn passkeys are bound to an exact hostname (`RP_ID`) and require HTTPS (lo
 — this shapes a lot of the API and Settings code (`RP_ID`/`ORIGIN` env vars, guest-mode fallback
 when neither is available). Read `docs/SELF_HOSTING.md` before touching auth, session, or
 notification code; it documents the exact env-var contract (`RP_ID`, `ORIGIN`, `PORT`,
-`WEB_PORT`, `NGINX_PORT`, `BACKEND`, `SESSION_DAYS`, `ADMIN_UIDS`, `INVITE_ONLY`, `ALLOW_GUEST`,
-`AUDIT_*`, `VAPID_SUBJECT`) that real deployments depend on.
+`WEB_PORT`, `NGINX_PORT`, `BACKEND`, `BASE_PATH`, `SESSION_DAYS`, `ADMIN_UIDS`, `FIRST_USER_ADMIN`,
+`INVITE_ONLY`, `ALLOW_GUEST`, `ALLOWED_PRIVATE_IPS`, `CONTENT_SECURITY_POLICY`, `AUDIT_*`,
+`VAPID_SUBJECT`) that real deployments depend on. `FIRST_USER_ADMIN=1` makes the first profile on
+an empty instance its admin and owner (`claimFirstAdmin`, under an advisory lock); the owner is
+the one admin who appoints and removes admins (`POST /api/admin/user/role`, `/api/admin/owner`),
+recomputed into `ownerIdCache` at boot and after every route that can change it.
 
 ### Docker / deploy
 
-`docker-compose.yml` has four services: `media` (one-shot exercise-asset downloader, gitignored
-output), `db` (`postgres:17-alpine`, named volume `pgdata`, no host port published), `api`
-(`depends_on: db: condition: service_healthy`), `web` (multi-stage build of `frontend/` served
-by nginx, which also proxies `/api` → `api` and serves the shared media volume — single origin,
-required for passkeys). `web/nginx.conf.template` is rendered from env vars at container start
-(`NGINX_PORT`, `BACKEND`, `PORT`), so host/port remapping works against prebuilt images without
+`docker-compose.yml` has three services: `db` (`postgres:17-alpine`, named volume `pgdata`, no
+host port published), `api` (`depends_on: db: condition: service_healthy`), `web` (multi-stage
+build of `frontend/` served by nginx as the unprivileged user 101, which also proxies `/api` →
+`api` and serves `catalogue/media` copied into the image under `/exercise-media/` — single
+origin, required for passkeys). `web/nginx.conf.template` is rendered from env vars at container
+start (`NGINX_PORT`, `BACKEND`, `PORT`, `BASE_PATH`, `CONTENT_SECURITY_POLICY` — the default CSP
+lives in `web/Dockerfile` and names the hash of the one inline script in `frontend/index.html`,
+so `src/lib/csp.test.js` fails when either changes alone), and `40-substitute-app-url.sh` writes
+`APP_URL` into `index.html` at start; host/port remapping works against prebuilt images without
 a rebuild.
 
 ## Guidelines from CONTRIBUTING.md worth knowing before changing code
@@ -211,6 +219,7 @@ a rebuild.
 - **Dependency-light is a hard constraint, not a preference.** Frontend: React + Router + Zustand
   and nothing else. `api/`: three dependencies total (`@simplewebauthn/server`, `web-push`, `pg`).
   New dependencies are a hard sell either side.
-- Don't commit `media/` or `data/` (gitignored).
+- Don't commit `data/` (gitignored). `catalogue/media` is committed on purpose (ISO-1385 ruling of
+  2026-10-25: as upstream).
 - Training-logic changes (progression, 1RM, session read-back) need a unit test in `src/lib`
   beside the code, not just manual clicking-through.

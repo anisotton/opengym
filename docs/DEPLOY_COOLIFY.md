@@ -16,7 +16,10 @@ issue. As tabelas abaixo dizem onde cada valor vem de, não o valor em si.
 
 1. Novo recurso → **Docker Compose** → aponte para o `docker-compose.yml` da branch
    `release/0.0.0-alpha` do fork `anisotton/opengym` (não o `DuarteSantos8/openGym` upstream —
-   é o fork que tem o `/api/health` com banco e o profile `media`, ISO-1400).
+   é o fork que tem o `/api/health` com banco, ISO-1400). Desde o merge do openGym v1.4.2
+   (25/10/2026) a mídia dos exercícios vem dentro da imagem `web` (`catalogue/media`, licença
+   Gym visual em `catalogue/media/NOTICE.md` — a passar pelo advogado antes do lançamento pago);
+   não há mais serviço nem profile `media`.
 2. Volumes persistentes — confirme que os dois sobrevivem a um redeploy:
    - `pgdata` (volume nomeado do `db`, dados de PostgreSQL).
    - `./data` (bind mount do `api` — contas, passkeys, `secret`, `vapid.json`, uploads).
@@ -57,6 +60,10 @@ deve estar ausente do `.env.example`, e nenhuma obrigatória deve faltar na tabe
 | `ADMIN_UIDS` | **vazio no primeiro deploy.** Depois do primeiro cadastro de teste, copie o id em Settings → Conta → Account ID (ou `docker compose exec db psql -U opengym -c "SELECT id, name FROM users"`) e redeploy com esse id aqui | Não |
 | `COACH_DISABLED` | `1` — trava o Coach desligado, independente do toggle do admin (`AdminCoach.jsx` mostra "Force-disabled by COACH_DISABLED" no lugar do toggle) | Não |
 | `TRUST_PROXY` | **não toque** — já vem `1` por padrão no `docker-compose.yml` porque a API só é alcançada através do `web` | — |
+| `FIRST_USER_ADMIN` | **não defina** — o primeiro perfil viraria admin e *owner* da instância; aqui o admin é escolhido por `ADMIN_UIDS` depois do primeiro cadastro (o primeiro id em `ADMIN_UIDS` é o owner, o único que nomeia e remove admins) | Não |
+| `BASE_PATH` | **vazio** — a app é servida na raiz do domínio; só para quem a publica num subcaminho (`/gym`) | Não |
+| `CONTENT_SECURITY_POLICY` | **não defina** — o padrão vem de `web/Dockerfile` e carrega o hash do script inline de `index.html`; um valor próprio que esqueça esse hash quebra idioma e direção no primeiro paint | Não |
+| `ALLOWED_PRIVATE_IPS` | **não defina** — só para servidores de push em endereço privado (rede local); na VPS os endpoints de push são públicos | Não |
 
 Variáveis que existem no `.env.example` mas **não entram aqui por enquanto**: `VAPID_SUBJECT`
 (opcional, usa o padrão derivado de `ORIGIN`), `DEFAULT_LANG` (opcional, deixe a app detectar o

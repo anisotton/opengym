@@ -905,6 +905,11 @@ docker compose up -d --build
 The app shell is versioned (`?v=N`) so clients pick up changes on next load. Your `./data` is
 untouched; the exercise media come with the new image.
 
+The exercise media inside the image (`catalogue/media`, stills and clips) are Gym visual's, under
+the licence in `catalogue/media/NOTICE.md` and the attribution in `NOTICE.md`: they come with the
+image, not from a download at runtime, and they are not covered by the AGPL — read that notice
+before redistributing the image or the repository.
+
 ## Passkeys fail even though `RP_ID` looks right
 
 The most common support question, and the values are usually *nearly* correct. Work through

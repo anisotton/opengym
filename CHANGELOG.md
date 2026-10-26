@@ -44,6 +44,37 @@
   required on both the passkey and password forms, and a minor's date disables the button with an
   explanation, in every language.
 
+**Merged openGym v1.3.10 → v1.4.2 (and main at 042c9ee42)**
+
+Everything upstream shipped between the fork point (v1.3.9) and v1.4.2 is in, on this fork's own
+foundations — see the four version sections below for what each brought. In short: the new
+exercise database (5,632 exercises, animations in the app, your choice of quality), per-field sync
+stamps that let two devices edit the same day without one losing, swipe from the left edge to go
+back, reminders that know you trained elsewhere, one owner among the admins, sessions bound to the
+device that opened them, the Coach asking for consent before anything leaves, Apple Watch, widgets
+and Health groundwork for the iPhone app, Bengali and Traditional Chinese, and the v1.4.2 security
+round in full (a real Content-Security-Policy, hardened audit log, `FIRST_USER_ADMIN`,
+`ALLOWED_PRIVATE_IPS`, `BASE_PATH`).
+
+What this fork keeps different:
+
+- **PostgreSQL, not `db.json`.** Accounts, passkeys, sessions, invites, push subscriptions, device
+  links and the training data stay in Postgres (ISO-1403); every upstream change that touched
+  `db.json` or the per-user state files was rewritten on `api/store.js`. The owner flag lives in
+  `users.extra`; the reminder tick reads the accounts from the database every pass.
+- **`DELETE /api/account`, not `POST /api/account/delete`.** Deleting the account keeps the fork's
+  flow (ISO-1449): the backup offer, the proof sheet, the Stripe subscription cancelled through
+  the outbox. The row is now on a paired phone too (App Store rule 5.1.1(v)).
+- **Billing, e-mail, legal texts, program catalog, brand.** Stripe (`/configuracoes`), e-mail
+  confirmation and recovery, Terms/Privacy acceptance, minimum age, the admin program catalog, the
+  serif brand and the light theme are untouched. `UPDATE_FEED` stays unset: no public releases, so
+  the app never offers a download.
+- **Exercise media inside the web image**, as upstream does, under Gym visual's licence written
+  for openGym (`catalogue/media/NOTICE.md`). ⚠️ That licence has to be cleared with the lawyer
+  before a paid launch.
+- **Admin dashboard** keeps account and subscription data only (ISO-1447): no training data, no
+  live-workout row; upstream's owner pill and role controls were added on top.
+
 ## v1.4.2 (2026-10-23)
 
 openGym comes to the App Store, with an Apple Watch app in tow. Plus everything you asked for
