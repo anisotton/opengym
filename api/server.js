@@ -3925,9 +3925,10 @@ const routes = {
   // Which question is being asked is decided by the body: `role` for teacher/student (any admin),
   // `admin` for the admin flag (the owner).
   'POST /api/admin/user/role': async (req, res) => {
+    // Session first, body second, like every other admin route: nobody buffers MAX_BODY for a 401.
+    const admin = await requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
     if (body.role !== undefined) {
-      const admin = await requireAdmin(req, res); if (!admin) return;
       const role = normalizeRole(body.role);
       if (!role) return json(res, 400, { error: 'role must be "student" or "teacher"' });
       const u = await getUserById(pool, body.id);

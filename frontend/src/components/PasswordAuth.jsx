@@ -68,7 +68,7 @@ export function passwordError(e) {
     case 'current-required': case 'current-wrong': return t('Your current password is not right.')
     case 'passkey': case 'passkey-required': return t('Your passkey could not be confirmed.')
     case 'last-way-in': return t('This password is the only way into your profile, so it cannot be removed.')
-    case 'reset-invalid': return t('That reset code is wrong or has expired — ask your admin for a new one.')
+    case 'reset-invalid': return t('That reset code is wrong or has expired. Ask your admin for a new one.')
     case 'token-invalid': return t('That link is invalid or expired.')
     case 'disabled': return t('This account has been disabled.')
     case 'busy': return t('The server is busy. Try again in a moment.')
@@ -404,7 +404,7 @@ export function PasswordRow({ version = 0 }) {
   const blocked = !st.set && st.nameTaken
   const subtitle = blocked ? t('Another profile already signs in with this name.')
     : st.set ? t('Set · sign in as “{0}”', st.name)
-    : t('Not set — lets you sign in where passkeys do not work.')
+    : t('Not set. Handy for signing in where passkeys don’t work.')
   return <Row icon="key" iconTint="var(--orange)" title={t('Password')} subtitle={subtitle} accessory={blocked ? 'none' : 'chevron'}
     onClick={blocked ? undefined : () => ui().openSheet(close => <PasswordSheet status={st} close={close} done={load} />)} />
 }

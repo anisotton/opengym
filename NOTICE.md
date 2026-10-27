@@ -79,25 +79,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## Exercise media (stills and animations)
-
-The exercise stills and animations in `catalogue/media/` (and inside the published container
-images and app packages) are licensed to openGym by Gym visual. **They are not covered by
-openGym's AGPL** and not by any licence of the exercise text below.
-
-> © Aliaksandr Makatserchyk, Gym visual, gymvisual.com (reuse is governed by Gym visual's Terms & Conditions; obtain your own license there before reusing the media). NOTICE TO DEVELOPERS: The exercise animations included in this project are provided strictly for use within the openGym application. Third parties have no rights to reuse, extract, or integrate these media assets into independent apps, websites, or commercial products. To use these animations for your own software, you must obtain a license directly from gymvisual.com.
-
-What that means in practice:
-
-- The repository, websites and self-hosted servers carry the media at 180×180 px at most. Larger
-  versions exist only inside the compiled openGym app packages.
-- There is no public API, CDN or downloadable media pack. Don't hotlink the files or copy them out
-  of this repository or a running instance.
-- A non-commercial fork of openGym may keep the unmodified 180 px media together with this notice.
-  A commercial fork, or any other use, needs its own licence from [gymvisual.com](https://gymvisual.com/).
-- The media may not be used to train, prompt or feed any AI system, or as a basis for generated
-  images, animations or video.
-
 ## Exercise text (names, muscles, descriptions, instructions)
 
 The catalogue in `catalogue/` is openGym's own and is edited by its community (see

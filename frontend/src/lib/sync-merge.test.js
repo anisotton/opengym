@@ -508,6 +508,18 @@ describe('teacherLibrary keeps the version edited last, and never mixes with rou
     expect(next.map(x => x._ts)).toEqual([1000, 6, 1000])
   })
 
+  // Two devices each add an entry of their own: the merge keeps both, the way it does for
+  // routines. Upstream's field stamps (stampEdits/applyEdits) treat any list not in OWN_MERGE as a
+  // whole-value setting and copy the later copy's list over the union — which lost the other
+  // device's entry until teacherLibrary was listed there.
+  it('entries added on two devices both survive the merge, like routines', () => {
+    const start = base({ _ts: 1000, teacherLibrary: [lib('a', 10, 500)] })
+    const d1 = JSON.parse(JSON.stringify(start)); d1.teacherLibrary.push(lib('b', 8)); stampTeacherLibrary(start.teacherLibrary, d1.teacherLibrary, 2000); d1._ts = stampChange(start, d1, 2000)
+    const d2 = JSON.parse(JSON.stringify(start)); d2.teacherLibrary.push(lib('c', 6)); stampTeacherLibrary(start.teacherLibrary, d2.teacherLibrary, 3000); d2._ts = stampChange(start, d2, 3000)
+    expect(ids(mergeStates(d2, d1).teacherLibrary).sort()).toEqual(['a', 'b', 'c'])
+    expect(ids(mergeStates(d1, d2).teacherLibrary).sort()).toEqual(['a', 'b', 'c'])
+  })
+
   it('a reset wipes teacherLibrary the same way it wipes routines', () => {
     const recorded = resetIdsOf(base({ teacherLibrary: [lib('old', 1, 5)] }))
     const S = sinceReset(base({ teacherLibrary: [lib('old', 1, 5), lib('new', 1, 50)] }), 10, null)
