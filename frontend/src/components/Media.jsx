@@ -1,18 +1,61 @@
-import { useEffect, useState } from 'react'
-import { imgSrc, gifSrc, isVideoSrc, isCustomEx, figureOf } from '../lib/exercises.js'
-import { MOBILE } from '../lib/mobile.js'
+import { useState } from 'react'
+import { imgSrc, gifSrc } from '../lib/exercises.js'
+import { musclesOf } from '../lib/muscles.js'
 import { useStore } from '../store/useStore.js'
 import { t, exerciseNameFor } from '../lib/i18n.js'
 import Icon from './Icon.jsx'
 import CustomMedia, { CustomThumb } from './CustomMedia.jsx'
-import { useAnimSources } from './Animations.jsx'
+import BodyMap from './BodyMap.jsx'
 
 // An exercise's picture, wherever one shows. A custom exercise goes to CustomMedia.jsx — its own
 // photo, GIF, video or link, from the local media store — and never through imgSrc/gifSrc, which
 // name files of the shipped dataset (a stray img/gif on a custom exercise, written by a fork, is
 // ignored). The split is by component, not by branch, so each side keeps its own hooks in order.
 export default function Media(p) {
-  return isCustomEx(p.ex) ? <CustomMedia {...p} /> : <BuiltinMedia {...p} />
+  return p.ex?.custom ? <CustomMedia {...p} /> : <BuiltinMedia {...p} />
+}
+
+// A built-in exercise's own views: the Brilhart exercises carry a front/back pair (or just
+// front, until the back GIFs exist — ISO-1605), every other built-in (EXDB, text-only since the
+// third-party library was pulled, ISO-1603) carries none. The single top-level img/gif a
+// Brilhart entry also has is always a copy of its front view, kept there so list thumbnails
+// (BuiltinThumb below) stay the front pose without needing to know about `views` at all.
+const viewsOf = ex => (ex.views?.length ? ex.views : ex.src === 'brilhart' && ex.gif ? [{ key: 'front', img: ex.img, gif: ex.gif }] : [])
+
+// Primary/secondary legend for the muscle-map stand-in. Not BodyMapLegend's Less/More ramp —
+// that scale is training volume or fatigue, which isn't what's being shown here.
+function MuscleLegend() {
+  return (
+    <div className="hm-legend">
+      <span>{t('Primary target')}</span><div className="hm-c l4" />
+      <div className="hm-c l2" /><span>{t('Secondary')}</span>
+    </div>
+  )
+}
+
+// Segmented Frente/Costas control for the Brilhart exercises. Not the shared <Segmented> from
+// ui.jsx: it needs to float over the media in a corner with its own translucent styling (to
+// read on top of any GIF), not sit in the document flow like every other use of it.
+//
+// The source string is 'Rear', not 'Back': the app translates by literal English string, and
+// 'Back' was already taken by the Coach's navigation button in every locale pack (its own,
+// differently-worded translation — 'Voltar', 'Zurück'…). Reusing it silently shadowed the new
+// body-view wording with whichever one happened to sit later in the object literal (the review
+// that caught this, ISO-1604, found pt.js showing "Voltar" on this control). `v.key` itself
+// (the data model's view id, 'front'/'back') is unrelated and stays as-is.
+function ViewSwitch({ views, view, onChange }) {
+  return (
+    <div className="gifviews" style={{ '--n': views.length, '--i': view }} onClick={e => e.stopPropagation()}>
+      <span className="gv-sel" aria-hidden="true" />
+      {views.map((v, i) => (
+        <button key={v.key} className={i === view ? 'on' : ''} aria-pressed={i === view}
+          aria-label={v.key === 'back' ? t('Show rear view') : t('Show front view')}
+          onClick={() => onChange(i)}>
+          {v.key === 'back' ? t('Rear') : t('Front')}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 // Big autoplaying animation; tap toggles to the still frame. `compact` shrinks it (superset cards).
@@ -21,61 +64,68 @@ export default function Media(p) {
 // future workouts (issue #12). Settings can also turn workout media off entirely
 // (gifSize 'off') — then nothing renders here and the exercise card closes up, exactly like
 // an exercise without media. Any other/legacy value behaves as 'full'.
+//
+// An exercise with no media of its own (every EXDB entry today) still reserves this same slot:
+// the muscle map it's already got the data for (target/secondary) stands in, wherever the slot
+// is tall enough to read one (≥160px — the full card and the detail sheet; not the superset
+// 120px or minimized 84px bands, where a body silhouette is noise, not signal) — the neutral
+// icon tile covers those, same as a real media failure.
 function BuiltinMedia({ ex, id, compact, minimizable }) {
   const [playing, setPlaying] = useState(true)
-  // 'gif' → the animation failed, the still is showing; 'all' → the still failed too. Media is
-  // fetched from wherever the build points (a mount, a CDN): a dropped connection, an expired
-  // session on a gated instance or a CDN hiccup used to leave the browser's broken-image glyph
-  // on a white block. Now the still stands in for the animation, a neutral tile stands in for
-  // both, and a tap tries again — no text, so nothing new to translate.
-  const [failed, setFailed] = useState(null)
+  const views = viewsOf(ex)
+  const [view, setView] = useState(0)
+  // null = showing the gif (or its still, if paused); 'gif' = the gif failed, showing the still;
+  // 'all' = the still failed too, that view is exhausted. One slot per view, so a Brilhart
+  // exercise can fall back to its other view before giving up to the generic icon.
+  const [fails, setFails] = useState(() => views.map(() => null))
   const gifSize = useStore(s => s.S.gifSize)
-  const body = useStore(s => figureOf(s.S))
   const update = useStore(s => s.update)
-  // In the store apps the animation may come from a downloaded pack at the chosen quality
-  // (Settings → Animation quality, components/Animations.jsx): the sources are the best file
-  // first and the built-in one last, and one that will not load hands over to the next before the
-  // still is shown. 'Still only' asks for no animation at all. Elsewhere: the built-in file.
-  const anim = useAnimSources(ex, body)
-  const sourcesKey = anim.sources.join('|')
-  const [tried, setTried] = useState({ key: sourcesKey, i: 0 })
-  const at = tried.key === sourcesKey ? tried.i : 0
-  const gif = anim.sources[Math.min(at, Math.max(0, anim.sources.length - 1))] || gifSrc(ex, body)
-  const clip = ex.gif && isVideoSrc(gif) ? gif : null
-  const clipSrc = useClipInMemory(clip)
-  if (!ex.gif) return null
   if (minimizable && gifSize === 'off') return null
   const mini = minimizable && gifSize === 'mini'
+  const sizeClass = (compact ? ' compact' : '') + (mini ? ' mini' : '')
   const toggleSize = e => { e.stopPropagation(); update(s => { s.gifSize = mini ? 'full' : 'mini' }) }
-  const showGif = playing && failed == null && !anim.still
+
+  if (!views.length) {
+    const showMap = !compact && !mini
+    return (
+      <div className={'exmedia nomedia' + sizeClass} id={id} aria-label={showMap ? t('Muscle map for this exercise') : undefined}>
+        {showMap
+          ? <><BodyMap className="exbm" load={musclesOf(ex)} /><MuscleLegend /></>
+          : <div className="exmedia-x"><Icon name="dumbbell" /></div>}
+      </div>
+    )
+  }
+
+  const current = views[view]
+  const broken = fails.every(f => f === 'all')
+  const showGif = playing && fails[view] == null
   const onError = () => {
-    if (showGif && at < anim.sources.length - 1) { setTried({ key: sourcesKey, i: at + 1 }); return }
-    setFailed(showGif ? 'gif' : 'all')
+    const next = [...fails]
+    next[view] = next[view] == null ? 'gif' : 'all'
+    if (next[view] === 'all') {
+      const other = next.findIndex((f, i) => i !== view && f !== 'all')
+      if (other !== -1) setView(other)
+    }
+    setFails(next)
   }
   const onTap = () => {
-    if (failed) { setFailed(null); setPlaying(true); setTried({ key: sourcesKey, i: 0 }); return }
-    if (anim.still) return
+    if (broken || fails[view] != null) { setFails(views.map(() => null)); setPlaying(true); return }
     setPlaying(p => !p)
   }
   return (
-    <div className={'exmedia' + (compact ? ' compact' : '') + (mini ? ' mini' : '') + (failed === 'all' ? ' broken' : '')} id={id} onClick={onTap}>
-      {failed === 'all'
+    <div className={'exmedia' + sizeClass + (broken ? ' broken' : '')} id={id} onClick={onTap}>
+      {broken
         ? <div className="exmedia-x"><Icon name="dumbbell" /></div>
-        : showGif && clip && clipSrc
-          // No poster: Android's WebView went back to it at every loop and stalled there (the
-          // still above stands in while the clip loads, so nothing is lost without it).
-          ? <video ref={autoplayMuted} className="catvid" src={clipSrc} autoPlay muted loop playsInline disablePictureInPicture
-              aria-label={exerciseNameFor(ex)} onError={onError} />
-          : showGif && clip
-            // the phone app is still reading the clip into memory: the still holds its place
-            ? <img decoding="async" draggable={false} src={imgSrc(ex, body)} alt={exerciseNameFor(ex)} />
-          : <img decoding="async" draggable={false} src={showGif ? gif : imgSrc(ex, body)} alt={exerciseNameFor(ex)} onError={onError} />}
+        : <img decoding="async" draggable={false}
+            src={showGif ? gifSrc(ex, current.gif) : imgSrc(ex, current.img)}
+            alt={exerciseNameFor(ex)} onError={onError} />}
+      {views.length > 1 && !broken && <ViewSwitch views={views} view={view} onChange={setView} />}
       {minimizable && (
         <button className="giftoggle" onClick={toggleSize}>
           <Icon name={mini ? 'expand' : 'minimize'} />{mini ? t('Expand') : t('Minimize')}
         </button>
       )}
-      {!mini && !failed && !anim.still && (
+      {!mini && !broken && (
         <span className="gifhint">
           <Icon name={playing ? 'pause' : 'play'} />{playing ? t('tap to pause') : t('tap to play')}
         </span>
@@ -84,74 +134,20 @@ function BuiltinMedia({ ex, id, compact, minimizable }) {
   )
 }
 
-// In the phone app the clips come out of the app package through Capacitor's local server, which
-// answers every seek with a fresh, slow read: each loop jumped back to 0 and sat there for one to
-// five seconds, and users saw "slow and buggy" animations (the web, with its HTTP cache, never
-// did). So the app reads a clip into memory once (20-40 KB) and plays it from there; the last few
-// stay, so reopening an exercise is instant. The web keeps its URL and the browser's cache.
-const MEMORY_CLIPS = 30
-const clipCache = new Map()          // src -> object URL, oldest first
-const clipLoads = new Map()          // src -> pending promise
-function loadClip(src) {
-  if (clipCache.has(src)) {
-    const url = clipCache.get(src)
-    clipCache.delete(src); clipCache.set(src, url)   // most recently used last
-    return Promise.resolve(url)
-  }
-  if (!clipLoads.has(src)) {
-    clipLoads.set(src, fetch(src)
-      .then(r => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
-      .then(blob => {
-        const url = URL.createObjectURL(blob)
-        clipCache.set(src, url)
-        while (clipCache.size > MEMORY_CLIPS) {
-          const [old, oldUrl] = clipCache.entries().next().value
-          clipCache.delete(old); URL.revokeObjectURL(oldUrl)
-        }
-        return url
-      })
-      .finally(() => clipLoads.delete(src)))
-  }
-  return clipLoads.get(src)
-}
-
-export function useClipInMemory(src, inApp = MOBILE) {
-  const [url, setUrl] = useState(() => (src && inApp ? clipCache.get(src) || null : src))
-  useEffect(() => {
-    if (!src || !inApp) { setUrl(src); return }
-    let alive = true
-    setUrl(clipCache.get(src) || null)
-    // A read that fails falls back to the URL itself: playing slowly beats not playing.
-    loadClip(src).then(u => { if (alive) setUrl(u) }, () => { if (alive) setUrl(src) })
-    return () => { alive = false }
-  }, [src, inApp])
-  return url
-}
-
-// React sets `muted` as a property only, never as the attribute, and Android's WebView (the phone
-// app) allows autoplay only for a video that carries the attribute: the loop sat on its first frame
-// there while every desktop browser played it. Set it before the first frame and start playback
-// ourselves; a refusal leaves the still showing, which a tap can still start.
-export function autoplayMuted(el) {
-  if (!el) return
-  el.muted = true
-  el.defaultMuted = true
-  el.setAttribute('muted', '')
-  const p = el.play?.()
-  if (p && typeof p.catch === 'function') p.catch(() => {})
-}
-
 // A still that will not load (offline and never cached, a lapsed session on a gated instance, a
 // CDN hiccup) gets the same neutral tile as an exercise without media, instead of the browser's
 // broken-image glyph in a list of them (#281). The failure is remembered per image, so a list
-// that re-renders does not ask again; a new exercise in the same slot tries its own.
+// that re-renders does not ask again; a new exercise in the same slot tries its own. Always the
+// front view for a Brilhart exercise (ex.img), never whatever view the detail sheet last showed
+// — a thumbnail is the pose that identifies the exercise, not a status readout.
 export function Thumb(p) {
-  return isCustomEx(p.ex) ? <CustomThumb {...p} /> : <BuiltinThumb {...p} />
+  return p.ex?.custom ? <CustomThumb {...p} /> : <BuiltinThumb {...p} />
 }
 function BuiltinThumb({ ex }) {
-  const body = useStore(s => figureOf(s.S))
-  const src = ex.img ? imgSrc(ex, body) : null
+  // Only Brilhart's own media (src 'brilhart') is a picture here: a stray img on a legacy
+  // built-in or an unflagged custom exercise (the dataset's removed files) is no picture at all.
+  const src = ex.src === 'brilhart' && ex.img ? imgSrc(ex) : null
   const [broken, setBroken] = useState(null)
-  if (!src || broken === src) return <div className="thumb thumb-x"><Icon name="dumbbell" /></div>
+  if (!src || broken === src) return <div className="thumb thumb-x" aria-label={t('No image available for this exercise')}><Icon name="dumbbell" /></div>
   return <img className="thumb" loading="lazy" decoding="async" draggable={false} src={src} alt="" onError={() => setBroken(src)} />
 }

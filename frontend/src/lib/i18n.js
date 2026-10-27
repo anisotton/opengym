@@ -9,6 +9,21 @@ import {
   getLang, dateLocale, t, tn, instrFor, exerciseNameFor, exerciseNameSearchText, getVersion,
   baseLang, derivePack, _setLangState, exerciseNameClass, descFor, instrTranslated, _setDetailsLoader, _setDetails, _detailsFailed
 } from './i18n-core.js'
+import { BRILHART_124 } from './exercises-brilhart-124.js'
+
+// ISO-1638: the 124 Brilhart-illustrated EXDB ids show `titulo` (the manifest's pt-BR title,
+// matching what the GIF shows) in pt-BR specifically, instead of the curated generic
+// translation frontend/src/exercise-names/pt-BR.js carries for the same id. That pack is
+// locked 1:1 against EXDB by pt-br-exercise-names.test.js (every key, exactly EXDB.length,
+// matching a hand-curated source file) — overwriting 124 of its entries here, at load time,
+// keeps that file and its test untouched instead of forking the lock. Every other language's
+// pack (and pt-BR for every other id) is unaffected.
+const BRILHART_124_PT_BR_TITLES = Object.fromEntries(BRILHART_124.map(e => [e.id, e.titulo]))
+
+// Pure (no I/O), so it's unit-testable on its own: a null/undefined pack (English, or a
+// language with none) passes through unchanged, never faking a pt-BR pack into existence.
+export const withBrilhart124PtBrTitles = exerciseNames =>
+  exerciseNames ? { ...exerciseNames, ...BRILHART_124_PT_BR_TITLES } : exerciseNames
 
 export {
   LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, DATE_LOCALES, DERIVED_LOCALES, RTL_LANGS,
@@ -72,6 +87,7 @@ export async function setLang(l, showEn, enOnly) {
     exerciseNames = base === 'en' || !EXERCISE_NAME_LANGS.includes(base)
       ? null
       : (await exerciseNamePacks['../exercise-names/' + base + '.js']()).default
+    if (base === 'pt-BR') exerciseNames = withBrilhart124PtBrTitles(exerciseNames)
   } catch (e) { exerciseNames = null }
   _setLangState(l, derivePack(l, dict), derivePack(l, instr), derivePack(l, exerciseNames), show, only)
   if (detailsLoaded) loadDetails()

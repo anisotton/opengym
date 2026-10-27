@@ -287,10 +287,12 @@
 
   <h3 id="f-plan">Routines &amp; the plan builder</h3>
   <ul>
-    <li><b>5,632 exercises</b>: searchable (typos and gym shorthand welcome), with animated
-        demonstrations on a male or female figure, a short description and step-by-step
-        instructions, plus a <b>filter for the equipment you actually own</b> (the filter
-        options adapt to what you've picked, so every combination on screen has results).</li>
+    <li><b>128 exercises</b> — the 124 with Brilhart's own animated demonstration plus the 4
+        port de bras ones, searchable, with step-by-step instructions, and a <b>filter for the
+        equipment you actually own</b> (the filter options adapt to what you've picked, so every
+        combination on screen has results). A routine or workout logged against any of
+        openGym's wider 1,324-exercise dataset keeps opening exactly as before — it just isn't
+        offered to browse or add anymore.</li>
     <li><b>Your own exercises:</b> a name and a body part is enough; they behave like built-in
         ones everywhere, with an optional description instead of an animation.</li>
     <li><b>Your own picture on your own exercises:</b> give an exercise you made a photo, a GIF
@@ -480,9 +482,8 @@ cd openGym
 cp .env.example .env
 docker compose pull    # prebuilt images (amd64 + arm64) — skip to build from source
 docker compose up -d</code></pre>
-  <p>Open <code>http://localhost:8080</code>, tap <b>Create profile</b>, and you're in. The
-     exercise pictures and animations are part of the web image, so there's nothing else to
-     download. Check it's healthy:</p>
+  <p>Open <code>http://localhost:8080</code>, tap <b>Create profile</b>, and you're in.
+     Check it's healthy:</p>
   <pre><code>docker compose ps
 curl http://localhost:8080/api/health      # {"ok":true,...}</code></pre>
   <p>Logs: <code>docker compose logs -f</code> · stop: <code>docker compose down</code> ·
@@ -571,7 +572,7 @@ docker compose up -d   # restart alone does NOT re-read .env</code></pre>
   <pre><code>git pull                  # picks up compose/config changes
 docker compose pull       # (or: docker compose up -d --build, if building from source)
 docker compose up -d</code></pre>
-  <p>Your <code>./data</code> and the downloaded media are untouched; the app shell is
+  <p>Your <code>./data</code> is untouched; the app shell is
      versioned so clients pick up changes on next load. Releases are announced on
      <a href="https://github.com/DuarteSantos8/openGym/releases" rel="noopener">GitHub</a>
      and <a href="https://discord.gg/e62jY6fwVb" rel="noopener">Discord</a>; container images
@@ -877,22 +878,15 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
   </ul>
   <p>The training logic — progression rules, 1RM estimation, how a logged session is read
      back — lives in pure functions under <code>frontend/src/lib/</code> with tests next to
-     them; the MCP server and the mobile app import the very same functions. Every pull
-     request runs the full suites (frontend, api, mcp) on GitHub Actions and builds and boots the
-     api images. After the merge, CI on the GitLab mirror builds the amd64+arm64 images, signs the
-     APK and publishes the release &mdash; tagging <code>vX.Y.Z</code> is what ships everything.</p>
-  <p>openGym is developed with <a href="https://claude.com/claude-code" rel="noopener">Claude Code</a>,
-     Anthropic's coding agent: a large share of the code, tests and documentation is drafted in
-     Claude Code sessions. What goes in, every review and every release is the maintainer's call,
-     and each release is tested on a staging instance and on real phones first. The app itself
-     needs no AI service &mdash; the <a href="#coach">AI coach</a> and the <a href="#mcp">MCP server</a>
-     are opt-in. <a href="https://github.com/DuarteSantos8/openGym#how-opengym-is-built" rel="noopener">More on this in the README</a>.</p>
-  <p>The exercise catalogue lives in the repository as one JSON file per exercise
-     (<a href="https://github.com/DuarteSantos8/openGym/blob/main/catalogue/README.md" rel="noopener">catalogue/</a>),
-     with its translations next to it, and anyone can fix or translate an entry with a pull
-     request. The pictures and animations are licensed from
-     <a href="https://gymvisual.com/" rel="noopener">Gym visual</a> for openGym and ship with it at
-     180&nbsp;px (see the <a href="#faq">FAQ</a> for the licensing details).</p>
+     them; the MCP server and the mobile app import the very same functions. CI on the GitLab
+     mirror runs the full suites (frontend, api, mcp) on every commit, builds the amd64+arm64
+     images, signs the APK, and publishes releases — tagging <code>vX.Y.Z</code> is what
+     ships everything.</p>
+  <p>The exercise database comes from
+     <a href="https://github.com/hasaneyldrm/exercises-dataset" rel="noopener">hasaneyldrm/exercises-dataset</a>:
+     1,324 exercises with text and instructions, MIT-licensed (see the
+     <a href="#faq">FAQ</a> for the licensing details). The dataset's images and animations are
+     not used — see the FAQ for why.</p>
 
   <h2 id="build">Build it yourself</h2>
   <p>Everything on this page is built from the public repo:</p>
@@ -935,14 +929,12 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
   <table class="cfg">
     <tr><td>No passkey prompt on my phone</td><td>You're on <code>http://</code> or a bare IP. Passkeys need HTTPS or localhost — set up a domain, or use guest mode / the mobile app.</td></tr>
     <tr><td>"verification failed" on login</td><td><code>RP_ID</code>/<code>ORIGIN</code> don't match the address bar — see the checklist above, starting with what the server logged.</td></tr>
-    <tr><td>Exercise pictures missing</td><td>You're on an image older than v1.4.0 or a custom build: <code>docker compose pull &amp;&amp; docker compose up -d</code>. A source build needs <code>catalogue/media/</code> checked out.</td></tr>
     <tr><td>Port 8080 already used</td><td><code>WEB_PORT=9090</code> in <code>.env</code> (and update <code>ORIGIN</code> for local testing).</td></tr>
     <tr><td>No "Reminders" page in Settings</td><td>Needs a signed-in profile and HTTPS (or localhost) — guest mode and plain HTTP over LAN can't subscribe.</td></tr>
     <tr><td>Day reminder fires at the wrong time</td><td>Toggle it off and on so it re-detects your browser's timezone (also happens on every app load).</td></tr>
     <tr><td>"Keep screen awake" shows as unsupported</td><td>The Wake Lock API needs HTTPS or localhost; iOS also refuses it in Low Power Mode.</td></tr>
     <tr><td>Want to reset a stuck login</td><td>Delete the cookie — sessions are just signed cookies. "Sign out everywhere" in Settings → Account ends every session (and paired apps) at once.</td></tr>
     <tr><td><code>docker compose pull</code> says "denied"</td><td>Build from source instead: <code>docker compose up -d --build</code>.</td></tr>
-    <tr><td>Exercise images blank in an old build</td><td>Fixed in current images. <code>VITE_IMG_BASE</code>/<code>VITE_GIF_BASE</code> are <b>build-time</b>: they're baked into the bundle when the frontend compiles, so setting them at runtime does nothing to a prebuilt image — redirect media in your reverse proxy instead, or rebuild.</td></tr>
   </table>
   <p>Still stuck? The <a href="https://discord.gg/e62jY6fwVb" rel="noopener">Discord</a> is
      the quickest way to get an answer;
@@ -953,10 +945,8 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
   <h2 id="privacy">Privacy — the complete list</h2>
   <ul>
     <li><b>The app collects nothing.</b> No telemetry, no analytics, no crash reporting, no
-        accounts on anyone else's server. The exercise media are inside the mobile app.
-        It goes online only for what you set up (your server, the coach, Health Connect) and, in the
-        APK from this site, for GitHub's public release list when you open Settings → About (the
-        update check). The full policy: <a href="privacy.html">Privacy</a>. In the browser, a self-hosted instance talks only to your own server.</li>
+        accounts on anyone else's server. A self-hosted instance talks only to your own
+        server.</li>
     <li><b>Passkey private keys never leave your device</b> — the server stores only public
         keys.</li>
     <li><b>The optional activity log</b> (self-hosted, admin feature) records sign-in events
@@ -1002,19 +992,24 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
      reviewed, tested and released by the maintainer. The app itself calls no AI service unless
      you switch the coach on. See <a href="#arch">How it's built</a>.</p>
   <h3>Where does the exercise database come from?</h3>
-  <p>The text is openGym's own: one JSON file per exercise in
-     <a href="https://github.com/DuarteSantos8/openGym/blob/main/catalogue/README.md" rel="noopener">catalogue/</a>,
-     translations next to it, and fixes welcome as pull requests. The 1,324 exercises openGym
-     started with came from ExerciseDB by way of hasaneyldrm/exercises-dataset, and their
-     original text stays under <b>MIT</b>; everything written since is AGPL like the rest of
-     openGym.</p>
-  <p>The pictures and animations are a different matter: they are &copy; Aliaksandr
-     Makatserchyk, <a href="https://gymvisual.com/" rel="noopener">Gym visual</a>, licensed for
-     use in openGym only, at 180&nbsp;px in the repository and on servers and larger only inside
-     the app packages. They are not covered by the AGPL, and there's no media pack or CDN to
-     pull them from. Reusing them anywhere else needs your own licence from gymvisual.com.
-     Full third-party notices, including the body-diagram geometry, are in
+  <p>From <a href="https://github.com/hasaneyldrm/exercises-dataset" rel="noopener">hasaneyldrm/exercises-dataset</a>:
+     1,324 exercises with text and instructions, localized in 12 of openGym's 14 UI
+     languages — including openGym's separately curated Brazilian Portuguese translation.
+     The exercise metadata and instruction text are <b>MIT</b>.</p>
+  <p>That dataset's images and animations were third-party media with disputed ownership
+     (between <a href="https://gymvisual.com/" rel="noopener">Gym visual</a> and ExerciseDB) that
+     openGym never redistributed — an instance used to download them from upstream on first run.
+     They have been removed from this project entirely. Full third-party notices, including the
+     body-diagram geometry, are in
      <a href="https://github.com/DuarteSantos8/openGym/blob/main/NOTICE.md" rel="noopener">NOTICE.md</a>.</p>
+  <p>The Brilhart Fitness fork also ships its own images and animations for 128 exercises — the
+     4 port de bras ones plus 124 of the dataset's own exercises, illustrated with Brilhart's
+     media instead — <b>© Brilhart Fitness, all rights reserved</b>, not MIT or AGPL, included in
+     the repository only as an aggregate work alongside the AGPL code (see
+     <code>frontend/public/brilhart/COPYRIGHT.md</code>). The app's exercise library, search and
+     picker show only these 128 plus your own custom exercises; the rest of the dataset stays
+     text-only and keeps resolving for any routine, workout or history entry that already cites
+     one.</p>
   <h3>What does the AGPL mean for me?</h3>
   <p>You can self-host, use, modify and share openGym freely. If you run a <i>modified</i>
      version as a network service, you must offer that version's source under the same

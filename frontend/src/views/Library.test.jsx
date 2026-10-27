@@ -7,7 +7,7 @@ import { resolve } from 'node:path'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Library from './Library.jsx'
-import { EXDB } from '../lib/exercises.js'
+import { EXDB, LIBRARY_CATALOGUE, LIBRARY_IDS } from '../lib/exercises.js'
 import { CASED_NAME_LANGS, EXERCISE_NAME_LANGS, _setLangState } from '../lib/i18n-core.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -74,8 +74,10 @@ describe('Library favourites', () => {
   })
 
   it('keeps a favourite on top inside a body-part filter, but never pulls one in from elsewhere', () => {
-    const chest = EXDB.filter(e => e.bp === 'chest')
-    const legs = EXDB.find(e => e.bp !== 'chest')
+    // From LIBRARY_CATALOGUE (ISO-1638), not the full EXDB: the Library only ever renders the
+    // library-visible subset, so a favourite outside it would never show up to test against.
+    const chest = LIBRARY_CATALOGUE.filter(e => e.bp === 'chest')
+    const legs = LIBRARY_CATALOGUE.find(e => e.bp !== 'chest')
     mocks.S.favEx = [chest[4].id, legs.id]
     const host = render()
     const chip = [...host.querySelectorAll('.chips .chip')].find(b => b.textContent === 'chest')
@@ -93,6 +95,12 @@ describe('Library exercise-name casing per language', () => {
   afterEach(() => _setLangState('en', {}, null, null))
 
   for (const lang of EXERCISE_NAME_LANGS) {
+    // de.js only covers "equipment exercises" (not body-weight ones, by its own file comment),
+    // and since ISO-1638 the library is 124 Brilhart-illustrated ids + bf01-04 — all body-weight
+    // — so German has nothing of its own to show here today. Still asserted explicitly (not
+    // skipped) so a future German entry among those ids, or a future all-equipment language
+    // with the same gap, is caught rather than silently passing either way.
+    const hasOverlap = Object.keys(packs[`../exercise-names/${lang}.js`]).some(id => LIBRARY_IDS.has(id))
     it(`${lang}: every translated row is ${CASED_NAME_LANGS.includes(lang) ? 'left in its own casing' : 'title-cased'}`, () => {
       const pack = packs[`../exercise-names/${lang}.js`]
       _setLangState(lang, {}, null, pack)
@@ -101,48 +109,34 @@ describe('Library exercise-name casing per language', () => {
       const rows = [...render().querySelectorAll('.item .tt')].slice(1)   // drop "Create your own"
       expect(rows.length).toBeGreaterThan(0)
       const translated = rows.filter(el => Object.values(pack).some(n => el.textContent.startsWith(n)))
+      if (!hasOverlap) { expect(translated.length, lang).toBe(0); return }
       expect(translated.length, lang).toBeGreaterThan(0)
       for (const el of translated) expect(el.classList.contains('capitalize'), `${lang}: ${el.textContent}`).toBe(!CASED_NAME_LANGS.includes(lang))
     })
   }
 })
 
-// The header counts the catalogue, and from the first exercise of your own, those too (owner
-// request for v1.3.10): "1324 animated exercises + 5 of your own". It has to stay one line on a
-// phone, so it runs under the title row at full width, never wraps, and ellipsizes as a last resort.
+// The header counts what the library shows — the curated Brilhart set (ISO-1638) plus your own
+// exercises (upstream counted the whole dataset "with animations"; this fork has one plain count).
 describe('Library header count', () => {
   const sub = host => host.querySelector('.hdr .sub').textContent
   const own = n => Array.from({ length: n }, (_, i) => ({ id: 'c' + i, n: 'my move ' + i, bp: 'chest', eq: '', custom: true }))
   afterEach(() => _setLangState('en', {}, null, null))
 
   it('shows only the catalogue while you have no exercises of your own', () => {
-    expect(sub(render())).toBe(`${EXDB.length} exercises with animations`)
+    expect(sub(render())).toBe(`${LIBRARY_CATALOGUE.length} exercises`)
   })
 
   it('adds "+ 1 of your own" for a single custom exercise', () => {
     mocks.S.customEx = own(1)
-    expect(sub(render())).toBe(`${EXDB.length} animated exercises + 1 of your own`)
+    expect(sub(render())).toBe(`${LIBRARY_CATALOGUE.length + 1} exercises`)
   })
 
   it('adds the count for several custom exercises', () => {
     mocks.S.customEx = own(5)
-    expect(sub(render())).toBe(`${EXDB.length} animated exercises + 5 of your own`)
+    expect(sub(render())).toBe(`${LIBRARY_CATALOGUE.length + 5} exercises`)
   })
 
-  it('uses the language\'s own plural forms (Russian: 1 своё, 2 своих, 5 своих)', async () => {
-    const { default: ru } = await import('../locales/ru.js')
-    _setLangState('ru', ru, null, null)
-    const forms = ru['{1} animated exercises + {0} of your own']
-    expect(typeof forms).toBe('object')
-    mocks.S.customEx = own(1)
-    const one = sub(render())
-    act(() => { mounted.splice(0).forEach(root => root.unmount()) })
-    mocks.S.customEx = own(5)
-    const five = sub(render())
-    expect(one).toContain(String(EXDB.length))
-    expect(five).toBe(forms.many.replace('{0}', '5').replace('{1}', String(EXDB.length)))
-    expect(one).not.toBe(five.replace('5', '1'))
-  })
 
   it('keeps the subtitle on one line on wider screens, clipping with an ellipsis', () => {
     expect(sub(render())).toBeTruthy()
@@ -171,15 +165,15 @@ describe('Library similar exercises', () => {
 
   it('offers what comes close instead of "No match" when nothing matches exactly', () => {
     const host = render()
-    search(host, 'dumbbell curl qwxz')
+    search(host, 'sit up qwxz')
     expect(label(host)).toBe('No exact match. These come close:')
     expect(host.textContent).not.toContain('No match')
-    expect(names(host).slice(0, 5).some(n => /dumbbell.*curl/.test(n))).toBe(true)
+    expect(names(host).slice(0, 5).some(n => /sit.?up/i.test(n))).toBe(true)
   })
 
   it('lists similar ones under a short result list, without repeating a result', () => {
     const host = render()
-    search(host, 'face pull')
+    search(host, 'side bend')   // one exact match in the curated set, a handful that come close
     expect(label(host)).toBe('Similar exercises')
     const all = names(host)
     expect(new Set(all).size).toBe(all.length)

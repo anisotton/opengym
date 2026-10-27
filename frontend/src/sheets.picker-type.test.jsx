@@ -43,6 +43,9 @@ afterEach(() => {
 
 describe('exercise picker type filter', () => {
   it('shows the Type row between the muscle groups and the equipment, like the Library', () => {
+    // The curated library (ISO-1638) is all body weight: one custom with a dumbbell gives the
+    // picker a second equipment option, so its equipment strip is there to sit below the Type row.
+    act(() => { useStore.getState().update(s => { s.customEx = [{ id: 'own-db', n: 'my dumbbell move', bp: 'upper arms', eq: 'dumbbell', custom: true }] }, false) })
     exercisePicker(vi.fn())
     const host = renderTop()
     const strips = [...host.querySelectorAll('.chips')]

@@ -11,7 +11,10 @@ const SERVER = readFileSync(new URL('../../../api/server.js', import.meta.url), 
 // Every quoted auth./admin./media. name, not only `audit(req, '…'`: a name with a hyphen
 // ('admin.first-user') or one picked by a ternary slipped past that pattern and reached the
 // dashboard raw.
-const EVENTS = [...new Set([...SERVER.matchAll(/['"`]((?:auth|admin|media|account|billing)\.[a-z0-9.-]+)['"`]/g)].map(m => m[1]))]
+const EVENTS = [...new Set([
+  ...[...SERVER.matchAll(/['"`]((?:auth|admin|media|account|billing|teacher)\.[a-z0-9.-]+)['"`]/g)].map(m => m[1]),
+  ...[...SERVER.matchAll(/audit\(req, '([a-z.]+)'/g)].map(m => m[1]),
+])]
 const REASONS = [...new Set([...SERVER.matchAll(/msg: '([a-z-]+)'/g)].map(m => m[1]))]
 
 describe('auditLabel', () => {
@@ -43,8 +46,8 @@ describe('auditCat', () => {
   // throttle, billing's checkout start (ISO-1393), and self-service account deletion
   // (ISO-1394 Phase 4 — its own top-level event, not `admin.*`, since no admin acted). None of
   // the three has a chip of its own — those rows show under All, and a throttle under Failed.
-  it('puts every known event in account, admin, auth, billing or media', () => {
-    expect([...new Set(EVENTS.map(auditCat))].sort()).toEqual(['account', 'admin', 'auth', 'billing', 'media'])
+  it('puts every known event in account, admin, auth, billing, media or teacher', () => {
+    expect([...new Set(EVENTS.map(auditCat))].sort()).toEqual(['account', 'admin', 'auth', 'billing', 'media', 'teacher'])
   })
 })
 
@@ -84,14 +87,16 @@ describe('auditLine', () => {
     expect(auditLine({ ev: 'auth.passkey.fail', ok: false, name: 'Ana', msg: 'credential-exists' }).sub).not.toMatch(/credential-exists/)
   })
 
-  it('reads the sign-in e-mail events, whose line carries only a masked address', () => {
+  it('reads the account e-mail events, whose line carries only a masked address', () => {
     // set/change are picked by a ternary the extraction above cannot read, like password set/change.
-    expect(EVENTS).toEqual(expect.arrayContaining(['auth.email.remove', 'auth.email.fail']))
+    expect(EVENTS).toEqual(expect.arrayContaining(['auth.email.fail', 'auth.recover.password']))
     expect(SERVER).toContain("first ? 'auth.email.set' : 'auth.email.change'")
-    expect(auditLabel('auth.email.change')).toBe('Changed their sign-in e-mail')
-    expect(auditLine({ ev: 'auth.email.set', ok: true, name: 'Ana', msg: 'passkey · a…@e…' })).toEqual({ title: 'Added a sign-in e-mail', sub: 'Ana · passkey · a…@e…' })
+    expect(auditLabel('auth.email.change')).toBe('Changed their e-mail')
+    expect(auditLine({ ev: 'auth.email.set', ok: true, name: 'Ana', msg: 'passkey · a…@e…' })).toEqual({ title: 'Added their e-mail', sub: 'Ana · passkey · a…@e…' })
     expect(auditLine({ ev: 'auth.email.fail', ok: false, name: 'Ana', msg: 'email-taken' }).sub).toBe('Ana · another profile already uses that e-mail')
     expect(auditLine({ ev: 'auth.password.fail', ok: false, msg: 'unknown-email' }).sub).toBe('unknown caller · no profile with a password has that e-mail')
+    // ISO-1596: recover/redeem with a new password instead of a device-link code.
+    expect(auditLine({ ev: 'auth.recover.password', ok: true, name: 'Ana' })).toEqual({ title: 'Reset their password with a recovery link', sub: 'Ana' })
   })
 
   it('names the person who did it', () => {
@@ -182,7 +187,7 @@ describe('a failed proof of ownership', () => {
   })
   it('reads as the change, not as a sign-in', () => {
     expect(auditLine({ ev: 'auth.proof.fail', ok: false, name: 'Ana', act: 'email', msg: 'bad-current' }))
-      .toEqual({ title: 'Confirming a change failed', sub: 'Ana · changing the sign-in e-mail · wrong current password' })
+      .toEqual({ title: 'Confirming a change failed', sub: 'Ana · changing their e-mail · wrong current password' })
     expect(auditLine({ ev: 'auth.proof.fail', ok: false, name: 'Ana', act: 'passkey-remove', msg: 'step-up-failed' }).sub)
       .toBe('Ana · removing a passkey · the passkey confirming the change was rejected')
   })

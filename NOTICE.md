@@ -10,7 +10,9 @@ forked from <https://github.com/DuarteSantos8/openGym> on 2026-09-29 and maintai
 Anderson Isotton (Isotton Corp). It remains under the **GNU AGPL v3.0**; the original copyright
 and every notice below are kept unchanged. As required by section 5(a) of the AGPL, changes made
 in this fork are recorded in its git history (commits after upstream `e88062e`), and the complete
-source of the version running on any instance is published here.
+source of the version running on any instance is published here. This fork also ships its own
+media, **© Brilhart Fitness** rather than AGPL, for 128 exercises — see "Brilhart exercise media"
+below.
 
 ## App store exception
 
@@ -20,6 +22,30 @@ Apple App Store and Google Play) whose terms of service would otherwise be incom
 with the AGPL, provided the corresponding source code remains available under the AGPL at
 the project repository. This permission applies to the distribution channel only and does
 not otherwise limit the license.
+
+## Brilhart exercise media
+
+`frontend/public/brilhart/` ships Brilhart's own images and animations for 128 exercises,
+**© Brilhart Fitness, all rights reserved**:
+
+- the 4 port de bras exercises added for this fork (`frontend/src/lib/exercises-brilhart.js`,
+  ids `bf01`–`bf04`) — their text (name, instructions) is Brilhart's own too, not from the
+  dataset below;
+- 124 of the 1,324 built-in exercises from the dataset below (`frontend/src/lib/
+  exercises-brilhart-124.js` overlays the media onto the matching `frontend/src/lib/
+  exercises-data.js` id) — only the image and animation are Brilhart's; the exercise's name,
+  attributes and instructions stay the dataset's own MIT-licensed text, unchanged.
+
+This media is **not** licensed under the MIT license that covers the built-in exercises' text
+below, and **not** under openGym's AGPL — it is included in this repository only as an aggregate
+work alongside the AGPL code, per AGPL section 5. Reuse outside this app needs Brilhart Fitness's
+written permission. See `frontend/public/brilhart/COPYRIGHT.md`.
+
+As of this version, the app's own exercise library, search, filters, muscle explorer and
+exercise picker show only these 128 Brilhart-illustrated exercises plus a user's own custom
+ones — the rest of the dataset below stays in the app text-only, resolving normally for any
+routine, workout or history entry that already cites one, but no longer offered to browse or
+add.
 
 ## Body diagram geometry
 
@@ -106,6 +132,39 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+### Images & animations — removed, third-party, never MIT nor AGPL
+
+**Removed from this project as of ISO-1601/ISO-1603.** The exercise thumbnails (180×180) and
+animations described below — the disputed-ownership ones this section is about — are no longer
+shipped, downloaded or referenced anywhere in this repository, its container images or its
+mobile builds. 124 of the 1,324 built-in exercises since gained different, Brilhart-owned media
+instead ("Brilhart exercise media" above); the rest stay text-only (metadata and instructions,
+MIT, above). The history below is kept for provenance; it no longer describes what this project
+does.
+
+The thumbnails and animations were **not** covered by the MIT license above and **not** by
+openGym's AGPL. Their ownership was **unresolved**, and openGym stated this plainly rather than
+guessing:
+
+- The upstream dataset attributes them to **© [Gym visual](https://gymvisual.com/)**, redistributed
+  there with that rights holder's written permission — a permission granted to *that dataset* and
+  **not transferable**.
+- **ExerciseDB/AscendAPI** describes itself as "the original creator and owner" of this content and
+  publishes its own [terms](https://exercisedb.io/faq), which permit self-hosting, bundling and
+  commercial display, while prohibiting redistribution of the raw dataset or media as a standalone
+  or competing content package.
+
+These two claims contradicted each other, and were never resolved before the decision above to
+remove the media entirely.
+
+**openGym never redistributed it.** It was not in this repository, not in its history, and not in
+the published container images or the Android APK — a self-hosted instance downloaded it from the
+upstream source on first `docker compose up`, and the mobile and demo builds loaded it from a CDN
+at runtime. None of that happens anymore.
+
+If you want to reuse the media yourself — in openGym or anywhere else, commercially or not —
+**clear it with the rights holder first**, and keep any attribution that accompanies it intact.
 
 Brazilian Portuguese exercise instructions and names (now in `catalogue/i18n/pt-BR.json`) are original translations of that
 English source produced with OpenAI Codex and Anthropic Claude Code

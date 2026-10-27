@@ -20,8 +20,10 @@ web/       multi-stage Dockerfile (builds frontend → nginx) + nginx.conf.templ
 mcp/       optional MCP server — read-only stdio bridge exposing a user's workouts/1RM/muscle
            balance to LLM clients (Claude Desktop, Cursor…). Not part of the Docker build; only
            runs when an LLM client spawns it.
-catalogue/ the exercise database (5,632 exercises, i18n) and its media (`catalogue/media`, still
-           and clip, committed; baked into the web image — Gym visual licence in its NOTICE.md).
+catalogue/ the exercise database (5,632 exercises, text, muscle map, i18n) — generated into
+           frontend/src/lib by scripts/catalogue/build.mjs. No third-party media: the fork removed
+           the Gym visual/ExerciseDB pictures (ISO-1601/1603) and ships only Brilhart's own media for
+           128 exercises (frontend/public/brilhart, exercises-brilhart*.js, ISO-1605/1638).
 website/   static project site (plain HTML/CSS/JS), deployed separately.
 kubernetes/ example manifests (docs/SELF_HOSTING_KUBERNETES.md).
 docs/      guides indexed in docs/README.md (FAQ, SELF_HOSTING*, MOBILE, AI_COACH, DATA_IMPORTS, API);
@@ -50,7 +52,7 @@ cd mcp && npm test
 
 # Production build
 cd frontend && npm run build
-cd frontend && npm run build:mobile   # + cap sync, points media at the CDN dataset
+cd frontend && npm run build:mobile   # + cap sync
 ```
 
 There is no linter/formatter configured (no ESLint/Prettier config in the repo) and no
@@ -206,12 +208,13 @@ recomputed into `ownerIdCache` at boot and after every route that can change it.
 `docker-compose.yml` has three services: `db` (`postgres:17-alpine`, named volume `pgdata`, no
 host port published), `api` (`depends_on: db: condition: service_healthy`), `web` (multi-stage
 build of `frontend/` served by nginx as the unprivileged user 101, which also proxies `/api` →
-`api` and serves `catalogue/media` copied into the image under `/exercise-media/` — single
-origin, required for passkeys). `web/nginx.conf.template` is rendered from env vars at container
-start (`NGINX_PORT`, `BACKEND`, `PORT`, `BASE_PATH`, `CONTENT_SECURITY_POLICY` — the default CSP
-lives in `web/Dockerfile` and names the hash of the one inline script in `frontend/index.html`,
-so `src/lib/csp.test.js` fails when either changes alone), and `40-substitute-app-url.sh` writes
-`APP_URL` into `index.html` at start; host/port remapping works against prebuilt images without
+`api` — single origin, required for passkeys; the only exercise media are Brilhart's own, bundled
+by Vite from `frontend/public/brilhart`). `web/nginx.conf.template` is rendered from env vars at
+container start (`NGINX_PORT`, `BACKEND`, `PORT`, `BASE_PATH`, `CONTENT_SECURITY_POLICY` — the
+default CSP lives in `web/Dockerfile` and names the hash of the one inline script in
+`frontend/index.html`, so `src/lib/csp.test.js` fails when either changes alone), and
+`40-substitute-app-url.sh` writes `APP_URL` into `index.html` at start; host/port remapping works
+against prebuilt images without
 a rebuild.
 
 ## Guidelines from CONTRIBUTING.md worth knowing before changing code
@@ -219,7 +222,6 @@ a rebuild.
 - **Dependency-light is a hard constraint, not a preference.** Frontend: React + Router + Zustand
   and nothing else. `api/`: three dependencies total (`@simplewebauthn/server`, `web-push`, `pg`).
   New dependencies are a hard sell either side.
-- Don't commit `data/` (gitignored). `catalogue/media` is committed on purpose (ISO-1385 ruling of
-  2026-10-25: as upstream).
+- Don't commit `data/` (gitignored).
 - Training-logic changes (progression, 1RM, session read-back) need a unit test in `src/lib`
   beside the code, not just manual clicking-through.

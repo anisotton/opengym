@@ -170,8 +170,8 @@ export const NUDGE_COPY = {
       "lines": [
         "Tes gains font leurs valises. {0} demain, sans excuses !",
         "{0} ne va pas se faire tout seul, recrue. Au pas de course !",
-        "Les excuses ne soulèvent pas de poids. Présente-toi demain pour {0} !",
-        "Tes muscles ont signalé ta disparition. Présente-toi pour {0} !"
+        "Les excuses ne soulèvent pas de poids. Présentez-vous demain pour {0} !",
+        "Vos muscles ont signalé votre disparition. Présentez-vous pour {0} !"
       ]
     }
   },

@@ -36,21 +36,22 @@ const LABELS = {
   'auth.password.change': 'Changed their password',
   'auth.password.remove': 'Removed their password',
   'auth.password.reset': 'Used a reset code',
-  // The e-mail a profile may sign in with instead of its name. `msg` is the proof it was set with
-  // and the address masked to two characters ("password · a…@e…") — never the address itself.
-  'auth.email.set': 'Added a sign-in e-mail',
-  'auth.email.change': 'Changed their sign-in e-mail',
-  'auth.email.remove': 'Removed their sign-in e-mail',
-  'auth.email.fail': 'Changing the sign-in e-mail failed',
-  // Verified e-mail + password-less recovery (ISO-1397) — a different, always-on address from
-  // the sign-in e-mail above (#118, PASSWORD_LOGIN only): the one every new profile has, proven
-  // by a mailed link rather than only compared.
+  // The account's one verified e-mail (ISO-1397), also usable as a second sign-in identifier
+  // next to the profile name on a PASSWORD_LOGIN instance (ISO-1596 unified what used to be two
+  // separate addresses here — see api/server.js's own "e-mail sign-in" comment). `msg` on set/
+  // change is the proof it was set with and the address masked to two characters
+  // ("password · a…@e…") — never the address itself.
+  'auth.email.set': 'Added their e-mail',
+  'auth.email.change': 'Changed their e-mail',
+  'auth.email.fail': 'Changing their e-mail failed',
   'auth.email.verify.ok': 'Confirmed their e-mail',
   'auth.email.verify.fail': 'Confirming an e-mail failed',
   'auth.email.resend': 'Resent the confirmation e-mail',
   'auth.recover.request': 'Asked to recover access',
   'auth.recover.ok': 'Recovered access',
   'auth.recover.fail': 'Recovering access failed',
+  // ISO-1596: the recovery link redeemed with a new password instead of pairing a device.
+  'auth.recover.password': 'Reset their password with a recovery link',
   // More than one passkey, and one-time codes for another device (#95). `msg` on an addition or a
   // code is the proof it was made with (passkey, password); on a removal or a redemption, the
   // passkey's name.
@@ -107,7 +108,54 @@ const LABELS = {
   'media.throttled': 'Too many photo or video requests',
   // Stripe billing (ISO-1393): `msg` carries the plan name. No chip of its own, same as media —
   // these rows show under All.
-  'billing.checkout': 'Started a Stripe checkout'
+  'billing.checkout': 'Started a Stripe checkout',
+  // ISO-1619/ISO-1630: the admin payment-plan catalog. `activate`/`unpublish` are their own
+  // events (not folded into a generic "update"), same precedent as admin.program.publish/
+  // unpublish above — availability is the one change that affects whether a plan can be sold.
+  'admin.billing.catalog.create': 'Created a new payment plan',
+  'admin.billing.catalog.display': "Edited a payment plan's display text",
+  'admin.billing.catalog.activate': 'Put a payment plan on sale',
+  'admin.billing.catalog.deactivate': 'Took a payment plan off sale',
+  'admin.billing.catalog.price.new': 'Created a new price for a payment plan',
+  'admin.billing.catalog.price.publish': "Published a payment plan's new price",
+  'admin.billing.catalog.order': 'Reordered the payment plan catalog',
+  'admin.billing.catalog.reconcile': 'Reconciled the payment plan catalog against Stripe',
+  // ISO-1619/ISO-1624 T2a, ISO-1625 T2b: one account's billing ficha and its actions — never
+  // folded into a generic "update", same precedent as the catalog events just above.
+  'admin.billing.subscription.change-plan': "Changed an account's plan",
+  'admin.billing.subscription.cancel-period-end': "Scheduled an account's subscription to cancel",
+  'admin.billing.subscription.resume': "Undid a scheduled cancellation on an account's subscription",
+  'admin.billing.subscription.cancel-immediately': "Cancelled an account's subscription immediately",
+  'admin.billing.subscription.suspend-collection': "Suspended an account's billing",
+  'admin.billing.subscription.resume-collection': "Resumed an account's billing",
+  'admin.billing.subscription.generate-link': 'Generated a subscription link for an account',
+  'admin.billing.subscription.sync': "Synced an account's subscription with Stripe",
+  // "Sign in with Google" (ISO-1597). `ok`'s `msg` carries the proof kind ('reauth') or, for a
+  // pending signup with no account yet, a masked address; `refused`/`fail` carry a reason code.
+  'auth.google.start': 'Started linking a Google account',
+  'auth.google.ok': 'Signed in with Google',
+  'auth.google.link': 'Linked a Google account',
+  'auth.google.signup': 'Created a profile with Google',
+  'auth.google.refused': 'Signing in with Google was refused',
+  'auth.google.fail': 'Signing in with Google failed',
+  'auth.google.unlink': 'Unlinked a Google account',
+  // Teacher/student roles, the link between them and workout assignments (ISO-1594/ISO-1609).
+  // `teacher.student.view` is logged every time, not just on refusal — it is access to another
+  // person's training data, same reasoning as any other personal-data read worth a trail.
+  'teacher.role.grant': 'Made a profile a teacher',
+  'teacher.role.revoke': 'Took away a profile’s teacher role',
+  'teacher.invite.create': 'Created a class invite code',
+  'teacher.invite.revoke': 'Revoked a class invite code',
+  'teacher.link.accept': 'Linked to a teacher',
+  'teacher.link.end': 'Ended a teacher/student link',
+  'teacher.link.bodyweight': 'Changed whether body weight is shared with their teacher',
+  'teacher.assign': 'Assigned a routine or program',
+  'teacher.assign.end': 'Ended an assignment',
+  'teacher.student.view': 'Viewed a student’s training data',
+  'teacher.note.create': 'Added a note about a student',
+  'teacher.note.update': 'Edited a note about a student',
+  'teacher.note.delete': 'Deleted a note about a student',
+  'teacher.denied': 'Blocked from the teacher dashboard'
 }
 // An unknown event is shown raw rather than dropped or rendered as "undefined": a dashboard
 // that is one version behind the server should still say *something* truthful.
@@ -142,20 +190,33 @@ const REASONS = {
   'email': 'e-mail addresses already in use',
   // What a `media.throttled` pause was for.
   'upload': 'photo and video uploads',
-  'sweep': 'clearing unused photos and videos'
+  'sweep': 'clearing unused photos and videos',
+  // "Sign in with Google" (ISO-1597).
+  'disabled': 'the account is disabled',
+  'cancelled': 'they cancelled on Google’s side',
+  'already-linked': 'that Google account is already linked to a different profile',
+  'email-unverified': 'the e-mail matches a profile that has not confirmed it yet',
+  'reauth': 'confirmed with a fresh Google sign-in',
+  'reauth-mismatch': 'confirmed with a different Google account than the one linked',
+  'google-proof-invalid': 'the Google confirmation was missing, expired or already used',
+  // teacher.link.end's reason, and teacher.denied's one uniform refusal (ISO-1609).
+  'by-student': 'the student unlinked',
+  'by-teacher': 'the teacher removed the student',
+  'not-your-student': 'not this teacher’s student'
 }
 export const auditReason = msg => REASONS[msg] || (msg ? String(msg) : '')
 
 // What an `auth.proof.fail` was confirming (the server's `act`).
 const ACTS = {
-  'email': 'changing the sign-in e-mail',
-  'email-remove': 'removing the sign-in e-mail',
+  'email': 'changing their e-mail',
   'password': 'setting or changing the password',
   'password-remove': 'removing the password',
   'passkey-add': 'adding a passkey',
   'passkey-remove': 'removing a passkey',
   'device-link': 'making a one-time code for another device',
-  'account-delete': 'deleting their account'
+  'account-delete': 'deleting their account',
+  'google-link': 'linking a Google account',
+  'google-remove': 'unlinking Google'
 }
 export const auditAct = act => ACTS[act] || (act ? String(act) : '')
 

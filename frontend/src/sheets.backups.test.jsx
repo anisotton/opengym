@@ -35,12 +35,12 @@ afterEach(() => { act(() => { mounted.splice(0).forEach(([root, host]) => { root
 describe('the routine editor\'s exercise sheet', () => {
   it('shows the backups and keeps them on save; without any, no field', () => {
     const onSave = vi.fn()
-    exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps', subs: ['0047', '0289'] }, onSave, null, null, null, null, undefined, { backups: true })
+    exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps', subs: ['0001', '0003'] }, onSave, null, null, null, null, undefined, { backups: true })
     const host = render(useUI.getState().sheets.at(-1))
     expect(row(host, 'Backups').querySelector('.lrow-v').textContent).toBe('2')
-    expect(row(host, 'Backups').textContent).toContain(exerciseNameFor(EXIDX['0047']))
+    expect(row(host, 'Backups').textContent).toContain(exerciseNameFor(EXIDX['0001']))
     act(() => save(host))
-    expect(onSave.mock.calls[0][0].subs).toEqual(['0047', '0289'])
+    expect(onSave.mock.calls[0][0].subs).toEqual(['0001', '0003'])
 
     const none = vi.fn()
     exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps' }, none, null, null, null, null, undefined, { backups: true })
@@ -51,7 +51,7 @@ describe('the routine editor\'s exercise sheet', () => {
 
   it('adds one from the library and removes one', () => {
     const onSave = vi.fn()
-    exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps', subs: ['0047'] }, onSave, null, null, null, null, undefined, { backups: true })
+    exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps', subs: ['0001'] }, onSave, null, null, null, null, undefined, { backups: true })
     const host = render(useUI.getState().sheets.at(-1))
     act(() => row(host, 'Backups').click())
     const sheet = render(useUI.getState().sheets.at(-1))
@@ -60,7 +60,7 @@ describe('the routine editor\'s exercise sheet', () => {
     expect(sheet.querySelector('h3').textContent).toBe('Backups for Barbell Bench Press')
     act(() => [...sheet.querySelectorAll('button')].find(b => b.textContent === 'Add a backup').click())
     const picker = render(useUI.getState().sheets.at(-1))
-    const name = exerciseNameFor(EXIDX['0289'])
+    const name = exerciseNameFor(EXIDX['0003'])
     act(() => [...picker.querySelectorAll('.chip')].find(c => c.textContent === 'All').click())
     const input = picker.querySelector('input.input')
     act(() => {
@@ -69,29 +69,29 @@ describe('the routine editor\'s exercise sheet', () => {
     })
     const pick = [...picker.querySelectorAll('.item')].find(el => el.querySelector('.tt')?.textContent === name)
     act(() => pick.click())
-    act(() => [...sheet.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Remove “' + exerciseNameText(EXIDX['0047']) + '”').click())
+    act(() => [...sheet.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Remove “' + exerciseNameText(EXIDX['0001']) + '”').click())
     act(() => save(host))
-    expect(onSave.mock.calls[0][0].subs).toEqual(['0289'])
+    expect(onSave.mock.calls[0][0].subs).toEqual(['0003'])
   })
 
   it('elsewhere (a workout\'s own sheet) the row is not offered, and the backups still survive a save', () => {
     const onSave = vi.fn()
-    exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps', subs: ['0047'] }, onSave)
+    exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps', subs: ['0001'] }, onSave)
     const host = render(useUI.getState().sheets.at(-1))
     expect(row(host, 'Backups')).toBeUndefined()
     act(() => save(host))
-    expect(onSave.mock.calls[0][0].subs).toEqual(['0047'])
+    expect(onSave.mock.calls[0][0].subs).toEqual(['0001'])
   })
 })
 
 describe('the swap picker', () => {
   it('lists the slot\'s backups first, and leaves them out while searching', () => {
-    exercisePicker(() => {}, { title: 'Swap exercise', like: '0025', backups: ['0289', 'gone'] })
+    exercisePicker(() => {}, { title: 'Swap exercise', like: '0025', backups: ['0003', 'gone'] })
     const host = render(useUI.getState().sheets.at(-1))
     const heads = [...host.querySelectorAll('h4.sec')].map(h => h.textContent)
     expect(heads.slice(0, 2)).toEqual(['Your backups', 'Everything else'])
     const first = host.querySelector('h4.sec').nextElementSibling
-    expect(first.textContent).toContain(exerciseNameFor(EXIDX['0289']))
+    expect(first.textContent).toContain(exerciseNameFor(EXIDX['0003']))
   })
   it('no backups, no section', () => {
     exercisePicker(() => {}, { title: 'Swap exercise', like: '0025' })

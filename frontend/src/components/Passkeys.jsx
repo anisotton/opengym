@@ -166,11 +166,18 @@ function RemovePasskeySheet({ passkey, title, state, close, done }) {
    because each prompt wants a tap of its own (Safari refuses a second prompt opened from the same
    one), and a password, where that is the proof, is typed before either. What it is for: a
    security key, a password manager, a phone through the browser's own QR prompt. Another device
-   that can open Brilhart Fitness itself is easier with a code (DeviceLinkSheet). */
-function AddPasskeySheet({ state, close, done }) {
+   that can open Brilhart Fitness itself is easier with a code (DeviceLinkSheet).
+
+   `initialReady`, when given, skips straight to the "tap to create" step — App.jsx's Google-reauth
+   resume (ISO-1598) already spent the proof and fetched the creation options itself, the moment
+   `google=reauth-ok` landed; what it cannot do for a profile with neither a password nor a
+   passkey is call navigator.credentials.create() on its own — a WebAuthn ceremony needs its own
+   fresh tap, which a browser navigation cannot carry forward. This still asks for exactly one
+   tap, same as every other path here; it just is not the proof's. */
+export function AddPasskeySheet({ state, close, done, initialReady = null }) {
   // Blank to start with: what gets added here is rarely this browser (a key, a phone, a manager).
   const [name, setName] = useState('')
-  const [ready, setReady] = useState(null)   // { cid, options } once the proof went through
+  const [ready, setReady] = useState(initialReady)   // { cid, options } once the proof went through
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const create = async () => {
@@ -198,7 +205,8 @@ function AddPasskeySheet({ state, close, done }) {
     <div style={{ height: 12 }} />
     {ready ? <Button variant="primary" icon="plus" disabled={busy} onClick={create}>{t('Create passkey')}</Button>
       : <ProveOwner passkey={state.passkeys.length > 0} password={state.password} explain={passkeyError}
-        onProof={async proof => setReady(await post('/api/account/passkeys/options', proof))} />}
+        onProof={async proof => setReady(await post('/api/account/passkeys/options', proof))}
+        resumeAction={{ kind: 'add-passkey' }} />}
     {err && <div className="small" role="alert" style={errStyle}>{err}</div>}
   </>
 }

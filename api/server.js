@@ -27,6 +27,7 @@ import {
 } from './password.js';
 import { createBackoff, createWindow } from './rate-limit.js';
 import { MAX_PASSKEYS, transportsOf } from './passkeys-store.js';
+import * as oauthGoogle from './oauth-google.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE, sniffMedia } from './media.js';
 import { connectAndMigrate, withTransaction } from './db.js';
 import {
@@ -40,10 +41,17 @@ import {
   createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
   removePasskey, touchPasskeyUse, upsertPasskey,
+  insertOAuthIdentity, findOAuthIdentityBySubject, findOAuthIdentityByUser, touchOAuthIdentityUse,
+  removeOAuthIdentityUnlessLast,
   createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup,
   listPrograms, getProgram, listProgramEvents, createProgram, updateProgram, trashProgram,
   restoreProgram, purgeProgram, purgeExpiredPrograms, setProgramCover, clearProgramCover,
-  coverStillReferenced, getAllCoverFiles
+  coverStillReferenced, getAllCoverFiles,
+  setUserRole, countStudentsOfTeacher, createTeacherInvite, listTeacherInvites, revokeTeacherInvite,
+  peekTeacherInvite, acceptTeacherInvite, getTeacherLink, getLinkForTeacher, listStudentsOfTeacher,
+  endLink, setShareBodyweight, assignToStudent, getActiveAssignment, endAssignment, listAssignmentHistory,
+  getPendingAndEndedAssignments, ackAssignment, listNotes, createNote, updateNote, deleteNote,
+  getAvailablePlans
 } from './store.js';
 import {
   CATEGORIES as PROGRAM_CATEGORIES, DIFFICULTIES as PROGRAM_DIFFICULTIES,
@@ -52,6 +60,12 @@ import {
   SESSION_MINUTES_MIN, SESSION_MINUTES_MAX, COVER_ALT_MIN, COVER_ALT_MAX, COVER_WIDTH_MIN, COVER_HEIGHT_MIN, COVER_DIM_MAX,
   validateProgram, validateCoverAlt, validateCoverDims, programConfig
 } from './programs.js';
+import {
+  normalizeRole, newInviteCode, hashInviteCode, INVITE_TTL_MS, MAX_ACTIVE_INVITES,
+  TEACHER_SCOPE_VERSION, TEACHER_SCOPE, TEACHER_SCOPE_OPTIONAL, TEACHER_SCOPE_NEVER, teacherView,
+  validateRoutineAssignment, validateSchedule, validateNote, MAX_NOTE_CHARS, MAX_NOTES_PER_STUDENT,
+  studentSummary, IDLE_DAYS, ADHERENCE_WINDOW_DAYS
+} from './teacher.js';
 import { makeEmailToken, hashEmailToken, VERIFY_TTL_MS, RECOVER_TTL_MS } from './email-tokens.js';
 import { sendMail } from './mail.js';
 import { LEGAL_VERSION } from './legal.js';
@@ -59,9 +73,19 @@ import { renderVerifyEmail } from './mail-templates/verify-email.js';
 import { renderRecoverEmail } from './mail-templates/recover-access.js';
 import { renderPreChargeNotice } from './mail-templates/pre-charge-notice.js';
 import {
+  renderPlanChangeScheduled, renderCancelScheduled, renderCancelImmediate, renderCancellationResumed,
+  renderCollectionSuspended, renderCollectionResumed
+} from './mail-templates/billing-action.js';
+import {
   BILLING_ON, getStripe, hasActiveAccess, createCheckoutSession, createPortalSession,
   billingStatus, applyStripeEvent, setFirstPeriodNoticeHook, tickFirstPeriodNotices, nextChargeAmountCents,
-  attemptStripeCleanup, tickStripeCleanup
+  attemptStripeCleanup, tickStripeCleanup, seedCatalogFromEnv,
+  liveWritesDisabled, validPlanId, validDisplay, validInterval, validIntervalCount, validUnitAmount,
+  createOffer, setPlanAvailability, createPriceVersion, publishPriceVersion, reorderCatalog,
+  editPlanDisplay, getCatalogAdminView, getBillingAdminActions, reconcileCatalog,
+  getUserBillingFicha, previewSubscriptionAction, changePlan, cancelAtPeriodEnd, resumeCancellation,
+  cancelImmediately, generateSubscriptionLink, syncSubscription, suspendCollection, resumeCollection,
+  changePlanEffectiveUnix, cancellationEffectiveUnix, planSummaryForMail
 } from './billing.js';
 import { effectiveRoutineId } from './queue.js';
 import { stampPut } from './sync-stamps.js';
@@ -130,6 +154,17 @@ const ALLOW_GUEST = !/^(0|false|no|off)$/i.test(process.env.ALLOW_GUEST || '');
 // every account that opts in, so an instance has to ask for it. While it is off every password
 // route answers 404 and the app shows none of it; hashes already stored stay where they are.
 const PASSWORD_LOGIN = /^(1|true|yes|on)$/i.test(process.env.PASSWORD_LOGIN || '');
+// "Sign in with Google" (ISO-1597). Both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required —
+// with either missing, every /api/auth/google/* and /api/register/google route is absent (404,
+// the googleRoutes spread below never happens) and GET /api/config answers exactly as it did
+// before this feature existed. GOOGLE_REDIRECT_URI is only for an instance whose public API
+// address differs from APP_URL (reached through a different hostname than the app itself); the
+// default has to match whatever is registered as the OAuth client's redirect URI in Google Cloud
+// Console, or Google itself refuses the request before any of this code runs.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `${APP_URL}/api/auth/google/callback`;
+const GOOGLE_LOGIN = !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 // The language the sign-in screen, and every profile that never picked one, starts in (#303) —
 // for an instance whose people share a language. Only a tag's shape is checked here; the app
 // matches it against the languages it has and ignores one it does not know. Unset, it is left
@@ -587,6 +622,17 @@ function verifySig(token) {
   } catch { return null; }
   return payload;
 }
+// Structured signed cookies for the Google OAuth flow (ISO-1597) — the state/nonce/PKCE verifier
+// a GET /api/auth/google/start hands back to itself via the browser, and the pending-signup
+// ticket a callback with no matching account hands to POST /api/register/google. Same HMAC as a
+// session cookie, over a JSON payload instead of the colon-joined session string, since these
+// carry a handful of fields of varying shape rather than one fixed tuple.
+function signJSON(obj) { return sign(Buffer.from(JSON.stringify(obj)).toString('base64url')); }
+function verifyJSON(token) {
+  const payload = verifySig(token);
+  if (!payload) return null;
+  try { return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { return null; }
+}
 // Session payload is `<uid>:<expiry>:<version>[:<sessionId>]`. `version` is the user's `sv`
 // counter — bumping it (POST /api/logout/all) still invalidates every cookie for the account at
 // once, the way it always did. `sessionId` (ISO-1403) is a `sessions` row, for POST /api/logout to
@@ -627,6 +673,15 @@ function cookieValues(req, name) {
     if (c.slice(0, i).trim() === name) out.push(c.slice(i + 1).trim());
   }
   return out;
+}
+// One specific cookie's value, refusing two different ones under the same name the same way
+// cookieToken (the session cookie) does — nobody but this server ever sets gauth_oauth or
+// gauth_signup, so two different values under that name means someone else tried to.
+function singleCookie(req, name) {
+  const vals = cookieValues(req, name);
+  if (!vals.length) return null;
+  if (vals.some(v => v !== vals[0])) return null;
+  return vals[0];
 }
 function cookieToken(req) {
   for (const name of (COOKIE === LEGACY_COOKIE ? [COOKIE] : [COOKIE, LEGACY_COOKIE])) {
@@ -715,6 +770,29 @@ async function requireOwner(req, res) {
   if (!isOwner(user)) { audit(req, 'admin.denied', { ok: false, user }); json(res, 403, { error: 'only the owner can do this' }); return null; }
   return user;
 }
+// Guard for /api/teacher/* (ISO-1609). Role is re-read fresh off `user` every call — there is no
+// cache of it to go stale (D10: losing the role has to cut access off at once).
+async function requireTeacher(req, res) {
+  const user = await readSession(req);
+  if (!user) { json(res, 401, { error: 'not signed in' }); return null; }
+  if (user.role !== 'teacher') { audit(req, 'teacher.denied', { ok: false, user }); json(res, 403, { error: 'forbidden' }); return null; }
+  return user;
+}
+// Every /api/teacher/student* route's own access check: a live, active link read fresh from
+// `teacher_links` on *this* request (D10) — never a cached flag, so unlinking, losing the role or
+// (for the bodyweight key) turning the opt-in off all cut access off immediately. One answer for
+// every way a student can be "not this teacher's": doesn't exist, belongs to another teacher, or
+// was once linked but isn't any more (D11) — `not-your-student`, so a teacher guessing ids learns
+// nothing from the response that differs.
+async function requireStudentOf(req, res, teacher, studentId) {
+  const link = studentId ? await getLinkForTeacher(pool, teacher.id, studentId) : null;
+  if (!link) {
+    audit(req, 'teacher.denied', { ok: false, user: teacher, msg: 'not-your-student' });
+    json(res, 403, { error: 'not your student', code: 'not-your-student' });
+    return null;
+  }
+  return link;
+}
 const expireCookie = name => `${name}=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
 async function sessionCookie(user, userAgent) {
   const fresh = `${COOKIE}=${await makeSession(user, userAgent, 'c')}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
@@ -763,6 +841,16 @@ const CSRF_EXEMPT = new Set([
   // navigator.sendBeacon to this same page's own origin (lib/api.js beacon(); MOBILE never
   // calls it), so Sec-Fetch-Site: same-origin already clears it below — exempting it too would
   // let a cross-site page spam the audit log for free, for no caller that actually needs it.
+  //
+  // GET /api/auth/google/start and GET /api/auth/google/callback (ISO-1597) need no entry here
+  // at all: csrfOk already answers every GET true, before this set is even consulted — which is
+  // exactly right for a callback that is itself a cross-site GET navigation coming back from
+  // accounts.google.com. Its own `state` parameter, checked against the signed cookie
+  // GET /api/auth/google/start set, is this flow's actual CSRF defense. POST /api/register/google
+  // and DELETE /api/account/google are deliberately NOT here, same reasoning as the password
+  // routes above: register/google is how an account with a chosen password-equivalent (the
+  // Google identity itself) comes to exist, so an exempt POST would be a login-CSRF hole; unlink
+  // acts on the caller's own session the same as every other DELETE /api/account/*.
 ]);
 // The routes that answer to the credential in the body and never to a Bearer. No Bearer is the
 // credential that acts there, so none buys the shortcut below: any valid token would do, the
@@ -853,6 +941,27 @@ function makePairCode() {
   return code;
 }
 setInterval(() => { for (const [k, v] of pairings) if (v.exp < Date.now()) pairings.delete(k); }, 60000).unref();
+
+// Google "Confirm with Google" (intent=reauth, ISO-1597 addendum): proveOwner's third proof, for
+// an account that only has a Google identity and so cannot confirm anything with a passkey or a
+// password. A successful reauth callback mints one of these, bound to the account and to the
+// exact session that started it (sid — or, for a pre-ISO-1403 cookie with none, no session row to
+// tie it to, same fallback sessionOf's own revocation check uses); proveOwner below redeems it
+// once, for whichever action the caller was in the middle of. 5 minutes, same ceremony-TTL
+// reasoning as the WebAuthn challenge store above.
+const reauthProofs = new Map(); // token -> { uid, sid, exp }
+function putReauthProof(uid, sid) {
+  const token = crypto.randomBytes(24).toString('base64url');
+  reauthProofs.set(token, { uid, sid: sid || null, exp: Date.now() + 5 * 60000 });
+  return token;
+}
+function takeReauthProof(token) {
+  const p = reauthProofs.get(token);
+  reauthProofs.delete(token); // single-use regardless of outcome
+  if (!p || p.exp < Date.now()) return null;
+  return p;
+}
+setInterval(() => { for (const [k, v] of reauthProofs) if (v.exp < Date.now()) reauthProofs.delete(k); }, 60000).unref();
 
 /* ---------- helpers ---------- */
 function json(res, code, obj, extraHeaders) {
@@ -1145,7 +1254,7 @@ const THROTTLED = {
   'POST /api/account/password': 'password', 'DELETE /api/account/password': null,
   // Setting an e-mail only spends the budget and asks the address's e-mail pause; an address
   // already in use counts against it (see POST /api/account/email).
-  'POST /api/account/email': 'email', 'DELETE /api/account/email': null,
+  'POST /api/account/email': 'email',
   // Redeeming a device link (#95). Adding or removing a passkey and making a link only spend the
   // budget: the password that may prove them counts its own failures (passwordAttempt).
   'POST /api/device-link/options': 'link', 'POST /api/device-link/verify': 'link',
@@ -1169,7 +1278,21 @@ const THROTTLED = {
   // an audit-log beacon a misbehaving or hostile page could otherwise spam without limit.
   'POST /api/client-event': null,
   // Accepting the current terms (ISO-1390): nothing to guess, so only the shared burst budget.
-  'POST /api/account/terms/accept': null
+  'POST /api/account/terms/accept': null,
+  // Google sign-in (ISO-1597). The callback is where a forged `state`/`code` or a tampered ID
+  // token would be guessed at, so it gets its own `kind`, struck on each such failure
+  // (strikeAddress below) exactly like a wrong password or device-link code; the start routes
+  // (GET, and the proof-gated POST that mints the same cookie for a Settings-initiated link) have
+  // nothing to guess, only the shared burst budget. register/google's ticket lives in a signed,
+  // HttpOnly cookie, not something a caller can present in bulk, but repeated attempts at a birth
+  // date/Terms combination that keeps missing are still worth its own pause.
+  'GET /api/auth/google/start': null, 'POST /api/account/google/start': null,
+  'GET /api/auth/google/callback': 'google',
+  'POST /api/register/google': 'google-signup',
+  'DELETE /api/account/google': null,
+  // A teacher invite code is 60 random bits, same alphabet as a device link — wrong guesses share
+  // that pause, counted per address against both the preview and the accept (ISO-1609).
+  'POST /api/teacher-invite/preview': 'teacher-invite', 'POST /api/teacher-invite/accept': 'teacher-invite'
 };
 
 // Which address the throttle counts against. Unlike clientIp() above, which only labels a log
@@ -1252,43 +1375,37 @@ async function passwordHolder(k) {
   return users.find(u => hasPassword(u) && nameKey(u.name) === k) || null;
 }
 const holdsName = u => hasPassword(u) || !!(u.pwReset && u.pwReset.exp > Date.now());
-// An e-mail is a second name to sign in with (see "e-mail as a sign-in name" below), so a name
-// is also taken by another profile's e-mail — only ever relevant for a name with an "@" in it.
+// An e-mail is a second name to sign in with (see "e-mail sign-in" below), so a name is also
+// taken by another profile's e-mail — only ever relevant for a name with an "@" in it.
 async function nameTaken(name, exceptId) {
   const k = nameKey(name);
   const users = await getAllUsers(pool);
   return users.some(u => u.id !== exceptId && ((holdsName(u) && nameKey(u.name) === k) || u.email === k));
 }
 
-/* ---------- e-mail as a sign-in name ----------
-   Optional, per profile, and only while PASSWORD_LOGIN is on: an address someone may type at the
-   password sign-in instead of their profile name. Nothing is ever sent to it — no verification,
-   no reset mail; resets stay the admin's one-time code — so the address is never proven to be
-   theirs, and it does not need to be: it is only an identifier that points at an account, and the
-   password is still what opens it. Stored as `u.email`, folded by normalizeEmail() (password.js).
+/* ---------- e-mail sign-in (ISO-1596) ----------
+   `u.email` is a single field, one per profile: the verified address ISO-1397 gave every profile
+   (confirmed by a mailed link, the one way back in once every passkey is lost — see "verified
+   e-mail + recovery" below). Before this pass, PASSWORD_LOGIN on made `POST /api/account/email`
+   and this field mean something else instead — an unverified second name to type at password
+   sign-in, never mailed to, colliding with the ISO-1397 address at the same column and the same
+   route. That split is gone: with PASSWORD_LOGIN on or off, `u.email` is always the verified
+   address, set the same way (POST /api/account/email in emailRoutes below, proof required, a
+   confirmation mailed) and exposed the same way (GET /api/me). An address an old deploy saved
+   while the split still existed is not lost — it reads back as this account's e-mail, simply unverified
+   (email_verified_at was already nullable for exactly this case) until its owner confirms it or
+   changes it.
 
-   It is unique across every profile, and no profile's address may be another password-holding
-   profile's name (nameTaken above says the same the other way round), so an identifier never
-   points at two accounts. That uniqueness is the one thing an address reveals: setting one that
-   is in use answers 409. The route could be made to hide it — accept the address silently and
-   leave it pointing nowhere — but then someone who typed their own address on a second profile
-   would be told it was saved and find it did not sign in, which is worse. So it answers, and the
-   answer is made expensive instead: in Settings only a signed-in owner can ask (session +
-   proveOwner, a passkey prompt or a checked password per try), an address already in use counts
-   against the caller's address and account (20 free, then 30 s doubling to 15 min), and profile
-   creation with a password and an address counts the same way against the caller's address.
-   Signup needs no session, so it is the cheaper place to ask: it answers only after hashing the
-   new password and, on an invite-only instance, only to someone holding a valid invite code
-   (a refusal does not use it up); an open instance answers anyone. What that leaves is what the name-taken answer already gives
-   away for names — "some profile here uses this", never which one — at a few tries an hour.
-
-   Sign-in takes it in the same field as the name (loginTarget): an identifier with an "@" is
-   looked up as an address first, then as a name, so a profile name that happens to contain an
-   "@" still signs in. Wrong passwords count against the account the identifier resolves to, so
-   switching between name and address does not reset the pause. The full address is never
-   written to the audit log or the console (maskEmail), is not part of /api/me, the Coach, the
-   MCP bridge or anything shared, and only its owner (GET /api/account/password) and an admin
-   (the user list) ever see it. */
+   What password sign-in adds to that one field: it becomes a second identifier next to the
+   profile name (loginTarget below looks up an "@" as an address first, then falls back to a
+   name), and the current password is accepted as proof of owning it (proveOwner) the same as any
+   other change to how the account is reached. Signing in with it needs no confirmation — the
+   password is the proof — so an unconfirmed address still signs in; only the "confirm your
+   e-mail" banner (GET /api/me's emailVerified) is affected. It is unique across every profile,
+   and no profile's address may be another password-holding profile's name (nameTaken above says
+   the same the other way round), so an identifier never points at two accounts. Wrong passwords
+   count against the account the identifier resolves to, so switching between name and address
+   does not reset the pause (see "What a password gives up" in SELF_HOSTING.md). */
 async function emailHolder(e) {
   const users = await getAllUsers(pool);
   return users.find(u => hasPassword(u) && u.email === e) || null;
@@ -1370,14 +1487,18 @@ async function loginTarget(body) {
 }
 const acctKey = u => 'acct:' + u.id;
 const passkeyCount = u => countPasskeys(pool, u.id);
-const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u), ...(isOwner(u) ? { owner: true } : {}) });
+// `role` defaults to 'student' for the freshly-built, not-yet-persisted user object a
+// registration route answers with — the row's own NOT NULL DEFAULT (migrations/008) once it is
+// actually read back from Postgres, which this just mirrors for the one response that answers
+// before that round trip. `owner` (one owner among the admins, openGym v1.4.2) only when it is.
+const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u), role: u.role || 'student', ...(isOwner(u) ? { owner: true } : {}) });
 const POLICY_ERRORS = {
   'too-short': `the password needs at least ${MIN_LENGTH} characters`,
   'too-long': `the password can have at most ${MAX_LENGTH} characters`,
   'too-common': 'this password is too easy to guess'
 };
 const policyError = (res, problem) => json(res, 400, { error: POLICY_ERRORS[problem], code: problem });
-const WRONG = { error: 'wrong name or password', code: 'bad-credentials' };
+const WRONG = { error: 'wrong e-mail or password', code: 'bad-credentials' };
 
 // A new password ends every other session of the account, the way "sign out everywhere" does,
 // pending pairing codes and device links included; the caller's own is re-issued by the route.
@@ -1479,6 +1600,20 @@ async function proveOwner(req, res, user, body, act) {
     json(res, 403, { error: 'the passkey could not be verified', code: 'passkey' });
     return null;
   }
+  // The third proof (ISO-1597 addendum): a one-time token GET /api/auth/google/callback minted
+  // after an intent=reauth round trip confirmed the same Google identity already linked to this
+  // account. Bound to the account *and* the exact session that started the reauth (sid) — a proof
+  // made for one browser tab must not confirm an action typed into a different, stolen session.
+  if (typeof body.googleProof === 'string' && body.googleProof) {
+    const s = await sessionOf(req);
+    const p = takeReauthProof(body.googleProof);
+    if (!p || !s || p.uid !== user.id || p.sid !== s.sid) {
+      audit(req, 'auth.proof.fail', { ok: false, user, msg: 'google-proof-invalid', act });
+      json(res, 403, { error: 'reauthenticate with Google first', code: 'google-proof-invalid' });
+      return null;
+    }
+    return 'google';
+  }
   if (!passwordWayIn(user)) {
     json(res, 403, { error: 'confirm with your passkey first', code: 'passkey-required' });
     return null;
@@ -1503,23 +1638,6 @@ async function proveOwner(req, res, user, body, act) {
 }
 
 if (PASSWORD_LOGIN) warmUp();
-
-// Taking the address away: the profile then signs in by its name only. Asks the same proof as
-// setting one; a profile without an address gets 200 with none asked.
-async function removeEmail(req, res, user, body) {
-  if (!user.email) return json(res, 200, { ok: true, email: null });
-  const proof = await proveOwner(req, res, user, body, 'email-remove');
-  if (!proof) return;
-  if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
-  delete user.email;
-  await setEmail(pool, user.id, null);
-  audit(req, 'auth.email.remove', { user, msg: proof });
-  json(res, 200, { ok: true, email: null });
-}
-
-// Everything of an account, gone for good: the user record, their passkeys, push subscriptions,
-// device links and live presence, and outside db.json their training history, any Coach
-// credential and their photos and videos. The admin's delete and the account's own both end here.
 
 const passwordRoutes = {
   'POST /api/login/password': async (req, res) => {
@@ -1607,26 +1725,26 @@ const passwordRoutes = {
     const problem = passwordProblem(body.password, name);
     if (problem) return policyError(res, problem);
     const taken = () => json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
-    // A name is also matched against every sign-in e-mail (nameTaken), so a name that is an
-    // address is the e-mail question asked through the name field: it waits for the hash below
-    // and counts against the address like the e-mail field does, or it would answer "in use" for
-    // any address at once and without limit.
-    const nameIsAddress = name.includes('@');
-    if (nameIsAddress && addressPaused(req, res, 'email')) return;
-    if (!nameIsAddress && await nameTaken(name)) return taken();
-    // An e-mail is optional here. One already in use counts against the address, the way it
-    // does in Settings: this route needs no session, so it is the cheaper place to ask. Whether
-    // it is in use is only answered after the hash and the invite check that follows it, so on
-    // an invite-only instance nobody without a valid code learns anything about addresses.
-    const hasEmail = typeof body.email === 'string' && body.email.trim() !== '';
-    const email = hasEmail ? normalizeEmail(body.email) : null;
-    if (hasEmail && !email) return json(res, 400, EMAIL_ERRORS.invalid);
+      // A name is also matched against every sign-in e-mail (nameTaken), so a name that is an
+      // address is the e-mail question asked through the name field: it waits for the hash below
+      // and counts against the address like the e-mail field does, or it would answer "in use" for
+      // any address at once and without limit.
+      const nameIsAddress = name.includes('@');
+      if (nameIsAddress && addressPaused(req, res, 'email')) return;
+      if (!nameIsAddress && await nameTaken(name)) return taken();
+      // ISO-1596: a password signup needs a valid, unique e-mail too now — the same requirement
+      // register/options has had for passkey signup since ISO-1397, confirmed by the same mailed
+      // link. Checked after the invite gate, same place the optional address used to be checked, so
+      // on an invite-only instance a guess with no valid code still learns nothing about addresses.
+      const email = normalizeEmail(body.email);
+      if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
     const emailRefused = () => {
       strikeAddress(req, 'email');
       auditFail(req, 'auth.register.fail', { ok: false, name, msg: 'email-taken' });
       return json(res, 409, EMAIL_ERRORS.taken);
     };
-    if (email && addressPaused(req, res, 'email')) return;
+    if (addressPaused(req, res, 'email')) return;
+    if (await emailTaken(email)) return emailRefused();
     const h = await hashPassword(body.password);
     // Re-checked once more right before the insert: everything since the first nameTaken/
     // emailTaken awaited (the invite check, the hash), and a second request could have landed.
@@ -1634,29 +1752,35 @@ const passwordRoutes = {
       auditFail(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
       return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
     }
-    if (await nameTaken(name)) {
-      // No name in the row: it is an address, and the log keeps none (maskEmail is for owners).
-      if (nameIsAddress) { strikeAddress(req, 'email'); auditFail(req, 'auth.register.fail', { ok: false, msg: 'email-taken' }); }
-      return taken();
-    }
-    if (email && await emailTaken(email)) return emailRefused();
+      if (await nameTaken(name)) {
+        // No name in the row: it is an address, and the log keeps none (maskEmail is for owners).
+        if (nameIsAddress) { strikeAddress(req, 'email'); auditFail(req, 'auth.register.fail', { ok: false, msg: 'email-taken' }); }
+        return taken();
+      }
+      if (await emailTaken(email)) return emailRefused();
     const created = new Date().toISOString();
     const user = {
-      id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, ...(email ? { email } : {}), birthDate,
+      id: crypto.randomBytes(12).toString('base64url'), name, created, pw: { h, set: created }, email, birthDate,
       // ISO-1390: termsVersionProblem() above already pinned body.termsVersion to LEGAL_VERSION.
       termsAcceptedVersion: LEGAL_VERSION, termsAcceptedAt: created
     };
     if (INVITE_ONLY) user.invitedBy = code;
-    // createUser and consumeInvite commit or fail together: an invite consumed by a request whose
-    // user row then never landed (the unique-name/e-mail race below) would be burned for nothing,
-    // and a user row created on top of an invite another request consumed first (InviteRaceError)
-    // has to be undone, not left behind with no invite to show for it. createUser's own UNIQUE
-    // constraint on email is the actual backstop if two requests still land together on that.
+    // ISO-1397/ISO-1596: a confirmation token is minted in the same transaction as the account,
+    // same reasoning as POST /api/register/verify (see that route) — a password signup never
+    // exists without one to confirm either. The mail itself goes out after commit, below.
+    const verifyToken = makeEmailToken();
+    // createUser, consumeInvite and the token all commit or fail together: an invite consumed by
+    // a request whose user row then never landed (the unique-name/e-mail race below) would be
+    // burned for nothing, and a user row created on top of an invite another request consumed
+    // first (InviteRaceError) has to be undone, not left behind with no invite to show for it.
+    // createUser's own UNIQUE constraint on email is the actual backstop if two requests still
+    // land together on that.
     try {
       await withTransaction(pool, async client => {
         await claimFirstAdmin(client, req, user);
         await createUser(client, user);
         if (INVITE_ONLY && !(await consumeInvite(client, code, user.id))) throw new InviteRaceError();
+        await createEmailToken(client, user.id, 'verify', hashEmailToken(verifyToken), VERIFY_TTL_MS);
       });
       if (user.owner) await refreshOwner();
     } catch (e) {
@@ -1664,10 +1788,11 @@ const passwordRoutes = {
         auditFail(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
         return json(res, 403, { error: 'invite code is no longer valid, ask for a new one', code: 'invite' });
       }
-      if (e.code === '23505') return email ? emailRefused() : taken(); // unique_violation
+      if (e.code === '23505') return emailRefused(); // unique_violation
       throw e;
     }
     audit(req, 'auth.register.ok', { user, msg: INVITE_ONLY ? code + ' · password' : 'password' });
+    await mailVerification(user, verifyToken);
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   },
 
@@ -1722,74 +1847,21 @@ const passwordRoutes = {
     const body = await readBody(req);
     const lastWayIn = () => json(res, 409, { error: 'the password is the only way into this profile', code: 'last-way-in' });
     if (!hasPassword(user)) return json(res, 200, { ok: true });
-    if (!(await passkeyCount(user))) return lastWayIn();
+    if (!(await passkeyCount(user)) && !(await hasGoogle(user))) return lastWayIn();
     const proof = await proveOwner(req, res, user, body, 'password-remove');
     if (!proof) return;
-    // Everything above awaited: the session may have ended, and the profile's last passkey may
-    // have been removed by a request that ran alongside this one. sessionStillValid re-checks the
-    // session itself; removePasswordUnlessLast re-checks (and acts on) the password/passkey count
-    // atomically, under the same per-account lock a concurrent passkey removal takes (ISO-1592) —
-    // the two checks above are only a cheap pre-proof filter, not the real decision.
+    // Everything above awaited: the session may have ended, and the profile's last passkey (or
+    // its Google identity) may have been removed by a request that ran alongside this one.
+    // sessionStillValid re-checks the session itself; removePasswordUnlessLast re-checks (and acts
+    // on) the password/passkey/Google count atomically, under the same per-account lock a
+    // concurrent passkey or Google removal takes (ISO-1592, extended ISO-1597) — the two checks
+    // above are only a cheap pre-proof filter, not the real decision.
     const fresh = await sessionStillValid(req, user);
     if (!fresh) return json(res, 401, { error: 'not signed in' });
-    const r = await removePasswordUnlessLast(pool, fresh.id);
+    const r = await removePasswordUnlessLast(pool, fresh.id, GOOGLE_LOGIN);
     if (r.error) return lastWayIn();
     audit(req, 'auth.password.remove', { user: fresh });
     json(res, 200, { ok: true });
-  },
-
-  // Set, change (`email`) or remove (`email` empty or null, or DELETE) the address this profile
-  // may sign in with. The same proof as a password (proveOwner): an address that points at the
-  // account is part of how someone gets in, and a copied session must not choose it. An address
-  // already in use is refused only after the proof, and counts against the caller's address and
-  // account, so asking whether an address is in use costs a passkey prompt or a password check
-  // and runs out after a few tries (see "e-mail as a sign-in name" above).
-  'POST /api/account/email': async (req, res) => {
-    const s = await sessionOf(req);
-    if (!s) return json(res, 401, { error: 'not signed in' });
-    const { user } = s;
-    const body = await readBody(req);
-    if (body.email == null || (typeof body.email === 'string' && body.email.trim() === '')) return removeEmail(req, res, user, body);
-    const email = normalizeEmail(body.email);
-    if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
-    if (email === user.email) return json(res, 200, { ok: true, email });
-    const acct = 'email|' + acctKey(user);
-    const paused = () => {
-      const wait = ADDR_FAILS.retryAfter(acct);
-      if (wait) tooMany(res, wait);
-      return wait > 0 || addressPaused(req, res, 'email');
-    };
-    if (paused()) return;
-    const proof = await proveOwner(req, res, user, body, 'email');
-    if (!proof) return;
-    if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
-    if (paused()) return;
-    if (await emailTaken(email, user.id)) {
-      strikeAddress(req, 'email');
-      ADDR_FAILS.fail(acct);
-      audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
-      return json(res, 409, EMAIL_ERRORS.taken);
-    }
-    const first = !user.email;
-    user.email = email;
-    try {
-      await setEmail(pool, user.id, email);
-    } catch (e) {
-      if (e.code === '23505') { // unique_violation — lost a race to another request
-        strikeAddress(req, 'email');
-        ADDR_FAILS.fail(acct);
-        audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
-        return json(res, 409, EMAIL_ERRORS.taken);
-      }
-      throw e;
-    }
-    audit(req, first ? 'auth.email.set' : 'auth.email.change', { user, msg: proof + ' · ' + maskEmail(email) });
-    json(res, 200, { ok: true, email });
-  },
-  'DELETE /api/account/email': async (req, res) => {
-    const user = await readSession(req);
-    if (!user) return json(res, 401, { error: 'not signed in' });
-    removeEmail(req, res, user, await readBody(req));
   },
 
   // An admin hands out a one-time code; the person redeems it below with a password of their
@@ -1886,11 +1958,19 @@ const lastAdminLeaving = async u => {
   const users = await getAllUsers(pool);
   return users.length > 1 && users.filter(isAdmin).length <= 1;
 };
+// Whether GOOGLE_LOGIN is on and this account currently has a linked Google identity — the
+// Google-counts-as-a-way-in half of passwordWayIn's own rule (ISO-1597): a server setting
+// (GOOGLE_LOGIN) the caller may read from before any await, account data (the identity row) read
+// fresh at the call site, same split passwordWayIn/hasLivePassword keep.
+async function hasGoogle(user) {
+  return GOOGLE_LOGIN && !!(await findOAuthIdentityByUser(pool, 'google', user.id));
+}
 const passkeyState = async u => {
   const passkeys = await listPasskeys(pool, u.id);
   // `password`: whether the password can confirm an addition or a removal (proveOwner) — only
   // while password sign-in is on. `lastWayIn`: whether removing any one passkey would be refused.
-  return { passkeys, password: passwordWayIn(u), lastWayIn: passkeys.length + (passwordWayIn(u) ? 1 : 0) <= 1 };
+  const otherWayIn = passwordWayIn(u) || await hasGoogle(u);
+  return { passkeys, password: passwordWayIn(u), lastWayIn: passkeys.length + (otherWayIn ? 1 : 0) <= 1 };
 };
 const LIMIT = { error: `a profile can have at most ${MAX_PASSKEYS} passkeys`, code: 'passkey-limit' };
 const LINK_INVALID = { error: 'that code is wrong, used or expired', code: 'link-invalid' };
@@ -2016,13 +2096,14 @@ const passkeyRoutes = {
     const id = new URL(req.url, 'http://x').searchParams.get('id') || '';
     const body = await readBody(req);
     const refuse = r => json(res, r.code === 'last-way-in' ? 409 : 404, { error: r.error, code: r.code });
-    const refused = await passkeyRemovalRefused(pool, user.id, id, passwordWayIn(user) ? 1 : 0);
+    const otherWays = (passwordWayIn(user) ? 1 : 0) + (await hasGoogle(user) ? 1 : 0);
+    const refused = await passkeyRemovalRefused(pool, user.id, id, otherWays);
     if (refused) return refuse(refused);
     const proof = await proveOwner(req, res, user, body, 'passkey-remove');
     if (!proof) return;
     const fresh = await sessionStillValid(req, user);
     if (!fresh) return notSignedIn(res);
-    const r = await removePasskey(pool, fresh.id, id, PASSWORD_LOGIN);
+    const r = await removePasskey(pool, fresh.id, id, PASSWORD_LOGIN, GOOGLE_LOGIN);
     if (r.error) return refuse(r);
     await dropDeviceLinks(pool, fresh.id);
     audit(req, 'auth.passkey.remove', { user: fresh, msg: r.row.name || null });
@@ -2136,9 +2217,11 @@ const passkeyRoutes = {
   }
 };
 
-/* ---------- verified e-mail + password-less recovery (ISO-1397) ----------
+/* ---------- verified e-mail + recovery (ISO-1397, password reset added ISO-1596) ----------
    The HashRouter paths a confirmation or recovery link opens in the app; the API never renders
-   either screen, only mints and checks the token. */
+   either screen, only mints and checks the token. Recovery itself stayed password-less (a fresh
+   passkey via the device-link ceremony) until ISO-1596 gave it a second shape, redeemed with a
+   password instead — recover/redeem below picks between the two. */
 const verifyLink = token => `${APP_URL}/#/verificar-email?token=${encodeURIComponent(token)}`;
 const recoverLink = token => `${APP_URL}/#/recuperar?token=${encodeURIComponent(token)}`;
 
@@ -2249,10 +2332,18 @@ const emailRoutes = {
     json(res, 200, { ok: true });
   },
 
-  // Burns the recovery token and hands back a device-link code — the same shape
+  // Burns the recovery token and, by default, hands back a device-link code — the same shape
   // POST /api/account/device-link returns — so the client finishes with the device-link pair it
   // already has (device-link.js, /api/device-link/options → /verify) instead of a parallel
   // passkey ceremony of its own.
+  //
+  // ISO-1596: with PASSWORD_LOGIN on and a `password` in the body, the link sets that password
+  // directly instead — "forgot my password, no admin" without a one-time code to hand over. The
+  // policy is checked before the token is consumed, so a password this instance refuses never
+  // burns an otherwise-good link; the token is still single-use for an actual redemption, same as
+  // the device-link path. Ending every other session (changePassword) is the same rule a password
+  // change always follows — a reset is asked for when access is in doubt, so an old session is
+  // exactly what should not survive it.
   'POST /api/recover/redeem': async (req, res) => {
     const body = await readBody(req);
     if (addressPaused(req, res, 'recover')) return;
@@ -2261,6 +2352,11 @@ const emailRoutes = {
     if (!token) {
       strikeAddress(req, 'recover');
       return json(res, 400, invalid);
+    }
+    const asPassword = PASSWORD_LOGIN && typeof body.password === 'string' && body.password !== '';
+    if (asPassword) {
+      const problem = passwordProblem(body.password);
+      if (problem) return policyError(res, problem);
     }
     const userId = await consumeEmailToken(pool, hashEmailToken(token), 'recover');
     if (!userId) {
@@ -2273,48 +2369,413 @@ const emailRoutes = {
       audit(req, 'auth.recover.fail', { ok: false, uid: userId, msg: 'user-unavailable' });
       return json(res, 400, invalid);
     }
+    if (asPassword) {
+      const h = await hashPassword(body.password);
+      await changePassword(user, h);
+      ACCOUNT_FAILS.clear(acctKey(user));
+      audit(req, 'auth.recover.password', { user });
+      return json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
+    }
     const { code, link } = await createDeviceLink(pool, user.id);
     audit(req, 'auth.recover.ok', { user });
     json(res, 200, { code, expires: link.exp });
+  },
+
+  // Set or change the account's one e-mail — always this handler now, PASSWORD_LOGIN on or off
+  // (ISO-1596; see "e-mail sign-in" above for why there used to be two). An account from before
+  // ISO-1397 adding the address it never had goes through here exactly like a password-login
+  // account changing one: the field, the proof and the mailed confirmation are the same either
+  // way. Proof first, same as every other change to how this account may be reached (adding a
+  // passkey, a device link): a copied session must not be enough to redirect where recovery
+  // goes, or — now that a password can prove it too — to point password sign-in somewhere its
+  // owner did not type.
+  'POST /api/account/email': async (req, res) => {
+    const s = await sessionOf(req);
+    if (!s) return notSignedIn(res);
+    const { user } = s;
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
+    if (email === user.email) return json(res, 200, { ok: true, email, emailVerified: !!user.emailVerifiedAt });
+    if (addressPaused(req, res, 'email')) return;
+    const proof = await proveOwner(req, res, user, body, 'email');
+    if (!proof) return;
+    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
+    if (addressPaused(req, res, 'email')) return;
+    const refuseTaken = () => {
+      strikeAddress(req, 'email');
+      audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
+      return json(res, 409, EMAIL_ERRORS.taken);
+    };
+    if (await emailTaken(email, user.id)) return refuseTaken();
+    const first = !user.email;
+    try {
+      await setEmail(pool, user.id, email);
+    } catch (e) {
+      if (e.code === '23505') return refuseTaken(); // unique_violation — lost a race to another request
+      throw e;
+    }
+    user.email = email;
+    delete user.emailVerifiedAt;
+    audit(req, first ? 'auth.email.set' : 'auth.email.change', { user, msg: proof + ' · ' + maskEmail(email) });
+    await issueVerification(user);
+    json(res, 200, { ok: true, email });
   }
 };
 
-// An account from before this phase adding the e-mail it never had (POST /api/account/email —
-// the issue's own route name). Registered only while PASSWORD_LOGIN is off: on, that path is
-// already spoken for by passwordRoutes' own POST /api/account/email (the sign-in e-mail, #118,
-// never sent to — a different, older feature this phase does not touch). Proof first, same as
-// every other change to how this account may be reached (adding a passkey, a device link): a
-// copied session must not be enough to redirect where recovery goes.
-const setOldAccountEmail = async (req, res) => {
-  const s = await sessionOf(req);
-  if (!s) return notSignedIn(res);
-  const { user } = s;
-  const body = await readBody(req);
-  const email = normalizeEmail(body.email);
-  if (!email) return json(res, 400, EMAIL_ERRORS.invalid);
-  if (email === user.email) return json(res, 200, { ok: true, email, emailVerified: !!user.emailVerifiedAt });
-  if (addressPaused(req, res, 'email')) return;
-  const proof = await proveOwner(req, res, user, body, 'email');
-  if (!proof) return;
-  if (!(await sessionStillValid(req, user))) return notSignedIn(res);
-  if (addressPaused(req, res, 'email')) return;
-  const refuseTaken = () => {
-    strikeAddress(req, 'email');
-    audit(req, 'auth.email.fail', { ok: false, user, msg: 'email-taken' });
-    return json(res, 409, EMAIL_ERRORS.taken);
-  };
-  if (await emailTaken(email, user.id)) return refuseTaken();
-  try {
-    await setEmail(pool, user.id, email);
-  } catch (e) {
-    if (e.code === '23505') return refuseTaken(); // unique_violation — lost a race to another request
-    throw e;
+/* ---------- "Sign in with Google" (OpenID Connect, ISO-1597) ----------
+ * Authorization code + PKCE (S256), `state` and `nonce` — oauth-google.js (discovery, JWKS
+ * caching, ID token verification) holds the OIDC mechanics; everything account-shaped is here,
+ * same split as password.js/device-link.js keep for their own flows.
+ *
+ * Two signed, HttpOnly cookies, path-scoped so neither is ever confused with the session cookie:
+ *   gauth_oauth   state/nonce/PKCE verifier/intent/uid, 10 min, set by whichever /start mints it,
+ *                 read once by the callback and always cleared there (success or failure).
+ *   gauth_signup  the pending-signup ticket (sub/email/name), 15 min, set by the callback when no
+ *                 account matches, read once by POST /api/register/google. Never the ID token
+ *                 itself — exactly what the issue asks for ("não vaze o ID token").
+ *
+ * `intent` decides who may ask and what the callback does with a verified identity:
+ *   login/signup  no session needed; identical handling either way (the only difference is which
+ *                 screen the person started from) — an existing, Google-linked account signs in;
+ *                 one found by e-mail links and signs in, but only if that e-mail is already
+ *                 *verified* on this account (ISO-1397) — the whole point being that a stranger
+ *                 who merely shares an e-mail string with a real account can never ride in on it
+ *                 by owning a Google account with the same address but unverified "proof";
+ *                 nobody matches → a signup ticket.
+ *   link          GOOGLE_OAUTH_COOKIE minted by POST /api/account/google/start (not the plain GET
+ *                 start below), which asks proveOwner's usual proof — the same one adding a
+ *                 passkey asks — before it ever redirects. Links to the session's own account
+ *                 regardless of whether the Google e-mail matches anything about it.
+ *   reauth        requires a session and an existing Google link; confirms the *same* identity is
+ *                 behind the wheel right now and mints proveOwner's third proof (above) — the
+ *                 only way an account with no password and no passkey (one created by #signup
+ *                 below) can ever confirm anything of its own.
+ *
+ * Result codes in `#/entrar?google=<code>` (login/signup) or `#/configuracoes?google=<code>`
+ * (link/reauth) — the exact set closed in ISO-1595's `ux` document §4: `ok`, `linked`,
+ * `email-unverified`, `signup` (ticket pending — see gauth_signup above), `disabled`,
+ * `already-linked` (link only), `cancelled` (Google's own `error=access_denied`), `reauth-ok`
+ * (reauth only, carries `proof`), `reauth-mismatch` (reauth only), and `error` for anything else —
+ * a network failure, a malformed response, an id-token that fails any one of its checks. */
+const GOOGLE_OAUTH_COOKIE = 'gauth_oauth';
+const GOOGLE_SIGNUP_COOKIE = 'gauth_signup';
+const GOOGLE_OAUTH_CLEAR = `${GOOGLE_OAUTH_COOKIE}=; Path=/api/auth/google; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
+const GOOGLE_SIGNUP_CLEAR = `${GOOGLE_SIGNUP_COOKIE}=; Path=/api/register/google; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
+
+// The HashRouter path a Google round trip returns to, with its result as a query string after
+// the hash (`#/entrar?google=ok`) — same idea as verifyLink/recoverLink, just with a route and
+// params that vary per result instead of carrying a single mailed token.
+function hashRedirect(routePath, params = {}) {
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== '')).toString();
+  return `${APP_URL}/#${routePath}${qs ? '?' + qs : ''}`;
+}
+
+// Everything both /start routes need: a discovery round trip (cached by oauth-google.js after
+// the first), a fresh PKCE/state/nonce triple, and the signed cookie the callback will check
+// itself against. `uid` is null for login/signup, the session's own id for link/reauth.
+async function googleAuthRequest(intent, uid) {
+  const discovery = await oauthGoogle.discover();
+  const { verifier, challenge } = oauthGoogle.makePkce();
+  const state = oauthGoogle.makeState();
+  const nonce = oauthGoogle.makeNonce();
+  const cookie = `${GOOGLE_OAUTH_COOKIE}=${signJSON({ state, nonce, verifier, intent, uid, iat: Date.now() })}; Path=/api/auth/google; Max-Age=600; HttpOnly;${SECURE} SameSite=Lax`;
+  const authUrl = new URL(discovery.authorization_endpoint);
+  authUrl.search = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID, redirect_uri: GOOGLE_REDIRECT_URI, response_type: 'code',
+    scope: 'openid email profile', state, nonce,
+    code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account'
+  }).toString();
+  return { url: authUrl.toString(), cookie };
+}
+const googleUnavailable = res => json(res, 503, { error: 'google is unavailable right now' });
+
+const googleRoutes = {
+  // No session for login/signup. reauth needs one, and an existing link to reauthenticate —
+  // there would be nothing for Google to confirm against otherwise. link is deliberately NOT
+  // handled here — see POST /api/account/google/start below for why it needs a POST.
+  'GET /api/auth/google/start': async (req, res) => {
+    const intent = new URL(req.url, 'http://x').searchParams.get('intent');
+    if (!['login', 'signup', 'reauth'].includes(intent)) return json(res, 400, { error: 'invalid intent' });
+    let uid = null;
+    if (intent === 'reauth') {
+      const user = await readSession(req);
+      if (!user) return notSignedIn(res);
+      if (!(await findOAuthIdentityByUser(pool, 'google', user.id))) {
+        return json(res, 400, { error: 'no Google account linked yet', code: 'not-linked' });
+      }
+      uid = user.id;
+    }
+    let built;
+    try { built = await googleAuthRequest(intent, uid); }
+    catch (e) { console.error('google: discovery failed', e.message); return googleUnavailable(res); }
+    res.writeHead(302, { Location: built.url, 'Set-Cookie': built.cookie });
+    res.end();
+  },
+
+  // Linking from Settings asks the same proof adding a passkey does (proveOwner) — and asks it
+  // here, before ever redirecting, which is the one thing a bare GET (no body to carry a password
+  // or a passkey assertion in) cannot do itself. The browser still ends up on a full-page redirect
+  // to Google exactly like the GET routes above — this just hands back the URL to navigate to,
+  // rather than sending the 302 itself, so the proof can be checked first.
+  'POST /api/account/google/start': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return notSignedIn(res);
+    const body = await readBody(req);
+    if (await findOAuthIdentityByUser(pool, 'google', user.id)) {
+      return json(res, 409, { error: 'this profile is already linked to a Google account', code: 'already-linked' });
+    }
+    const proof = await proveOwner(req, res, user, body, 'google-link');
+    if (!proof) return;
+    // Awaited: a sign-out everywhere, a disable or an admin reset may have ended this session.
+    if (!(await sessionStillValid(req, user))) return notSignedIn(res);
+    let built;
+    try { built = await googleAuthRequest('link', user.id); }
+    catch (e) { console.error('google: discovery failed', e.message); return googleUnavailable(res); }
+    audit(req, 'auth.google.start', { user, msg: proof });
+    json(res, 200, { url: built.url }, { 'Set-Cookie': built.cookie });
+  },
+
+  'GET /api/auth/google/callback': async (req, res) => {
+    const q = new URL(req.url, 'http://x').searchParams;
+    const cookieRaw = singleCookie(req, GOOGLE_OAUTH_COOKIE);
+    const cookie = cookieRaw ? verifyJSON(cookieRaw) : null;
+    const expired = !cookie || Date.now() - (cookie.iat || 0) > 10 * 60000;
+    const base = cookie && (cookie.intent === 'link' || cookie.intent === 'reauth') ? '/configuracoes' : '/entrar';
+    // Every path out of this handler clears the state cookie — it is good for one round trip,
+    // success or failure, never replayed.
+    const done = (code, params = {}, extraCookies = []) => {
+      res.writeHead(302, { Location: hashRedirect(base, { google: code, ...params }), 'Set-Cookie': [GOOGLE_OAUTH_CLEAR, ...extraCookies] });
+      res.end();
+    };
+    // A wrong state, a code that fails to exchange, or an id-token that fails any one of its
+    // checks are all the same kind of thing this flow's own throttle (THROTTLED's 'google' kind)
+    // exists for: a guess at forging the round trip. `reason` is never shown to anyone — only
+    // audited — so it is free to be specific.
+    const fail = (reason, code = 'error') => {
+      strikeAddress(req, 'google');
+      audit(req, 'auth.google.fail', { ok: false, uid: cookie?.uid || null, msg: reason });
+      done(code);
+    };
+
+    if (q.get('error')) {
+      if (q.get('error') === 'access_denied') {
+        // Not a failure — a real "never mind", the same philosophy webauthnOutcome already
+        // applies to a dismissed passkey prompt (ISO-1595 §4.6). Not struck, not `auth.google.fail`.
+        audit(req, 'auth.google.refused', { ok: false, uid: cookie?.uid || null, msg: 'cancelled' });
+        return done('cancelled');
+      }
+      return fail('provider:' + text(q.get('error')).slice(0, 40));
+    }
+    if (!cookie || expired) return fail('state-cookie-invalid');
+    // Constant-time: a byte-by-byte early-exit comparison would let an attacker learn the state
+    // one byte at a time from response timing, same reasoning as verifySig's HMAC check above.
+    const gotState = Buffer.from(text(q.get('state')));
+    const wantState = Buffer.from(String(cookie.state || ''));
+    const stateOk = gotState.length === wantState.length && crypto.timingSafeEqual(gotState, wantState);
+    if (!stateOk) return fail('state-mismatch');
+    if (addressPaused(req, res, 'google')) return;
+    const code = text(q.get('code'));
+    if (!code) return fail('missing-code');
+
+    let discovery, tokenSet;
+    try {
+      discovery = await oauthGoogle.discover();
+      tokenSet = await oauthGoogle.exchangeCode({
+        tokenEndpoint: discovery.token_endpoint, code, redirectUri: GOOGLE_REDIRECT_URI,
+        clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET, codeVerifier: cookie.verifier
+      });
+    } catch (e) {
+      return fail('token-exchange:' + e.message.slice(0, 60));
+    }
+
+    let claims;
+    try {
+      claims = await oauthGoogle.verifyGoogleIdToken(tokenSet.id_token, {
+        jwksUri: discovery.jwks_uri, clientId: GOOGLE_CLIENT_ID, nonce: cookie.nonce
+      });
+    } catch (e) {
+      return fail('id-token:' + (e.reason || 'invalid'));
+    }
+    // users.email is stored through normalizeEmail (lower-cased via nameKey); fold the Google
+    // claim through the same function once, here, so every lookup/insert/ticket below compares
+    // and stores the same form — a Workspace account returning `Ana.Silva@empresa.com.br` must
+    // still find the account that verified `ana.silva@empresa.com.br`, not open a second one.
+    claims.email = normalizeEmail(claims.email);
+    if (!claims.email) return fail('id-token:malformed');
+
+    if (cookie.intent === 'reauth') {
+      const s = await sessionOf(req);
+      if (!s || s.user.id !== cookie.uid) return fail('session-lost');
+      const identity = await findOAuthIdentityByUser(pool, 'google', cookie.uid);
+      if (!identity || identity.subject !== claims.sub) {
+        audit(req, 'auth.google.refused', { ok: false, user: s.user, msg: 'reauth-mismatch' });
+        return done('reauth-mismatch');
+      }
+      await touchOAuthIdentityUse(pool, 'google', claims.sub);
+      const proof = putReauthProof(s.user.id, s.sid);
+      audit(req, 'auth.google.ok', { user: s.user, msg: 'reauth' });
+      return done('reauth-ok', { proof });
+    }
+
+    if (cookie.intent === 'link') {
+      const user = await getUserById(pool, cookie.uid);
+      if (!user || user.disabled) return fail('session-lost');
+      const existing = await findOAuthIdentityBySubject(pool, 'google', claims.sub);
+      if (existing && existing.userId !== user.id) {
+        audit(req, 'auth.google.refused', { ok: false, user, msg: 'already-linked' });
+        return done('already-linked');
+      }
+      if (existing) { // already linked to this very account — an idempotent replay, not an error
+        await touchOAuthIdentityUse(pool, 'google', claims.sub);
+        return done('linked');
+      }
+      const added = await insertOAuthIdentity(pool, { provider: 'google', subject: claims.sub, userId: user.id, email: claims.email });
+      if (added.error) { // raced a concurrent link of this same Google account to someone else
+        audit(req, 'auth.google.refused', { ok: false, user, msg: 'already-linked' });
+        return done('already-linked');
+      }
+      audit(req, 'auth.google.link', { user, msg: maskEmail(claims.email) });
+      return done('linked');
+    }
+
+    // login or signup: identical handling either way — only `base` above (always /entrar for
+    // both) would ever have told them apart, and it doesn't need to.
+    const bySubject = await findOAuthIdentityBySubject(pool, 'google', claims.sub);
+    if (bySubject) {
+      const user = await getUserById(pool, bySubject.userId);
+      if (!user) return fail('user-missing');
+      if (user.disabled) {
+        audit(req, 'auth.google.refused', { ok: false, user, msg: 'disabled' });
+        return done('disabled');
+      }
+      await touchOAuthIdentityUse(pool, 'google', claims.sub);
+      audit(req, 'auth.google.ok', { user });
+      return done('ok', {}, await sessionCookie(user, req.headers['user-agent']));
+    }
+    // No identity yet — does the e-mail match an existing account? Only a *verified* one may be
+    // linked here: Google proved the e-mail is this person's, but if the Brilhart Fitness account
+    // using it has never confirmed that same address, trusting Google's word over it would let
+    // anyone who merely knows (or once owned) that address ride into someone else's profile —
+    // exactly the account-hijack ISO-1397's confirmation step exists to close.
+    const holder = (await getAllUsers(pool)).find(u => u.email === claims.email);
+    if (holder) {
+      if (holder.disabled) {
+        audit(req, 'auth.google.refused', { ok: false, user: holder, msg: 'disabled' });
+        return done('disabled');
+      }
+      if (!holder.emailVerifiedAt) {
+        audit(req, 'auth.google.refused', { ok: false, user: holder, msg: 'email-unverified' });
+        return done('email-unverified');
+      }
+      const added = await insertOAuthIdentity(pool, { provider: 'google', subject: claims.sub, userId: holder.id, email: claims.email });
+      if (added.error) return fail('link-race'); // raced a concurrent link/signup for this same Google account
+      audit(req, 'auth.google.link', { user: holder, msg: maskEmail(claims.email) });
+      return done('linked', {}, await sessionCookie(holder, req.headers['user-agent']));
+    }
+    // Nobody — a pending signup, finished by POST /api/register/google within 15 minutes. The
+    // ticket is the ID token's claims the account actually needs, signed into its own cookie —
+    // never the ID token itself, which this never exposes past this one request.
+    const signupCookie = `${GOOGLE_SIGNUP_COOKIE}=${signJSON({ sub: claims.sub, email: claims.email, name: claims.name, iat: Date.now() })}; Path=/api/register/google; Max-Age=900; HttpOnly;${SECURE} SameSite=Lax`;
+    audit(req, 'auth.google.ok', { msg: 'pending-signup · ' + maskEmail(claims.email) });
+    return done('signup', { name: claims.name, email: claims.email }, [signupCookie]);
+  },
+
+  // Finishes the signup the callback above started: Google already proved the e-mail, so this
+  // never mails a confirmation — email_verified_at is set in the same breath the row is created.
+  // Same Terms/birth-date/invite rules as every other signup route, same single transaction
+  // shape as POST /api/register/password (createUser, the invite, the identity all commit or
+  // fail together) — just reading its identity from the ticket cookie instead of a WebAuthn
+  // challenge or a typed password.
+  'POST /api/register/google': async (req, res) => {
+    const body = await readBody(req);
+    const ticketRaw = singleCookie(req, GOOGLE_SIGNUP_COOKIE);
+    const ticket = ticketRaw ? verifyJSON(ticketRaw) : null;
+    const invalid = () => json(res, 400, { error: 'that Google sign-up has expired — start again', code: 'ticket-invalid' });
+    if (!ticket || Date.now() - (ticket.iat || 0) > 15 * 60000) {
+      strikeAddress(req, 'google-signup');
+      return invalid();
+    }
+    const termsProblem = termsVersionProblem(body);
+    if (termsProblem) {
+      audit(req, 'auth.register.denied', { ok: false, msg: termsProblem.code });
+      return json(res, termsProblem.status, { error: termsProblem.error, code: termsProblem.code });
+    }
+    const birthProblem = birthDateProblem(body);
+    if (birthProblem) {
+      audit(req, 'auth.register.denied', { ok: false, msg: birthProblem.code });
+      return json(res, birthProblem.status, { error: birthProblem.error, code: birthProblem.code });
+    }
+    const birthDate = parseBirthDate(body.birthDate);
+    const name = (text(body.name).trim() || text(ticket.name).trim() || ticket.email.split('@')[0]).slice(0, 40);
+    if (!name) return json(res, 400, { error: 'name required', code: 'missing' });
+    const code = text(body.code).trim().toUpperCase();
+    if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
+    if (INVITE_ONLY && !(await inviteIsValid(pool, code))) {
+      audit(req, 'auth.register.denied', { ok: false, name, msg: 'invite-rejected' });
+      strikeAddress(req, 'signup');
+      return json(res, 403, { error: 'a valid invite code is required', code: 'invite' });
+    }
+    if (await nameTaken(name)) return json(res, 409, { error: 'another profile already signs in with this name', code: 'name-taken' });
+    if (await emailTaken(ticket.email)) {
+      audit(req, 'auth.register.fail', { ok: false, name, msg: 'email-taken' });
+      return json(res, 409, EMAIL_ERRORS.taken);
+    }
+    const created = new Date().toISOString();
+    const user = {
+      id: crypto.randomBytes(12).toString('base64url'), name, created, email: ticket.email, birthDate,
+      termsAcceptedVersion: LEGAL_VERSION, termsAcceptedAt: created
+    };
+    if (INVITE_ONLY) user.invitedBy = code;
+    let added;
+    try {
+      await withTransaction(pool, async client => {
+        await createUser(client, user);
+        await markEmailVerified(client, user.id); // Google already proved this address
+        if (INVITE_ONLY && !(await consumeInvite(client, code, user.id))) throw new InviteRaceError();
+        added = await insertOAuthIdentity(client, { provider: 'google', subject: ticket.sub, userId: user.id, email: ticket.email });
+        if (added.error) throw new HttpError(409, added.error);
+      });
+    } catch (e) {
+      if (e instanceof InviteRaceError) {
+        audit(req, 'auth.register.fail', { ok: false, name, msg: 'invite-invalid' });
+        return json(res, 403, { error: 'invite code is no longer valid — ask for a new one', code: 'invite' });
+      }
+      if (e instanceof HttpError) {
+        audit(req, 'auth.register.fail', { ok: false, name, msg: added.code });
+        return json(res, e.status, { error: e.message, code: added.code });
+      }
+      if (e.code === '23505') { // unique_violation — the e-mail was taken in the gap above
+        audit(req, 'auth.register.fail', { ok: false, name, msg: 'email-taken' });
+        return json(res, 409, EMAIL_ERRORS.taken);
+      }
+      throw e;
+    }
+    audit(req, 'auth.google.signup', { user, msg: INVITE_ONLY ? code : null });
+    json(res, 200, { user: publicUser(user) }, {
+      'Set-Cookie': [...(await sessionCookie(user, req.headers['user-agent'])), GOOGLE_SIGNUP_CLEAR]
+    });
+  },
+
+  // Never the last way in, same rule as removing the password (DELETE /api/account/password) or
+  // a passkey — and the same proof as either of those: proveOwner now also accepts a fresh
+  // Google reauth (above) for an account with nothing else to confirm with.
+  'DELETE /api/account/google': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return notSignedIn(res);
+    const body = await readBody(req);
+    const lastWayIn = () => json(res, 409, { error: 'connecting with Google is the only way into this profile', code: 'last-way-in' });
+    if (!(await findOAuthIdentityByUser(pool, 'google', user.id))) return json(res, 200, { ok: true });
+    if ((await passkeyCount(user)) + (passwordWayIn(user) ? 1 : 0) < 1) return lastWayIn();
+    const proof = await proveOwner(req, res, user, body, 'google-remove');
+    if (!proof) return;
+    const fresh = await sessionStillValid(req, user);
+    if (!fresh) return notSignedIn(res);
+    const r = await removeOAuthIdentityUnlessLast(pool, fresh.id, 'google', PASSWORD_LOGIN);
+    if (r.error) return lastWayIn();
+    audit(req, 'auth.google.unlink', { user: fresh });
+    json(res, 200, { ok: true });
   }
-  user.email = email;
-  delete user.emailVerifiedAt;
-  audit(req, 'auth.email.set', { user, msg: proof + ' · ' + maskEmail(email) });
-  await issueVerification(user);
-  json(res, 200, { ok: true, email });
 };
 
 /* ---------- photos & videos of custom exercises (api/media.js) ---------- */
@@ -2579,6 +3040,98 @@ if (BILLING_ON) setInterval(() => {
   tickStripeCleanup(pool).catch(e => console.error('billing: stripe cleanup tick failed', e));
 }, 15 * 60000).unref();
 
+/* ---------- teacher/student roles, link & assignments (ISO-1594/ISO-1609) ---------- */
+// store.js's teacher functions answer `{ error, code }` on a refusal rather than throwing — this
+// is every teacher/student route's one place to turn that into the right HTTP status, same idea
+// as programError.
+const TEACHER_ERROR_STATUS = {
+  'invite-invalid': 400, 'invite-expired': 400, 'self-invite': 400,
+  'already-has-teacher': 409, 'invite-limit': 409, 'assignment-conflict': 409, 'notes-limit': 409,
+  'not-found': 404, 'no-active-assignment': 404, 'note-not-found': 404,
+  'note-empty': 400, 'note-too-long': 400
+};
+function teacherError(res, result) {
+  json(res, TEACHER_ERROR_STATUS[result.code] || 400, { error: result.error, code: result.code });
+}
+// A Program's own title when the assignment is `kind: 'program'`; the snapshot's own name when
+// it's `kind: 'routine'` — never a live read of the teacher's library (D16), which this never
+// touches at all.
+async function assignmentDisplayName(a) {
+  if (a.kind === 'program') { const p = await getProgram(pool, a.payload?.programId); return p?.title || null; }
+  return a.payload?.name || null;
+}
+async function assignmentBrief(a) {
+  return { id: a.id, kind: a.kind, startsOn: a.startsOn, days: a.days, name: await assignmentDisplayName(a) };
+}
+async function assignmentHistoryEntry(a) {
+  return { kind: a.kind, name: await assignmentDisplayName(a), startsOn: a.startsOn, endedAt: a.endedAt, endReason: a.endReason };
+}
+// The student's own pull (GET /api/account/assignments) — everything the client needs to import
+// the routine (D8) or notice it ended, with nothing looked up server-side: the payload is already
+// the exact snapshot (or `{ programId }`) a teacher assigned.
+function assignmentDelivery(a) {
+  return { id: a.id, kind: a.kind, payload: a.payload, startsOn: a.startsOn, days: a.days, endedAt: a.endedAt, endReason: a.endReason };
+}
+
+// billing.js's admin catalog writes answer `{ error, code }` on a refusal rather than throwing —
+// same idea as programError/teacherError above.
+const CATALOG_ERROR_STATUS = {
+  'id-taken': 409, 'no-product': 400, 'not-found': 404, 'stale': 409, 'stale-after-stripe': 409,
+  'no-current-price': 400, 'invalid-price': 400, 'invalid-order': 400,
+  'action-failed': 400, 'action-in-progress': 409, 'idempotency-key-reused': 409
+};
+function catalogError(res, result) {
+  json(res, CATALOG_ERROR_STATUS[result.code] || 400, { error: result.error, code: result.code, ...(result.current ? { current: result.current } : {}) });
+}
+// `reason` ≥ 10 chars (the plan's own rule, also enforced by migrations/010's CHECK constraint on
+// billing_admin_actions — this is just the 400 that avoids a raw 23514 from Postgres) and the
+// `Idempotency-Key` header every financial billing write requires, generated client-side once per
+// confirmation dialog. Shared by every catalog AND subscription POST route below that touches
+// Stripe (or, for `subscription/sync`/`subscription/generate-link`, the UI supplies a fixed reason
+// instead of prompting for one — ISO-1626 — but still goes through this same check).
+function adminReason(body) {
+  const r = text(body.reason).trim();
+  return r.length >= 10 ? r : null;
+}
+function idempotencyKeyOf(req) {
+  const k = text(req.headers['idempotency-key']).trim();
+  return k || null;
+}
+
+// billing.js's subscription actions (ISO-1624 T2a) answer the same `{ error, code }` shape as the
+// catalog's own writes. `action-unknown` (§5.2: a timeout/API/connection error — Stripe may or may
+// not have actually applied it) is 202, not a 4xx: the server is already reconciling, and retrying
+// with the same Idempotency-Key is safe. `stripe-rejected` (an invalid request or a declined card)
+// is 422, carrying Stripe's own message — never its raw body or the API key.
+const SUBSCRIPTION_ACTION_ERROR_STATUS = {
+  'not-found': 404, 'stale': 409, 'invalid-plan': 400, 'action-in-progress': 409,
+  'action-unknown': 202, 'action-failed': 400, 'stripe-rejected': 422, 'idempotency-key-reused': 409
+};
+function subscriptionActionError(res, result) {
+  json(res, SUBSCRIPTION_ACTION_ERROR_STATUS[result.code] || 400, { error: result.error, code: result.code, ...(result.current ? { current: result.current } : {}) });
+}
+
+// ISO-1625 (T2b, plan §5 item 5): one e-mail per admin subscription action, sent after the route's
+// own write already succeeded — never blocking it: a mail failure here is logged, not a reason to
+// answer the admin with anything other than the action's own result. `render` is one of
+// mail-templates/billing-action.js's exports; `extra` is whatever that specific template needs
+// beyond `name`/`appUrl`, which every one of them takes the same way renderPreChargeNotice does.
+async function mailBillingAction(userId, render, extra = {}) {
+  const user = await getUserById(pool, userId);
+  if (!user?.email) return; // nothing mailed an account with no address to mail
+  const { subject, text: body, html } = render({ name: user.name, appUrl: APP_URL, ...extra });
+  try { await sendMail({ to: user.email, subject, text: body, html }); }
+  catch (e) { console.error('mail: could not send billing action e-mail', e.message); }
+}
+// dd/mm/yyyy, the same format renderPreChargeNotice's own hook builds below — unix seconds (every
+// Stripe timestamp) or an ISO string, whichever `effectiveUnix`/`toIso`'d value an action's `after`
+// resolves to.
+function brDate(unixSeconds) {
+  if (unixSeconds == null) return 'em breve';
+  const d = new Date(unixSeconds * 1000);
+  return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+}
+
 /* ---------- routes ---------- */
 // Public, unauthenticated, and polled by an external uptime monitor (ISO-1400) — so it stays
 // cheap and never reports the account count the old response did; a health probe is not a
@@ -2660,6 +3213,9 @@ const routes = {
       legal_version: LEGAL_VERSION,
       // Only when on, so an instance without passwords answers exactly as it did before (#118).
       ...(PASSWORD_LOGIN ? { password_login: true } : {}),
+      // Only when both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set (ISO-1597) — otherwise
+      // every /api/auth/google/* route is absent (404) and this answers exactly as before.
+      ...(GOOGLE_LOGIN ? { google_login: true } : {}),
       // Public: the sign-in screen is the first thing that reads it.
       ...(DEFAULT_LANG ? { default_lang: DEFAULT_LANG } : {}),
       // Public like the two flags above: the caps are not a secret, and the absence of the
@@ -2696,17 +3252,24 @@ const routes = {
     const s = await sessionOf(req);
     if (!s) return json(res, 401, { error: 'not signed in' });
     const { user } = s;
-    // Only a phone's token is renewed (`kind` b, or none from before the mark): a cookie replayed
-    // as a bearer is accepted but never traded for a fresh one.
-    const renew = s.bearer && s.kind !== 'c' && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
-    json(res, 200, {
-      user: publicUser(user),
-      // ISO-1397: what the app needs to show "confirm your e-mail" or ask for one at all — an
-      // account from before this phase has neither field until its owner sets one. Left out
-      // entirely while PASSWORD_LOGIN is on: `email` there is the older, unrelated sign-in
-      // address (#118), which SELF_HOSTING.md promises is never part of this response — exposing
-      // it here, even unverified, would break that promise for an instance that opted into it.
-      ...(PASSWORD_LOGIN ? {} : { email: user.email || null, emailVerified: !!user.emailVerifiedAt, needsEmail: !user.email }),
+      // Only a phone's token is renewed (`kind` b, or none from before the mark): a cookie replayed
+      // as a bearer is accepted but never traded for a fresh one.
+      const renew = s.bearer && s.kind !== 'c' && s.exp - Date.now() < SESSION_DAYS * 86400000 / 2;
+      // ISO-1597: whether this profile has a linked Google identity, and since when — read
+      // regardless of whether GOOGLE_LOGIN is currently on, same as `email`/`termsVersion` below are
+      // always present: an instance that switches Google off again must not make a profile's own
+      // Settings screen forget it still has one (DELETE /api/account/google would 404 there too, by
+      // the same "the whole feature is absent" rule — nothing here promises it can be *removed*
+      // while off, only that Settings still shows it honestly).
+      const google = await findOAuthIdentityByUser(pool, 'google', user.id);
+      json(res, 200, {
+        user: publicUser(user),
+        // ISO-1397/ISO-1596: what the app needs to show "confirm your e-mail" or ask for one at
+        // all — an account from before ISO-1397 has neither field until its owner sets one. Always
+        // present now, PASSWORD_LOGIN or not: `email` is the one verified address every account has
+        // (see "e-mail sign-in" above), not the older, unrelated #118 sign-in address this used to
+        // mean while the flag was on — that field is gone, so nothing collides here any more.
+        email: user.email || null, emailVerified: !!user.emailVerifiedAt, needsEmail: !user.email,
       // ISO-1390: what the app needs to put the "we updated our terms" sheet in front of an
       // account — one imported from before this phase has accepted nothing, one that accepted an
       // older version has to accept again. Always present, PASSWORD_LOGIN or not: unlike `email`
@@ -2714,6 +3277,7 @@ const routes = {
       termsVersion: user.termsAcceptedVersion || null,
       termsAcceptedAt: user.termsAcceptedAt || null,
       needsTerms: user.termsAcceptedVersion !== LEGAL_VERSION,
+      google: google ? { email: google.email || null, linkedAt: google.created } : null,
       ...(renew ? { token: await makeSession(user, req.headers['user-agent']) } : {})
     });
   },
@@ -2999,16 +3563,20 @@ const routes = {
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.
   ...(PASSWORD_LOGIN ? passwordRoutes : {}),
 
-  // Verified e-mail + password-less recovery (ISO-1397). Always there — not gated by
-  // PASSWORD_LOGIN, since none of it is about signing in with a password: it is the address every
-  // new profile now has, confirmed by a link mailed to it, and the one way back in once every
-  // passkey is lost. POST /api/account/email only goes here while PASSWORD_LOGIN is off; on, that
-  // path is passwordRoutes' own (spread above), and wins — see setOldAccountEmail's own comment.
+  // Verified e-mail + recovery (ISO-1397). Always there — not gated by PASSWORD_LOGIN, since
+  // none of it is about signing in with a password: it is the address every new profile now has,
+  // confirmed by a link mailed to it, and the one way back in once every passkey is lost.
+  // POST /api/account/email is the one handler for that route either way now (ISO-1596) — see
+  // its own comment for why there used to be two.
   ...emailRoutes,
-  ...(PASSWORD_LOGIN ? {} : { 'POST /api/account/email': setOldAccountEmail }),
 
   // Always there: more passkeys and device links need nothing an instance has to switch on.
   ...passkeyRoutes,
+
+  // Absent entirely without both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (ISO-1597) — every
+  // /api/auth/google/*, /api/account/google/* and /api/register/google route a plain 404, same
+  // shape as PASSWORD_LOGIN above.
+  ...(GOOGLE_LOGIN ? googleRoutes : {}),
 
   // `rev` is the server's own count of writes to this profile (also stored inside the document as
   // `_rev`, so every other reader — reminder tick, admin, Coach, MCP — is unaffected). A client
@@ -3288,15 +3856,19 @@ const routes = {
       const S = (await readState(u.id)) || {};
       return {
         id: u.id, name: u.name, created: u.created || null,
-        disabled: !!u.disabled, admin: isAdmin(u), owner: isOwner(u), invitedBy: u.invitedBy || null,
+          disabled: !!u.disabled, admin: isAdmin(u), owner: isOwner(u), role: u.role, invitedBy: u.invitedBy || null,
         lastSync: lastSyncOf(u, S),
         hasPush: await hasPush(pool, u.id),
         // Was: the live routine name and set-by-set progress (livePresence(u.id)). Whether a
         // workout is in progress at all is still worth an admin seeing (FR-… "training now"); its
         // content is not.
         online: !!livePresence(u.id),
-        // The sign-in e-mail is an admin's to see (to hand out a reset code, to tell two
-        // profiles apart), and only while the instance takes passwords at all.
+        // A count only — ISO-1394 still holds, so an admin never sees who a teacher's students
+        // are, let alone their training (ISO-1609).
+        ...(u.role === 'teacher' ? { studentCount: await countStudentsOfTeacher(pool, u.id) } : {}),
+        // `password`/`email` here are about password sign-in specifically (whether to offer a
+        // reset code, which address a reset is redeemed with) — unchanged by ISO-1596 unifying
+        // `email` itself; still only worth showing on an instance that takes passwords at all.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null } : {})
       };
     }));
@@ -3314,9 +3886,10 @@ const routes = {
     const S = (await readState(u.id)) || {};
     json(res, 200, {
       user: {
-        id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), owner: isOwner(u), invitedBy: u.invitedBy || null,
-        // Only on an instance with password sign-in: whether they have one, and until when an
-        // unused reset code is good.
+          id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), owner: isOwner(u), role: u.role, invitedBy: u.invitedBy || null,
+          ...(u.role === 'teacher' ? { studentCount: await countStudentsOfTeacher(pool, u.id) } : {}),
+          // Only on an instance with password sign-in: whether they have one, the address a reset
+          // code is redeemed with, and until when an unused reset code is good.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {})
       },
       lastSync: lastSyncOf(u, S),
@@ -3339,6 +3912,44 @@ const routes = {
     if (u.disabled) await dropDeviceLinks(pool, u.id);
     audit(req, u.disabled ? 'admin.user.disable' : 'admin.user.enable', { user: admin, target: u });
     json(res, 200, { ok: true, id: u.id, disabled: u.disabled });
+  },
+
+  // Grant or revoke the teacher role (ISO-1594/ISO-1609). Revoking runs setUserRole's own
+  // cascade (store.js): every student this account still teaches is unlinked (`role-revoked`),
+  // their notes erased and their active assignment closed, and the account's own invites are
+  // dropped — all in one transaction, so a teacher losing the role is never half-disconnected
+  // from their students.
+  //
+  // The same route also carries openGym's admin flag (`admin: true|false`, v1.4.2): owner only,
+  // never on themselves, and not for an admin named in ADMIN_UIDS — see the second half below.
+  // Which question is being asked is decided by the body: `role` for teacher/student (any admin),
+  // `admin` for the admin flag (the owner).
+  'POST /api/admin/user/role': async (req, res) => {
+    const body = await readBody(req);
+    if (body.role !== undefined) {
+      const admin = await requireAdmin(req, res); if (!admin) return;
+      const role = normalizeRole(body.role);
+      if (!role) return json(res, 400, { error: 'role must be "student" or "teacher"' });
+      const u = await getUserById(pool, body.id);
+      if (!u) return json(res, 404, { error: 'no such user' });
+      await setUserRole(pool, u.id, role);
+      audit(req, role === 'teacher' ? 'teacher.role.grant' : 'teacher.role.revoke', { user: admin, target: u });
+      return json(res, 200, { ok: true, id: u.id, role });
+    }
+    // Appoint or remove an admin. Owner only, never on themselves, and not for an admin named in
+    // ADMIN_UIDS: that one comes back on the next restart whatever the table says, so the switch
+    // would lie. A disabled account is enabled first, so nobody is promoted while locked out.
+    const owner = await requireOwner(req, res); if (!owner) return;
+    const u = await getUserById(pool, text(body.id));
+    if (!u) return json(res, 404, { error: 'no such user' });
+    if (u.id === owner.id) return json(res, 400, { error: 'the owner stays an admin' });
+    if (typeof body.admin !== 'boolean') return json(res, 400, { error: 'admin must be true or false' });
+    if (ADMIN_UIDS.includes(u.id)) return json(res, 400, { error: 'this admin is set in ADMIN_UIDS on the server' });
+    if (body.admin && u.disabled) return json(res, 400, { error: 'enable the account first' });
+    await setAdminFlag(pool, u.id, body.admin);
+    await refreshOwner();
+    audit(req, body.admin ? 'admin.role.grant' : 'admin.role.revoke', { user: owner, target: u });
+    json(res, 200, { ok: true, id: u.id, admin: body.admin || ADMIN_UIDS.includes(u.id) });
   },
 
   // Disable locks an account out; this removes it. The one destructive action in the app, so the
@@ -3393,23 +4004,6 @@ const routes = {
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
 
-  // Appoint or remove an admin. Owner only, never on themselves, and not for an admin named in
-  // ADMIN_UIDS: that one comes back on the next restart whatever the table says, so the switch
-  // would lie. A disabled account is enabled first, so nobody is promoted while locked out.
-  'POST /api/admin/user/role': async (req, res) => {
-    const owner = await requireOwner(req, res); if (!owner) return;
-    const body = await readBody(req);
-    const u = await getUserById(pool, text(body.id));
-    if (!u) return json(res, 404, { error: 'no such user' });
-    if (u.id === owner.id) return json(res, 400, { error: 'the owner stays an admin' });
-    if (typeof body.admin !== 'boolean') return json(res, 400, { error: 'admin must be true or false' });
-    if (ADMIN_UIDS.includes(u.id)) return json(res, 400, { error: 'this admin is set in ADMIN_UIDS on the server' });
-    if (body.admin && u.disabled) return json(res, 400, { error: 'enable the account first' });
-    await setAdminFlag(pool, u.id, body.admin);
-    await refreshOwner();
-    audit(req, body.admin ? 'admin.role.grant' : 'admin.role.revoke', { user: owner, target: u });
-    json(res, 200, { ok: true, id: u.id, admin: body.admin || ADMIN_UIDS.includes(u.id) });
-  },
 
   // Hand the owner role to another admin. The old owner stays an admin.
   'POST /api/admin/owner': async (req, res) => {
@@ -3670,6 +4264,410 @@ const routes = {
     catch { res.destroy(); }
   },
 
+  /* ---------- admin: payment-plan catalog (ISO-1619/ISO-1630, T1b) ----------
+   * Admin-only end to end — every route starts with requireAdmin, then 404s the same way the
+   * public billing routes do while BILLING_ON is off. Every write that reaches Stripe
+   * (plan/new, plan/availability, plan/price, plan/publish) additionally: refuses 423
+   * `live-writes-disabled` while liveWritesDisabled() (billing.js) is true, requires a fresh
+   * proveOwner proof and a `reason` ≥ 10 chars, and claims an `Idempotency-Key` header before
+   * ever calling Stripe (billing.js's runBillingAdminAction) — a replayed key is handed back the
+   * first attempt's own result. `plan/display` and `order` are DB-only (no Stripe call, no live
+   * gate, no proveOwner/reason, nothing written to billing_admin_actions — see their own routes in
+   * billing.js for why) and `reconcile` only ever reads Stripe.
+   */
+  'GET /api/admin/billing/catalog': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const view = await getCatalogAdminView(pool);
+    json(res, 200, { ...view, liveWritesDisabled: liveWritesDisabled() });
+  },
+
+  'GET /api/admin/billing/catalog/actions': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    json(res, 200, { actions: await getBillingAdminActions(pool, 100) });
+  },
+
+  // "Criar oferta": a new plan, born `available:false` with its first Price a Stripe `draft`.
+  'POST /api/admin/billing/catalog/plan/new': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const id = text(body.id);
+    const interval = text(body.interval);
+    const intervalCount = Number(body.intervalCount);
+    const unitAmount = Number(body.unitAmount);
+    if (!validPlanId(id)) return json(res, 400, { error: 'invalid plan id', field: 'id' });
+    if (!validDisplay(body.display)) return json(res, 400, { error: 'invalid display', field: 'display' });
+    if (!validInterval(interval)) return json(res, 400, { error: 'invalid interval', field: 'interval' });
+    if (!validIntervalCount(intervalCount)) return json(res, 400, { error: 'invalid intervalCount', field: 'intervalCount' });
+    if (!validUnitAmount(unitAmount)) return json(res, 400, { error: 'invalid unitAmount', field: 'unitAmount' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-catalog-create');
+    if (!proof) return;
+    const result = await createOffer(pool, {
+      id, display: body.display, interval, intervalCount, unitAmount,
+      decisionRef: body.decisionRef != null ? text(body.decisionRef) : null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.create', { user: admin, target: { id, name: body.display?.['pt-BR']?.name } });
+    json(res, 200, result.after);
+  },
+
+  // "Editar apresentação": display text only — never price/interval/availability. Só banco.
+  'POST /api/admin/billing/catalog/plan/display': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const body = await readBody(req);
+    const id = text(body.id);
+    const version = Number(body.version);
+    if (!id || !Number.isInteger(version)) return json(res, 400, { error: 'id and version are required' });
+    if (!validDisplay(body.display)) return json(res, 400, { error: 'invalid display', field: 'display' });
+    const result = await editPlanDisplay(pool, id, version, body.display);
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.display', { user: admin, target: { id } });
+    json(res, 200, { plan: result.plan });
+  },
+
+  // Reorder, in a batch, in one transaction — `order` must name exactly the current plan set.
+  // Só banco, não passa pelo live gate.
+  'POST /api/admin/billing/catalog/order': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const body = await readBody(req);
+    const order = Array.isArray(body.order) ? body.order.map(text) : null;
+    if (!order) return json(res, 400, { error: 'order must be an array of plan ids' });
+    const result = await reorderCatalog(pool, order);
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.order', { user: admin });
+    json(res, 200, { plans: result.plans });
+  },
+
+  // Ativar/desativar: `prices.update active` on the plan's current Price, then `available` in
+  // the DB — in that order, both directions.
+  'POST /api/admin/billing/catalog/plan/availability': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const id = text(body.id);
+    const version = Number(body.version);
+    const available = !!body.available;
+    if (!id || !Number.isInteger(version)) return json(res, 400, { error: 'id and version are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-catalog-availability');
+    if (!proof) return;
+    const result = await setPlanAvailability(pool, { id, version, available, actor: { id: admin.id, name: admin.name }, reason, idempotencyKey });
+    if (result.error) return catalogError(res, result);
+    audit(req, available ? 'admin.billing.catalog.activate' : 'admin.billing.catalog.deactivate', { user: admin, target: { id } });
+    json(res, 200, result.after);
+  },
+
+  // "Nova versão de valor": a new draft Price for a plan that already sells one.
+  'POST /api/admin/billing/catalog/plan/price': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const planId = text(body.planId);
+    const unitAmount = Number(body.unitAmount);
+    if (!planId) return json(res, 400, { error: 'planId is required' });
+    if (!validUnitAmount(unitAmount)) return json(res, 400, { error: 'invalid unitAmount', field: 'unitAmount' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-catalog-price-new');
+    if (!proof) return;
+    const result = await createPriceVersion(pool, {
+      planId, unitAmount, decisionRef: body.decisionRef != null ? text(body.decisionRef) : null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.price.new', { user: admin, target: { id: planId } });
+    json(res, 200, result.after);
+  },
+
+  // "Publicar versão": Stripe first (activates the new Price, deactivates the old one), then one
+  // DB transaction (billing.js's publishPriceVersion) — grandfathers every existing subscriber on
+  // the now-retired Price, never migrates them.
+  'POST /api/admin/billing/catalog/plan/publish': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const planId = text(body.planId);
+    const newPriceId = text(body.priceId);
+    const version = Number(body.version);
+    if (!planId || !newPriceId || !Number.isInteger(version)) return json(res, 400, { error: 'planId, priceId and version are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-catalog-publish');
+    if (!proof) return;
+    const result = await publishPriceVersion(pool, { planId, newPriceId, version, actor: { id: admin.id, name: admin.name }, reason, idempotencyKey });
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.price.publish', { user: admin, target: { id: planId } });
+    json(res, 200, result.after);
+  },
+
+  // Adopts every Stripe Price tagged `metadata.bf_plan` this catalog doesn't know yet (as a
+  // draft — never auto-published) and records every `subscriptions.priceId` this catalog has
+  // never heard of as `retired`, read straight off Stripe. Read-only against Stripe: no live gate.
+  'POST /api/admin/billing/catalog/reconcile': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const result = await reconcileCatalog(pool);
+    if (result.error) return catalogError(res, result);
+    audit(req, 'admin.billing.catalog.reconcile', { user: admin, msg: `adopted ${result.adopted.length}, retired ${result.retired.length}` });
+    json(res, 200, result);
+  },
+
+  /* ---------- admin: subscription ficha and actions (ISO-1619/ISO-1624 T2a, ISO-1625 T2b) ----------
+   * The user's billing ficha and the eight actions plan §5 lists (T2a's original six plus T2b's
+   * suspend-collection/resume-collection), plus the mandatory preview. Every write (change-plan,
+   * cancel-at-period-end, resume, cancel-immediately, suspend-collection, resume-collection,
+   * generate-link) needs the live gate, an `Idempotency-Key` header and a `reason` ≥ 10 chars;
+   * change-plan/cancel-at-period-end/cancel-immediately/suspend-collection/resume-collection
+   * additionally need a fresh proveOwner proof (plan §7's own "ações financeiras" list —
+   * resume/generate-link/sync don't, ISO-1626). `sync` is read-only against Stripe (no live gate,
+   * same precedent as catalog/reconcile). `expectedUpdatedAt` is the optimistic-concurrency check
+   * against `subscriptions.updated_at` the ficha's own GET answers with; billing.js's
+   * runSubscriptionAction is what actually enforces it (409 `stale`). Six of the eight writes
+   * (every one but generate-link/sync) mail the account once they succeed — mail-templates/
+   * billing-action.js, plan §5 item 5 — best-effort, never blocking the response.
+   */
+  'GET /api/admin/user/billing': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const u = await getUserById(pool, id);
+    if (!u) return json(res, 404, { error: 'no such user' });
+    json(res, 200, await getUserBillingFicha(pool, u.id));
+  },
+
+  'POST /api/admin/billing/subscription/preview': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const body = await readBody(req);
+    const subscriptionId = text(body.subscriptionId);
+    if (!subscriptionId) return json(res, 400, { error: 'subscriptionId is required' });
+    const result = await previewSubscriptionAction(pool, { subscriptionId, action: text(body.action), newPlanId: text(body.newPlanId) });
+    if (result.error) return subscriptionActionError(res, result);
+    json(res, 200, result);
+  },
+
+  'POST /api/admin/billing/subscription/change-plan': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    const newPlanId = text(body.newPlanId);
+    if (!userId || !subscriptionId || !newPlanId) return json(res, 400, { error: 'userId, subscriptionId and newPlanId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-subscription-change-plan');
+    if (!proof) return;
+    const result = await changePlan(pool, {
+      userId, subscriptionId, newPlanId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.change-plan', { user: admin, target: { id: userId }, msg: newPlanId });
+    const planSummary = await planSummaryForMail(pool, newPlanId);
+    if (planSummary) {
+      mailBillingAction(userId, renderPlanChangeScheduled, {
+        planName: planSummary.name,
+        amount: planSummary.amountCents != null ? (planSummary.amountCents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : 'o valor do plano',
+        effectiveDate: brDate(changePlanEffectiveUnix(result.after))
+      }).catch(e => console.error('mail: change-plan notice failed', e.message));
+    }
+    json(res, 200, result.after);
+  },
+
+  'POST /api/admin/billing/subscription/cancel-period-end': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-subscription-cancel-period-end');
+    if (!proof) return;
+    const result = await cancelAtPeriodEnd(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.cancel-period-end', { user: admin, target: { id: userId } });
+    mailBillingAction(userId, renderCancelScheduled, { effectiveDate: brDate(cancellationEffectiveUnix(result.after)) })
+      .catch(e => console.error('mail: cancel-period-end notice failed', e.message));
+    json(res, 200, result.after);
+  },
+
+  'POST /api/admin/billing/subscription/resume': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const result = await resumeCancellation(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.resume', { user: admin, target: { id: userId } });
+    mailBillingAction(userId, renderCancellationResumed, {}).catch(e => console.error('mail: resume notice failed', e.message));
+    json(res, 200, result.after);
+  },
+
+  'POST /api/admin/billing/subscription/cancel-immediately': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-subscription-cancel-immediately');
+    if (!proof) return;
+    const result = await cancelImmediately(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.cancel-immediately', { user: admin, target: { id: userId } });
+    mailBillingAction(userId, renderCancelImmediate, {}).catch(e => console.error('mail: cancel-immediately notice failed', e.message));
+    json(res, 200, result.after);
+  },
+
+  // "Suspender cobrança" (ISO-1625 T2b): pause_collection — Stripe simply stops generating
+  // invoices, the subscription's own `status` never changes. Same infra as every write above
+  // (live gate, Idempotency-Key, reason, proveOwner — a billing-affecting action, same list as
+  // cancel-immediately).
+  'POST /api/admin/billing/subscription/suspend-collection': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const resumesAt = Number.isFinite(+body.resumesAt) && +body.resumesAt > 0 ? Math.floor(+body.resumesAt) : null;
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-subscription-suspend-collection');
+    if (!proof) return;
+    const result = await suspendCollection(pool, {
+      userId, subscriptionId, resumesAt, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.suspend-collection', { user: admin, target: { id: userId } });
+    mailBillingAction(userId, renderCollectionSuspended, { resumesAt: resumesAt ? brDate(resumesAt) : null })
+      .catch(e => console.error('mail: suspend-collection notice failed', e.message));
+    json(res, 200, result.after);
+  },
+
+  // "Retomar cobrança": the exact reverse, same infra.
+  'POST /api/admin/billing/subscription/resume-collection': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const proof = await proveOwner(req, res, admin, body, 'billing-subscription-resume-collection');
+    if (!proof) return;
+    const result = await resumeCollection(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason, idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.resume-collection', { user: admin, target: { id: userId } });
+    mailBillingAction(userId, renderCollectionResumed, {}).catch(e => console.error('mail: resume-collection notice failed', e.message));
+    json(res, 200, result.after);
+  },
+
+  // "Atribuir": the link itself is handed back for the admin to copy/send — never e-mailed by this
+  // route (e-mail is optional, T2b).
+  'POST /api/admin/billing/subscription/generate-link': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    if (liveWritesDisabled()) return json(res, 423, { error: 'live writes are disabled on this instance', code: 'live-writes-disabled' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const planId = text(body.planId);
+    if (!userId || !planId) return json(res, 400, { error: 'userId and planId are required' });
+    const reason = adminReason(body);
+    if (!reason) return json(res, 400, { error: 'reason must be at least 10 characters', field: 'reason' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const result = await generateSubscriptionLink(pool, {
+      userId, planId, actor: { id: admin.id, name: admin.name }, reason, idempotencyKey,
+      successUrl: `${APP_URL}/#/configuracoes?billing=sucesso`, cancelUrl: `${APP_URL}/#/configuracoes?billing=cancelado`
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.generate-link', { user: admin, target: { id: userId }, msg: planId });
+    json(res, 200, result.after);
+  },
+
+  // ISO-1626: the UI never prompts for a reason on this one — the dialog is just "sync now?" —
+  // so a fixed reason is recorded regardless of what (if anything) the body sends, rather than
+  // 400ing an admin for not typing one.
+  'POST /api/admin/billing/subscription/sync': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const body = await readBody(req);
+    const userId = text(body.userId);
+    const subscriptionId = text(body.subscriptionId);
+    if (!userId || !subscriptionId) return json(res, 400, { error: 'userId and subscriptionId are required' });
+    const idempotencyKey = idempotencyKeyOf(req);
+    if (!idempotencyKey) return json(res, 400, { error: 'Idempotency-Key header is required' });
+    const result = await syncSubscription(pool, {
+      userId, subscriptionId, expectedUpdatedAt: text(body.expectedUpdatedAt) || null,
+      actor: { id: admin.id, name: admin.name }, reason: 'admin manual sync', idempotencyKey
+    });
+    if (result.error) return subscriptionActionError(res, result);
+    audit(req, 'admin.billing.subscription.sync', { user: admin, target: { id: userId } });
+    json(res, 200, result.after);
+  },
+
   /* ---------- activity log ---------- */
   // Newest first, paged by id. Not by offset: the log grows at the front of this view, so an
   // offset cursor would repeat a row whenever an event lands between two pages; and not by
@@ -3725,6 +4723,22 @@ const routes = {
     if (!BILLING_ON) return json(res, 200, { enabled: false });
     json(res, 200, await billingStatus(pool, user.id));
   },
+  // ISO-1623: the app's own catalog, mirrored from Stripe — no plan name, interval or price is
+  // ever hard-coded on the client after this. Only `available` plans, each with its current
+  // Price's amount already resolved to centavos (store.js's getAvailablePlans), so SettingsPlan
+  // (T3) never has to know what a Price even is.
+  'GET /api/billing/plans': async (req, res) => {
+    if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const plans = await getAvailablePlans(pool);
+    json(res, 200, {
+      plans: plans.map(p => ({
+        id: p.id, display: p.display, interval: p.interval, intervalCount: p.intervalCount,
+        sortOrder: p.sortOrder, amountCents: p.amountCents, introAmountCents: p.introAmountCents ?? null
+      }))
+    });
+  },
   'POST /api/billing/checkout': async (req, res) => {
     if (!BILLING_ON) return json(res, 404, { error: 'billing not configured' });
     const user = await readSession(req);
@@ -3743,6 +4757,9 @@ const routes = {
       successUrl: `${APP_URL}/#/configuracoes?billing=sucesso`,
       cancelUrl: `${APP_URL}/#/configuracoes?billing=cancelado`
     });
+    // already-subscribed (ISO-1623 §5.4) is a 409, not the 400 every other createCheckoutSession
+    // failure (an unknown/unavailable plan) answers with.
+    if (result.code === 'already-subscribed') return json(res, 409, { error: 'you already have an active subscription', code: 'already-subscribed' });
     if (result.error) return json(res, 400, { error: result.error, code: 'invalid-plan' });
     audit(req, 'billing.checkout', { user, msg: text(body.plan) });
     json(res, 200, { url: result.url });
@@ -3789,6 +4806,331 @@ const routes = {
     json(res, 200, { ok: true, duplicate: !claimed });
   },
 
+  /* ---------- teacher: the link, assignments & notes (ISO-1594/ISO-1609) ---------- */
+  // Every route below starts with requireTeacher. The student half follows right after.
+  'GET /api/teacher/students': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const links = await listStudentsOfTeacher(pool, teacher.id);
+    const now = new Date();
+    const students = await Promise.all(links.map(async link => {
+      const [student, assignment, { state }] = await Promise.all([
+        getUserById(pool, link.studentId), getActiveAssignment(pool, link.studentId), getUserState(pool, link.studentId)
+      ]);
+      const view = teacherView(state, { bodyweight: link.shareBodyweight });
+      return {
+        id: link.studentId, name: student?.name || null, acceptedAt: link.acceptedAt,
+        assignment: assignment ? await assignmentBrief(assignment) : null,
+        summary: studentSummary(view, assignment, now, { acceptedAt: link.acceptedAt })
+      };
+    }));
+    json(res, 200, { students });
+  },
+
+  'GET /api/teacher/student': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const link = await requireStudentOf(req, res, teacher, id); if (!link) return;
+    const [{ state }, assignment, history] = await Promise.all([
+      getUserState(pool, id), getActiveAssignment(pool, id), listAssignmentHistory(pool, id, 10)
+    ]);
+    const view = teacherView(state, { bodyweight: link.shareBodyweight });
+    const summary = studentSummary(view, assignment, new Date(), { acceptedAt: link.acceptedAt });
+    audit(req, 'teacher.student.view', { user: teacher, target: { id } });
+    json(res, 200, {
+      ...view, scopeVersion: link.scopeVersion, shareBodyweight: link.shareBodyweight, summary,
+      assignment: assignment ? await assignmentBrief(assignment) : null,
+      assignmentHistory: await Promise.all(history.map(assignmentHistoryEntry))
+    });
+  },
+
+  'POST /api/teacher/student/remove': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    await endLink(pool, body.id, 'by-teacher');
+    audit(req, 'teacher.link.end', { user: teacher, target: { id: body.id }, msg: 'by-teacher' });
+    json(res, 200, { ok: true });
+  },
+
+  // `kind: 'routine'` carries its own snapshot (validated, normalized, never a live reference to
+  // the teacher's library, D16); `kind: 'program'` only ever carries `{ programId }` of a Program
+  // that is currently published. Either way, assignToStudent (store.js) does the replace/insert
+  // in one transaction and is the real backstop against two assigns racing the same student —
+  // this route only turns its `assignment-conflict` into the 409 the matrix asks for.
+  'POST /api/teacher/student/assign': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const schedule = validateSchedule({ startsOn: body.startsOn, days: body.days });
+    if (!schedule.ok) return json(res, 400, { error: schedule.error, field: schedule.field });
+    let kind, payload;
+    if (body.kind === 'routine') {
+      const v = validateRoutineAssignment(body.routine);
+      if (!v.ok) return json(res, 400, { error: v.error, field: v.field });
+      kind = 'routine'; payload = v.value;
+    } else if (body.kind === 'program') {
+      const program = await getProgram(pool, text(body.programId));
+      if (!program || program.deletedAt || program.status !== 'published') {
+        return json(res, 400, { error: 'program is not published', field: 'programId' });
+      }
+      kind = 'program'; payload = { programId: program.id };
+    } else {
+      return json(res, 400, { error: 'kind must be "routine" or "program"', field: 'kind' });
+    }
+    const had = await getActiveAssignment(pool, body.id);
+    const result = await assignToStudent(pool, {
+      teacherId: teacher.id, studentId: body.id, kind, payload, startsOn: schedule.value.startsOn, days: schedule.value.days
+    });
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.assign', { user: teacher, target: { id: body.id }, msg: had ? 'replace' : 'new' });
+    json(res, 200, { assignment: await assignmentBrief(result.row) });
+  },
+
+  'POST /api/teacher/student/assignment/end': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const result = await endAssignment(pool, teacher.id, body.id);
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.assign.end', { user: teacher, target: { id: body.id } });
+    json(res, 200, { ok: true });
+  },
+
+  // Notes (D13): read and written only by the student's current teacher, never carried in audit —
+  // audit() below only ever records that something happened, never the note's own text.
+  'GET /api/teacher/student/notes': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const link = await requireStudentOf(req, res, teacher, id); if (!link) return;
+    json(res, 200, { notes: await listNotes(pool, teacher.id, id) });
+  },
+
+  'POST /api/teacher/student/notes': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const v = validateNote(body.body);
+    if (!v.ok) return json(res, 400, { error: v.error, code: v.code });
+    const result = await createNote(pool, teacher.id, body.id, v.value);
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.note.create', { user: teacher, target: { id: body.id } });
+    json(res, 200, { note: result.row });
+  },
+
+  'POST /api/teacher/student/notes/update': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const v = validateNote(body.body);
+    if (!v.ok) return json(res, 400, { error: v.error, code: v.code });
+    const result = await updateNote(pool, teacher.id, body.id, text(body.noteId), v.value);
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.note.update', { user: teacher, target: { id: body.id } });
+    json(res, 200, { note: result.row });
+  },
+
+  'POST /api/teacher/student/notes/delete': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const link = await requireStudentOf(req, res, teacher, body.id); if (!link) return;
+    const ok = await deleteNote(pool, teacher.id, body.id, text(body.noteId));
+    if (!ok) return json(res, 404, { error: 'no such note', code: 'note-not-found' });
+    audit(req, 'teacher.note.delete', { user: teacher, target: { id: body.id } });
+    json(res, 200, { ok: true });
+  },
+
+  // Published Programs only — a draft or a trashed one is not something a teacher can assign.
+  'GET /api/teacher/programs': async (req, res) => {
+    if (!(await requireTeacher(req, res))) return;
+    const programs = await listPrograms(pool, { status: 'published' });
+    json(res, 200, {
+      programs: programs.map(p => ({
+        id: p.id, title: p.title, description: p.description, category: p.category,
+        difficulty: p.difficulty, hasCover: !!p.coverFile
+      }))
+    });
+  },
+
+  // Streamed the same way GET /api/admin/program/cover is, minus the admin guard and plus the
+  // published-only check above — a teacher may only ever point a student at a Program the catalog
+  // currently offers, so a draft's or a trashed one's cover is exactly as unreachable as the
+  // program itself (Nexus: kept as its own small handler rather than widening the admin route's
+  // guard, which exists to be admin-only end to end).
+  'GET /api/teacher/program/cover': async (req, res) => {
+    if (!(await requireTeacher(req, res))) return;
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const program = await getProgram(pool, id);
+    if (!program || program.deletedAt || program.status !== 'published' || !program.coverFile) return json(res, 404, { error: 'no such cover' });
+    let fd;
+    try { fd = fs.openSync(programCoverPath(program.coverFile), 'r'); }
+    catch { return json(res, 404, { error: 'no such cover' }); }
+    const size = fs.fstatSync(fd).size;
+    res.writeHead(200, {
+      'Content-Type': program.coverMime, 'Content-Length': String(size),
+      'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff'
+    });
+    try { await pipeline(fs.createReadStream(null, { fd }), res); } catch { res.destroy(); }
+  },
+
+  'GET /api/teacher/invites': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    json(res, 200, { invites: await listTeacherInvites(pool, teacher.id) });
+  },
+
+  'POST /api/teacher/invites/new': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const code = newInviteCode();
+    const note = text(body.note).slice(0, 60);
+    const expiresAt = Date.now() + INVITE_TTL_MS;
+    const result = await createTeacherInvite(pool, teacher.id, { hash: hashInviteCode(code), note, expiresAt });
+    if (result.error) return teacherError(res, result);
+    audit(req, 'teacher.invite.create', { user: teacher });
+    json(res, 200, { invite: { code, expires: expiresAt, ...(note ? { note } : {}) } });
+  },
+
+  'POST /api/teacher/invites/revoke': async (req, res) => {
+    const teacher = await requireTeacher(req, res); if (!teacher) return;
+    const body = await readBody(req);
+    const ok = await revokeTeacherInvite(pool, teacher.id, hashInviteCode(text(body.hash)));
+    if (!ok) return json(res, 404, { error: 'no such invite' });
+    audit(req, 'teacher.invite.revoke', { user: teacher });
+    json(res, 200, { ok: true });
+  },
+
+  /* ---------- student: accepting a teacher, "Meu professor", assignments (ISO-1594/ISO-1609) ----------
+   * Every route here just needs a session, same as any other /api/account/* route — being a
+   * student is the default role, not a gate of its own.
+   */
+  'POST /api/teacher-invite/preview': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    if (addressPaused(req, res, 'teacher-invite')) return;
+    const invite = await peekTeacherInvite(pool, hashInviteCode(text(body.code)));
+    if (!invite) {
+      strikeAddress(req, 'teacher-invite');
+      return json(res, 400, { error: 'invite is invalid or expired', code: 'invite-invalid' });
+    }
+    json(res, 200, {
+      teacher: { name: invite.teacherName }, scope: TEACHER_SCOPE, scopeOptional: TEACHER_SCOPE_OPTIONAL,
+      scopeNever: TEACHER_SCOPE_NEVER, scopeVersion: TEACHER_SCOPE_VERSION
+    });
+  },
+
+  'POST /api/teacher-invite/accept': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    if (addressPaused(req, res, 'teacher-invite')) return;
+    // Checked before the invite is ever touched: an outdated app must not burn a class code for
+    // a consent screen nobody actually saw (the current one).
+    if (Number(body.scopeVersion) !== TEACHER_SCOPE_VERSION) {
+      return json(res, 409, { error: 'the consent screen is out of date — reload and try again', code: 'scope-outdated' });
+    }
+    const result = await acceptTeacherInvite(pool, {
+      hash: hashInviteCode(text(body.code)), student: user, scopeVersion: TEACHER_SCOPE_VERSION, shareBodyweight: body.shareBodyweight === true
+    });
+    if (result.error) {
+      strikeAddress(req, 'teacher-invite');
+      audit(req, 'teacher.link.accept', { ok: false, user, msg: result.code });
+      return teacherError(res, result);
+    }
+    audit(req, 'teacher.link.accept', { user });
+    json(res, 200, { ok: true, teacherId: result.teacherId });
+  },
+
+  'GET /api/account/teacher': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const link = await getTeacherLink(pool, user.id);
+    if (!link) return json(res, 200, { teacher: null });
+    const teacher = await getUserById(pool, link.teacherId);
+    json(res, 200, {
+      teacher: { id: link.teacherId, name: teacher?.name || null },
+      acceptedAt: link.acceptedAt, scope: TEACHER_SCOPE, shareBodyweight: link.shareBodyweight
+    });
+  },
+
+  'POST /api/account/teacher/bodyweight': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const share = body.share === true;
+    const result = await setShareBodyweight(pool, user.id, share);
+    if (result.error) return json(res, 404, { error: result.error, code: result.code });
+    audit(req, 'teacher.link.bodyweight', { user, msg: share ? 'on' : 'off' });
+    json(res, 200, { ok: true, share });
+  },
+
+  'DELETE /api/account/teacher': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    await endLink(pool, user.id, 'by-student');
+    audit(req, 'teacher.link.end', { user, msg: 'by-student' });
+    json(res, 200, { ok: true });
+  },
+
+  // Independent of whether a link still exists (the student may have just unlinked) — the ended
+  // half of this pull has to reach them regardless, so the app can mark the imported routine
+  // accordingly even after "Meu professor" shows nobody any more.
+  'GET /api/account/assignments': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const { pending, ended } = await getPendingAndEndedAssignments(pool, user.id);
+    json(res, 200, { pending: pending.map(assignmentDelivery), ended: ended.map(assignmentDelivery) });
+  },
+
+  'POST /api/account/assignments/ack': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const result = await ackAssignment(pool, user.id, text(body.id));
+    if (result.error) return json(res, 404, { error: result.error, code: result.code });
+    json(res, 200, { ok: true });
+  },
+
+  // ISO-1610: the recommended-Program card (S.teacherProgram) only ever carries `programId` —
+  // nothing else about it is copied into the student's own state (D16/D7: a Program is a
+  // recommendation the student opts into, never content pulled into the plan at import time).
+  // The card still needs a title/description/cover to render, so any signed-in account — same
+  // boundary GET /api/teacher/programs already uses — can read a *published* program's own
+  // metadata here. Not scoped to "only a program this account was actually recommended": once
+  // published, a Program is catalog content, not private data; the same gate as the teacher's own
+  // route, just without requiring the teacher role.
+  'GET /api/account/program': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const program = await getProgram(pool, id);
+    if (!program || program.deletedAt || program.status !== 'published') return json(res, 404, { error: 'no such program' });
+    json(res, 200, {
+      program: {
+        id: program.id, title: program.title, description: program.description,
+        category: program.category, difficulty: program.difficulty, hasCover: !!program.coverFile
+      }
+    });
+  },
+
+  // Streamed the same way GET /api/teacher/program/cover is, minus the teacher-role guard — see
+  // the route above for why a published cover is not gated further.
+  'GET /api/account/program/cover': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const id = new URL(req.url, 'http://x').searchParams.get('id');
+    const program = await getProgram(pool, id);
+    if (!program || program.deletedAt || program.status !== 'published' || !program.coverFile) return json(res, 404, { error: 'no such cover' });
+    let fd;
+    try { fd = fs.openSync(programCoverPath(program.coverFile), 'r'); }
+    catch { return json(res, 404, { error: 'no such cover' }); }
+    const size = fs.fstatSync(fd).size;
+    res.writeHead(200, {
+      'Content-Type': program.coverMime, 'Content-Length': String(size),
+      'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff'
+    });
+    try { await pipeline(fs.createReadStream(null, { fd }), res); } catch { res.destroy(); }
+  },
+
   /* ---------- photos & videos ---------- */
   // Absent, not refusing, when MEDIA_UPLOADS=0: a 404 is what a server from before the feature
   // answers, and the client already treats that as "this server does not store them".
@@ -3824,7 +5166,7 @@ startWarmup();
 setFirstPeriodNoticeHook(async (uid, sub) => {
   const user = await getUserById(pool, uid);
   if (!user?.email) return; // nothing mailed an account with no address to mail
-  const cents = nextChargeAmountCents(sub);
+  const cents = await nextChargeAmountCents(pool, sub);
   const amount = cents != null
     ? (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
     : 'o valor do seu plano';
@@ -3973,6 +5315,10 @@ async function listen() {
     console.error('postgres connection/migration failed:', e.message);
     process.exit(1);
   }
+  // ISO-1623: a no-op once the catalog is seeded, or whenever billing isn't configured at all —
+  // never fatal, since a divergence here just means billing keeps reading STRIPE_PRICE_* by env
+  // (seedCatalogFromEnv's own comment) rather than stop the whole instance from booting.
+  if (BILLING_ON) await seedCatalogFromEnv(pool).catch(e => console.error('billing: catalog seed crashed', e.message));
   // One-time migration of whatever db.json still holds from before this boot (an instance
   // upgrading from a pre-1403 build, or a test fixture that seeds db.json directly) — every
   // collection it ever held, into PostgreSQL. Read once into a local `db`, not the module-level

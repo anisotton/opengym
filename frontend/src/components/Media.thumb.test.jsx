@@ -23,7 +23,7 @@ afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { ro
 
 describe('Thumb', () => {
   it('shows the still, and the neutral tile once it fails to load', () => {
-    const { host } = mount(<Thumb ex={{ id: 'a', img: 'a.jpg' }} />)
+    const { host } = mount(<Thumb ex={{ id: 'a', src: 'brilhart', img: 'a.jpg' }} />)
     const img = host.querySelector('img.thumb')
     expect(img.getAttribute('src')).toMatch(/a\.jpg$/)
     act(() => { img.dispatchEvent(new Event('error')) })
@@ -32,9 +32,9 @@ describe('Thumb', () => {
   })
 
   it('another exercise in the same place tries its own still', () => {
-    const { host, root } = mount(<Thumb ex={{ id: 'a', img: 'a.jpg' }} />)
+    const { host, root } = mount(<Thumb ex={{ id: 'a', src: 'brilhart', img: 'a.jpg' }} />)
     act(() => { host.querySelector('img').dispatchEvent(new Event('error')) })
-    act(() => root.render(<Thumb ex={{ id: 'b', img: 'b.jpg' }} />))
+    act(() => root.render(<Thumb ex={{ id: 'b', src: 'brilhart', img: 'b.jpg' }} />))
     expect(host.querySelector('img.thumb').getAttribute('src')).toMatch(/b\.jpg$/)
   })
 

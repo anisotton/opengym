@@ -145,29 +145,6 @@ server {
         add_header Content-Security-Policy "${CONTENT_SECURITY_POLICY}" always;
     }
 
-    # The exercise stills and animations, licensed from Gym visual for openGym only (NOTICE.md).
-    # Cross-Origin-Resource-Policy keeps another site from showing them in its own pages: the
-    # browser refuses a cross-origin <img> or <video> of them. The app loads them same-origin
-    # (the mobile app ships its own copy), so nothing of openGym's is affected. `^~` so this
-    # prefix beats the image regex below; that one's caching is repeated in the nested block,
-    # and so are the headers, since an add_header replaces the inherited set (see the top).
-    location ^~ ${BASE_PATH}/exercise-media/ {
-        rewrite ^\Q${BASE_PATH}\E/(.*)$ /$1 break;
-        add_header Cross-Origin-Resource-Policy "same-origin" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "same-origin" always;
-        add_header Content-Security-Policy "${CONTENT_SECURITY_POLICY}" always;
-        location ~* \.(png|jpg|jpeg|gif|webp|avif|mp4)$ {
-            rewrite ^\Q${BASE_PATH}\E/(.*)$ /$1 break;
-            add_header Cache-Control "public, max-age=2592000, immutable";
-            add_header Cross-Origin-Resource-Policy "same-origin" always;
-            add_header X-Frame-Options "DENY" always;
-            add_header X-Content-Type-Options "nosniff" always;
-            add_header Referrer-Policy "same-origin" always;
-            add_header Content-Security-Policy "${CONTENT_SECURITY_POLICY}" always;
-        }
-    }
 
     # Images and fonts never change → cache hard.
     # `expires` would add a second Cache-Control of its own (plus an Expires header) on top of the

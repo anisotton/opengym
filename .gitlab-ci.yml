@@ -533,8 +533,7 @@ build:apk:
       cd frontend
       npm ci
       # VITE_MOBILE build + `cap sync` into android/. The mobile flavor talks to no
-      # backend at all: no sign-in, no sync. The 180 px exercise media from catalogue/media are
-      # packed into the app; a release built locally sets APP_MEDIA_DIR for larger ones.
+      # backend at all: no sign-in, no sync.
       npm run build:mobile
       VER="$(node -p "require('./package.json').version")"
       cd android

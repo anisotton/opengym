@@ -10,7 +10,7 @@ import { DEF, useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
 import { exercisePicker } from './sheets.jsx'
 import Library from './views/Library.jsx'
-import { EXDB } from './lib/exercises.js'
+import { EXDB, LIBRARY_CATALOGUE } from './lib/exercises.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const mounted = []
@@ -66,7 +66,7 @@ describe('exercise search clear button', () => {
       act(() => type(host.querySelector('.search input'), 'stretch'))
       act(() => clear(host).click())
       expect(host.querySelector('.search input').value).toBe('')
-      expect(Number(count(host).textContent)).toBe(EXDB.filter(e => e.bp === 'neck').length)
+      expect(Number(count(host).textContent)).toBe(LIBRARY_CATALOGUE.filter(e => e.bp === 'neck').length)
     })
   }
 })

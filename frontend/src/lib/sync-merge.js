@@ -401,7 +401,7 @@ const workoutTime = w => Number(w?._ts) || Number(w?.end) || Number(w?.start) ||
 const bodyweightKey = e => `${e?.d}|${e?.t ?? ''}`
 const RESET_LISTS = {
   workouts: workoutKey, routines: x => x?.id, customEx: x => x?.id, bodyweight: bodyweightKey,
-  measurements: bodyweightKey, gymCards: x => x?.id, equipProfiles: x => x?.id, favEx: x => x,
+  measurements: bodyweightKey, gymCards: x => x?.id, equipProfiles: x => x?.id, favEx: x => x, teacherLibrary: x => x?.id,
 }
 const RESET_MAPS = ['exNotes', 'barWeights', ...STAMPED_MAPS]
 /** An entry's name in resetIds: a workout's id (or day and start), a weigh-in's day and time, … */
@@ -457,6 +457,7 @@ export function sinceReset(S, at, ids) {
     out.customEx = list(S.customEx).filter(c => c && after(c._ts))
     out.bodyweight = list(S.bodyweight).filter(e => e && after(e.t))
     out.measurements = list(S.measurements).filter(e => e && after(e.t))
+    out.teacherLibrary = list(S.teacherLibrary).filter(r => r && after(r._ts))
     // No time of their own: taken for what they were before the reset, which cleared them.
     out.equipProfiles = []
     out.gymCards = []
@@ -791,7 +792,7 @@ export function mergeStates(a0, b0, { prefer } = {}) {
     }
   }
   out.workouts.sort(byDayStart)
-  for (const f of ['routines', 'customEx', 'equipProfiles', 'gymCards']) {
+  for (const f of ['routines', 'customEx', 'equipProfiles', 'gymCards', 'teacherLibrary']) {
     if (list(n[f]).length || list(o[f]).length) out[f] = (f === 'routines' ? unionByNeighbours : unionById)(n[f], o[f]).map(clone)
   }
   // The routines in the order chosen last (`edited.routineOrder`), the newer copy's without a
@@ -817,6 +818,16 @@ export function mergeStates(a0, b0, { prefer } = {}) {
         return alt ? mergeEntry(x, alt) : x
       })
     }
+  }
+  // The teacher's own reusable library (ISO-1610, lib/teacher.js) — a namespace of its own, kept
+  // on the account's S.teacherLibrary and never unioned with S.routines, so an edit here can never
+  // collide with (or get mixed into) a personal plan edit. Same "version edited last" rule.
+  if (!prefer && out.teacherLibrary) {
+    const other = new Map(list(o.teacherLibrary).filter(r => r?.id != null).map(r => [r.id, r]))
+    out.teacherLibrary = out.teacherLibrary.map(r => {
+      const alt = r?.id != null && other.get(r.id)
+      return alt && (alt._ts || 0) > (r._ts || 0) ? clone(alt) : r
+    })
   }
   out.bodyweight = mergeBodyweight(n.bodyweight, o.bodyweight).map(clone)
   // A day's body measurements are one check-in, kept and merged the way a weigh-in is.
@@ -1102,6 +1113,21 @@ export function stampCustomEx(prev = [], next = [], now = Date.now()) {
 
 /** stampCustomEx for any list of entries with ids: equipment profiles, gym cards. */
 export function stampEntries(prev = [], next = [], now = Date.now()) { return stampCustomEx(prev, next, now) }
+/**
+ * Stamps `_ts` on every reusable library routine of `next` that is new or differs from its
+ * version in `prev`, the same rule as stampRoutines — a separate function, not a shared call with
+ * it, because the two arrays (S.routines vs S.teacherLibrary) must never be compared against each
+ * other. The store runs it on every change (useStore update). Mutates and returns `next`.
+ */
+export function stampTeacherLibrary(prev = [], next = [], now = Date.now()) {
+  const before = new Map(list(prev).filter(r => r?.id != null).map(r => [r.id, r]))
+  for (const r of list(next)) {
+    if (!r || r.id == null) continue
+    const old = before.get(r.id)
+    if (!old || (old !== r && !sameRoutine(old, r))) r._ts = now
+  }
+  return next
+}
 
 // What `local` holds that `server` does not: the workouts and weigh-ins a device logged while it
 // was signed out, and the custom exercises they use. Sign-in asks about these before the server's

@@ -16,10 +16,9 @@ issue. As tabelas abaixo dizem onde cada valor vem de, não o valor em si.
 
 1. Novo recurso → **Docker Compose** → aponte para o `docker-compose.yml` da branch
    `release/0.0.0-alpha` do fork `anisotton/opengym` (não o `DuarteSantos8/openGym` upstream —
-   é o fork que tem o `/api/health` com banco, ISO-1400). Desde o merge do openGym v1.4.2
-   (25/10/2026) a mídia dos exercícios vem dentro da imagem `web` (`catalogue/media`, licença
-   Gym visual em `catalogue/media/NOTICE.md` — a passar pelo advogado antes do lançamento pago);
-   não há mais serviço nem profile `media`.
+   é o fork que tem o `/api/health` com banco, ISO-1400). A mídia dos exercícios é só a da
+   Brilhart (128 exercícios, dentro do bundle do `web`, ISO-1601/1638); o catálogo de mídia do
+   openGym (licença Gym visual) não entra — não há serviço nem profile `media`.
 2. Volumes persistentes — confirme que os dois sobrevivem a um redeploy:
    - `pgdata` (volume nomeado do `db`, dados de PostgreSQL).
    - `./data` (bind mount do `api` — contas, passkeys, `secret`, `vapid.json`, uploads).
@@ -32,9 +31,8 @@ issue. As tabelas abaixo dizem onde cada valor vem de, não o valor em si.
    Postgres nem em Redis. Uma segunda réplica faria metade dos logins e das tentativas
    caírem num processo que nunca viu o desafio ou o contador — falhas intermitentes, difíceis
    de reproduzir. O `web` (nginx) pode ter quantas réplicas quiser; só o `api` é restrito a uma.
-4. Build: nada além do que já está no
-   `docker-compose.yml` — não é preciso `API_TARGET=coach` (isso ligaria o runtime do Coach, e
-   o Coach fica desligado nesta fase, item 2 abaixo).
+4. Build: nada além do que já está no `docker-compose.yml` — não é preciso `API_TARGET=coach`
+   (isso ligaria o runtime do Coach, e o Coach fica desligado nesta fase, item 2 abaixo).
 
 ## 2. Variáveis de ambiente
 
@@ -49,14 +47,16 @@ deve estar ausente do `.env.example`, e nenhuma obrigatória deve faltar na tabe
 | `RP_NAME` | `Brilhart Fitness` — nome mostrado no diálogo de passkey do sistema | Não |
 | `ALLOW_GUEST` | `0` — remove "Continuar sem conta"; instância de uso identificado, não anônimo | Não |
 | `INVITE_ONLY` | `0` por enquanto (beta fechado controla quem convida de outro jeito); revisitar quando o controle de convites for decidido | Não |
-| `PASSWORD_LOGIN` | `0` — passkey é o único jeito de entrar nesta fase | Não |
+| `PASSWORD_LOGIN` | `1` — e-mail (verificado) ou nome + senha como caminho de primeira classe ao lado da passkey (ISO-1596); `.env.example` já traz isso como padrão do fork | Não |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | gere a senha com `openssl rand -base64 24` (ou o gerador do Coolify); usuário/banco podem ficar `opengym`/`opengym` | `POSTGRES_PASSWORD` é segredo |
 | `DATABASE_URL` | **não defina** — o próprio `docker-compose.yml` monta a partir dos três `POSTGRES_*` acima, apontando para o serviço `db` | — |
 | `MAIL_PROVIDER` | deixe **sem definir** por enquanto (ver "Sem dados reais" acima) — sem provedor, e-mails de confirmação/recuperação vão só para o log do container; o Anderson decide o provedor de produção depois | Não |
 | `MAIL_API_KEY` / `MAIL_FROM` | só quando `MAIL_PROVIDER` for ligado — ver `docs/SELF_HOSTING.md` ("Verificação de e-mail") | `MAIL_API_KEY` é segredo |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | deixe **sem definir** por enquanto — ver "Entrar com Google" na seção 3 abaixo para quando o Anderson decidir ligar | `GOOGLE_CLIENT_SECRET` é segredo |
 | `STRIPE_API_KEY` | chave **restrita** (`rk_...`) do Dashboard Stripe — **sandbox primeiro** (Developers → API keys, modo de teste) | Segredo |
 | `STRIPE_WEBHOOK_SECRET` | gerado ao criar o endpoint de webhook no passo 4 | Segredo |
 | `STRIPE_PRICE_MONTHLY` / `STRIPE_PRICE_QUARTERLY` / `STRIPE_PRICE_YEARLY` / `STRIPE_PRICE_INTRO` | saída de `cd api && STRIPE_API_KEY=rk_... npm run stripe:setup` contra a conta sandbox (ver `docs/SELF_HOSTING.md` §7) | Não (são ids de Price, públicos) |
+| `BILLING_ADMIN_LIVE` | **não defina** enquanto `STRIPE_API_KEY` for sandbox (`rk_test_…`) — a chave `rk_` restrita já não tem a mesma livemode de uma `sk_live_`, mas o gate (`api/billing.js`'s `stripeIsLive()`) é por prefixo da chave: só importa no dia em que este ambiente trocar para uma chave live, e mesmo aí o padrão é ficar de fora (ver "Catálogo de planos" abaixo) | Não |
 | `ADMIN_UIDS` | **vazio no primeiro deploy.** Depois do primeiro cadastro de teste, copie o id em Settings → Conta → Account ID (ou `docker compose exec db psql -U opengym -c "SELECT id, name FROM users"`) e redeploy com esse id aqui | Não |
 | `COACH_DISABLED` | `1` — trava o Coach desligado, independente do toggle do admin (`AdminCoach.jsx` mostra "Force-disabled by COACH_DISABLED" no lugar do toggle) | Não |
 | `TRUST_PROXY` | **não toque** — já vem `1` por padrão no `docker-compose.yml` porque a API só é alcançada através do `web` | — |
@@ -69,8 +69,9 @@ Variáveis que existem no `.env.example` mas **não entram aqui por enquanto**: 
 (opcional, usa o padrão derivado de `ORIGIN`), `DEFAULT_LANG` (opcional, deixe a app detectar o
 idioma do navegador), `AUDIT_*` (fica nos padrões — log ligado, sem IP), `SESSION_DAYS` (fica no
 padrão de 90), `MEDIA_*` (ficam nos padrões do upload de fotos/vídeos de exercícios próprios),
-`PROGRAM_*` (ficam nos padrões do catálogo de programas), `HEVY_API_KEY` (uso de desenvolvedor,
-nunca em produção).
+`PROGRAM_*` (ficam nos padrões do catálogo de programas), `GOOGLE_REDIRECT_URI` (opcional — só
+precisa de valor próprio se a API responder num endereço público diferente de `APP_URL`, o que não
+é o caso aqui), `HEVY_API_KEY` (uso de desenvolvedor, nunca em produção).
 
 ## 3. Domínio e HTTPS
 
@@ -82,6 +83,23 @@ nunca em produção).
 3. **Passkeys só funcionam com o `RP_ID` igual ao hostname exato do navegador.** Se o domínio
    mudar depois, toda passkey já registrada para de funcionar — contas teriam que se cadastrar
    de novo. Por isso, confirme `fit.brilhart.com.br` antes de qualquer cadastro de teste real.
+
+### Entrar com Google (quando for ligar)
+
+Fora do escopo do primeiro deploy (tabela da seção 2 deixa `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+sem definir), mas o domínio real já estar decidido aqui (`fit.brilhart.com.br`) é o que faz essa
+etapa valer a pena documentar agora, não depois:
+
+1. No [Google Cloud Console](https://console.cloud.google.com/apis/credentials), crie um cliente
+   OAuth do tipo **Web application**.
+2. **Redirect URI autorizado**: `https://fit.brilhart.com.br/api/auth/google/callback` — exatamente
+   esse domínio, sem variação. **O Google só aceita um redirect URI em domínio de TLD público ou
+   em `localhost` literal** — nunca em `.lyra`, `.local`, IP nu ou certificado autoassinado; por
+   isso este passo não pode ser testado em ambiente interno Lyra, só contra o domínio real depois
+   do DNS e do certificado da seção 3 já estarem no ar.
+3. Copie o client id e o client secret para `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` no Coolify e
+   redeploy. Detalhes de comportamento (o que muda nas telas, a regra do último jeito de entrar, a
+   reautenticação para uma conta só-Google) estão em `docs/SELF_HOSTING.md` ("Sign in with Google").
 
 ## 4. Webhook da Stripe
 
@@ -102,6 +120,37 @@ nunca em produção).
    `api`) — o handler loga qualquer erro de verificação de assinatura ou de processamento do
    evento. O próprio Dashboard Stripe também mostra, por evento, se a entrega teve 200 ou erro,
    e deixa reenviar manualmente.
+
+### Catálogo de planos (migração `010_billing_catalog.sql`, ISO-1623)
+
+A migração só cria tabelas novas (`billing_plans`/`billing_prices`/`billing_admin_actions`) —
+nenhuma tabela existente é tocada, então o redeploy é seguro mesmo antes de qualquer semeadura
+rodar. No boot seguinte com billing ligado, `seedCatalogFromEnv` (`api/billing.js`) lê os quatro
+`STRIPE_PRICE_*` da Stripe e preenche o catálogo uma única vez; se a validação falhar (moeda
+diferente de BRL, intervalo inesperado, ou `livemode` do Price divergindo do modo da chave), o
+catálogo fica vazio e o billing continua lendo `STRIPE_PRICE_*` direto, exatamente como antes
+desta migração — nada quebra, só o catálogo não aparece. Detalhes e rollback:
+`docs/SELF_HOSTING.md` §7 ("The catalog").
+
+### Administração do catálogo (ISO-1619/ISO-1630)
+
+`/api/admin/billing/catalog/*` (precisa de `ADMIN_UIDS`) é onde um admin cria oferta, ativa/
+desativa plano, publica nova versão de valor e reordena — tudo documentado em
+`docs/SELF_HOSTING.md` ("Managing the catalog"). Três coisas valem a atenção do Anderson neste
+deploy, especificamente por ser sandbox:
+
+- **O gate de live (`BILLING_ADMIN_LIVE`).** Toda escrita admin que chama a Stripe (criar oferta,
+  ativar/desativar, nova versão, publicar) se recusa com `423 live-writes-disabled` sempre que a
+  chave configurada for live (`sk_live_`/`rk_live_`) e `BILLING_ADMIN_LIVE=1` não estiver
+  definido. Com a chave sandbox deste ambiente (`rk_test_…`), o gate nunca fecha — é só o
+  comportamento esperado no dia em que a chave virar live: nenhuma escrita acidental contra
+  dinheiro real sem essa variável ligada de propósito.
+- **Reordenar não passa pelo gate.** `POST .../order` é só banco (sort_order) — continua
+  funcionando mesmo com uma chave live e `BILLING_ADMIN_LIVE` desligado.
+- **Reconcile (`POST .../reconcile`)** é a ferramenta para quando a Stripe e o catálogo
+  divergirem — um Price criado direto no Dashboard, ou uma escrita admin cujo lado Stripe deu
+  certo mas o lado banco não chegou a confirmar (o `billing_admin_actions` da escrita original
+  mostra o `priceId` que ela tentou criar). Ele só lê a Stripe; nunca escreve lá.
 
 ## 5. Monitoramento
 

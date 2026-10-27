@@ -202,26 +202,12 @@ describe('the workout\'s animations for the watch', () => {
     const clips = clipsFor(state(), {})
     expect(clips.map(c => c.exId)).toEqual(['0025', '0001'].filter(id => EXIDX[id]?.gif))
     for (const c of clips) {
-      expect(c.path).toMatch(/^exercise-media\/clip\/[^/]+\.(mp4|webp)$/)
+      expect(c.path).toMatch(/^brilhart\/gif\/[^/]+\.gif$/)
       expect(c.packId).toBeUndefined()
     }
     expect(clipsFor({ active: null }, {})).toEqual([])
   })
 
-  it('or the downloaded 240 px pack of the figure, when it is there', async () => {
-    const { clipsFor } = await import('./watch-sync.js')
-    const packs = { 'anim-240-male': { state: 'ready', base: 'opengym-pack://anim-240-male' } }
-    const clips = clipsFor(state(), packs)
-    expect(clips.length).toBeGreaterThan(0)
-    for (const c of clips) {
-      expect(c.packId).toBe('anim-240-male')
-      expect(c.drawing).toMatch(/^[A-Za-z0-9_-]+$/)
-      expect(c.path).toBeUndefined()
-    }
-    // a pack that is not ready, or of the other figure, is not used
-    expect(clipsFor(state(), { 'anim-240-female': { state: 'ready' } })[0].path).toBeDefined()
-    expect(clipsFor(state(), { 'anim-240-male': { state: 'downloading' } })[0].path).toBeDefined()
-  })
 })
 
 describe('the sync cases on the phone', () => {

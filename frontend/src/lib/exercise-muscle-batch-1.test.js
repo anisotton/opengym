@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BODYPARTS, EXDB, EXIDX, registerCustom } from './exercises.js'
+import { BODYPARTS, EXDB, EXIDX, registerCustom, CATALOGUE } from './exercises.js'
 import { COMPOUND_LIFT_BATCH_1, USER_EXERCISE_MUSCLE_OVERRIDES } from './exercise-muscle-batch-1.js'
 import { MUSCLES, musclesOf, muscleWeightsOf } from './muscles.js'
 
@@ -71,7 +71,10 @@ describe('compound-lift muscle metadata batch 1', () => {
   it('marks the cross-region lifts as Full body while keeping classic areas available', () => {
     expect(EXIDX['0069']).toMatchObject({ bp: 'full body', primaries: ['quadriceps', 'gluteal', 'adductors'] })
     expect(EXIDX['0032'].bp).toBe('full body')
-    expect(BODYPARTS).toContain('full body')
+    // BODYPARTS (exercises.js) is now scoped to the library-visible catalogue (ISO-1638) and
+    // may not include 'full body' at all — CATALOGUE is the right place to check that the
+    // overlay itself produced the body part, regardless of what the library currently shows.
+    expect(CATALOGUE.map(e => e.bp)).toContain('full body')
     expect(EXIDX['0025'].bp).toBe('chest')
     expect(EXIDX['0652'].bp).toBe('back')
   })

@@ -84,7 +84,7 @@ async function startServer(t, { env = {}, users = [], creds = [], deviceLinks } 
   const h = await spawnApi(t, { dataDir, env: { ORIGIN, PASSWORD_LOGIN: '1', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env } });
   h.req = async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
     // This fork's sign-up asks for the terms version and a birth date (ISO-1390/1521).
-    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-18' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-25' };
     if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
@@ -108,7 +108,8 @@ const user = (id, name, extra = {}) => ({ id, name, created: new Date().toISOStr
 const withPassword = (id, name) => user(id, name, { pw: { h: pwHash, set: new Date().toISOString() } });
 
 
-const registerPassword = (h, name, ip) => h.req('POST', '/api/register/password', { body: { name, password: GOOD }, ip });
+// ISO-1596: a password signup needs a (unique) e-mail too.
+const registerPassword = (h, name, ip) => h.req('POST', '/api/register/password', { body: { name, password: GOOD, email: name.toLowerCase() + '@example.com' }, ip });
 async function registerPasskey(h, name, ip) {
   // This fork asks for an e-mail at passkey sign-up (ISO-1397).
   const opt = await h.req('POST', '/api/register/options', { body: { name, email: name.toLowerCase() + '@example.com' }, ip });

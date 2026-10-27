@@ -5,11 +5,11 @@ import { useUI } from '../store/useUI.js'
 import { api } from '../lib/api.js'
 import { fmtDate, fmtNum } from '../lib/format.js'
 import { auditCat, auditLine, fmtWhen } from '../lib/audit.js'
-import { fmtCentsBRL } from '../lib/billing.js'
 import { confirmSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
 import AdminCoach from './AdminCoach.jsx'
+import AdminBilling, { SubscriptionPanel } from './AdminBilling.jsx'
 import AdminPrograms from './AdminPrograms.jsx'
 import '../admin.css'
 
@@ -37,28 +37,39 @@ function ResetCodeSheet({ name, email, code, expires, close }) {
   const copy = () => { navigator.clipboard?.writeText(code).catch(() => {}); toast('Copied') }
   return <>
     <h3>Reset code for {name}</h3>
-    <div className="adm-lead">Give them this code. They choose “Sign in with password” → “Have a reset code from your admin?”, enter their name <b>{name}</b>{email && <> (or their sign-in e-mail <b>{email}</b>)</>}, the code and a new password. It works once, until {new Date(expires).toLocaleString()}, and will not be shown again.</div>
+    <div className="adm-lead">Give them this code. They choose “Sign in with password” → “Have a reset code from your admin?”, enter their name <b>{name}</b>{email && <> (or their e-mail <b>{email}</b>)</>}, the code and a new password. It works once, until {new Date(expires).toLocaleString()}, and will not be shown again.</div>
     <button className="adm-code" style={{ fontSize: 22, width: '100%', padding: '14px 0' }} onClick={copy} aria-label="copy code">{code}</button>
     <div style={{ height: 12 }} />
     <Button variant="primary" onClick={close}>Done</Button>
   </>
 }
 
-// Plan names the admin's own account+subscription tiles word the same way SettingsPlan does —
-// fmtCentsBRL/dayOf-style formatting, not a fetched label, since GET /api/admin/user hands back
-// the same shape GET /api/billing/status does (ISO-1447).
-const PLAN_NAME = { monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly' }
-
 function UserDetail({ id, viewerOwner, onChanged, close }) {
   const [d, setD] = useState(null)
   const toast = useUI(s => s.toast)
   const openSheet = useUI(s => s.openSheet)
-  useEffect(() => { api('/api/admin/user?id=' + encodeURIComponent(id)).then(setD).catch(e => toast(e.message)) }, [id])
+  const reload = () => api('/api/admin/user?id=' + encodeURIComponent(id)).then(setD).catch(e => toast(e.message))
+  useEffect(() => { reload() }, [id])
   if (!d) return <div className="muted small">Loading…</div>
   const u = d.user
+  // Grant/revoke the teacher role (ISO-1594/ISO-1610). Reloads this sheet's own data (not just
+  // onChanged's list refresh) so the Role card updates in place without closing, same as the
+  // disable/enable toggle above it would if it had one.
+  const setTeacherRole = role => api('/api/admin/user/role', { method: 'POST', body: JSON.stringify({ id: u.id, role }) })
+    .then(() => { toast(role === 'teacher' ? 'Now a teacher.' : 'Teacher role revoked.'); reload(); onChanged() })
+    .catch(e => toast(e.message))
+  const revokeTeacher = () => confirmSheet({
+    title: 'Revoke teacher role?',
+    message: u.studentCount > 0
+      ? `${u.studentCount} student link(s) will end immediately. Routines already assigned stay with each student — this only removes this account's access to their training data. Any notes this teacher wrote about their students are deleted too.`
+      : 'No students linked — this account loses teacher access.',
+    confirmText: 'Revoke', danger: true,
+    onConfirm: () => setTeacherRole('student'),
+  })
   // No workout, body-weight or routine data reaches this screen at all any more (ISO-1394 Phase
-  // 4, LGPD) — GET /api/admin/user only ever answers account and subscription fields now.
-  const sub = d.subscription
+  // 4, LGPD) — GET /api/admin/user only ever answers account fields now; its own `subscription`
+  // summary is superseded by <SubscriptionPanel> below (ISO-1627), which reads the fuller
+  // GET /api/admin/user/billing ficha instead.
   const doDelete = () => {
     api('/api/admin/user/delete', { method: 'POST', body: JSON.stringify({ id: u.id }) })
       .then(() => { toast('Account deleted'); onChanged(); close() })
@@ -97,20 +108,31 @@ function UserDetail({ id, viewerOwner, onChanged, close }) {
     <h3 className="capitalize">{u.name}</h3>
     <div className="row" style={{ gap: 6, flexWrap: 'wrap', margin: '8px 0 12px' }}>
       {u.owner ? <span className="adm-pill acc">owner</span> : u.admin && <span className="adm-pill acc">admin</span>}
+      {u.role === 'teacher' && <span className="adm-pill acc">teacher · {u.studentCount ?? 0} student{u.studentCount === 1 ? '' : 's'}</span>}
       {u.disabled && <span className="adm-pill bad">disabled</span>}
       {u.invitedBy && <span className="adm-pill">invite {u.invitedBy}</span>}
       {u.password && <span className="adm-pill">password</span>}
-      {/* The sign-in e-mail (password instances only): shown to admins and nobody else. */}
-      {u.email && <span className="adm-pill" title="sign-in e-mail">{u.email}</span>}
+      {/* The account's verified e-mail (ISO-1397/1596, password instances only): shown to admins and nobody else. */}
+      {u.email && <span className="adm-pill" title="e-mail">{u.email}</span>}
       {u.resetUntil && <span className="adm-pill acc">reset code until {new Date(u.resetUntil).toLocaleString()}</span>}
       <span className="adm-pill">joined {u.created ? fmtDate(u.created.slice(0, 10)) : '–'}</span>
     </div>
     <h4 className="sec">Account</h4>
     <div className="tiles" style={{ textAlign: 'start' }}>
-      <div className="tile"><div className="l">Plan</div><div className="v" style={{ fontSize: '1.1rem' }}>{sub ? (PLAN_NAME[sub.plan] || sub.plan || '–') : '–'}</div></div>
-      <div className="tile"><div className="l">Status</div><div className="v" style={{ fontSize: '1.1rem' }}>{sub?.status || '–'}</div></div>
-      <div className="tile"><div className="l">Next charge</div><div className="v" style={{ fontSize: '.95rem' }}>{sub?.nextChargeDate ? fmtDate(sub.nextChargeDate.slice(0, 10)) + (sub.nextChargeAmount != null ? ' · ' + fmtCentsBRL(sub.nextChargeAmount) : '') : '–'}</div></div>
       <div className="tile"><div className="l">Last sync</div><div className="v" style={{ fontSize: '.95rem' }}>{rel(d.lastSync)}</div></div>
+    </div>
+    {/* The old Plan/Status/Next charge tiles above are replaced by this panel (ISO-1619/ISO-1627)
+        — a bigger payload (full subscription history + the 7 admin actions), loaded lazily
+        rather than folded into GET /api/admin/user's own, smaller answer. */}
+    <SubscriptionPanel userId={u.id} />
+    {/* ISO-1594/ISO-1610: grant/revoke the teacher role. Not gated by !u.admin below — an admin
+        can also be a teacher (D11: the plan never ties the two roles together). */}
+    <h4 className="sec">Role</h4>
+    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', margin: '0 0 12px' }}>
+      <div>{u.role === 'teacher' ? `Teacher · ${u.studentCount ?? 0} student${u.studentCount === 1 ? '' : 's'}` : 'Student'}</div>
+      <button className="btn" onClick={() => u.role === 'teacher' ? revokeTeacher() : setTeacherRole('teacher')}>
+        {u.role === 'teacher' ? 'Revoke' : 'Make teacher'}
+      </button>
     </div>
     {viewerOwner && !u.owner && !u.disabled && <>
       <button className="btn" style={{ margin: '12px 0 4px' }}
@@ -335,6 +357,8 @@ export default function Admin() {
         page on a box that never enabled it is byte-for-byte the page it was before. */}
     <AdminCoach />
 
+    <AdminBilling />
+
     <AdminPrograms />
 
     <InvitesCard invites={invites} reload={loadInvites} inviteOnly={inviteOnly} />
@@ -344,9 +368,9 @@ export default function Admin() {
       <div className="adm-lead">Everyone with a profile on this instance. Tap one to see their account and subscription, to disable it (nothing is deleted) or to delete it with all their data for good.</div>
       <div className="list">
         {(users || []).map(u => <div key={u.id} className="item" onClick={() => openUser(u.id)} style={u.disabled ? { opacity: .55 } : null}>
-          <div className="grow"><div className="tt">{u.online && <Icon name="dot" style={{ fontSize: 9, color: 'var(--green)', display: 'inline-block', marginInlineEnd: 5 }} />}{u.name} {u.owner ? <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>owner</span> : u.admin && <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>admin</span>}{u.disabled && <span className="adm-pill bad" style={{ marginInlineStart: 4 }}>disabled</span>}</div>
+          <div className="grow"><div className="tt">{u.online && <Icon name="dot" style={{ fontSize: 9, color: 'var(--green)', display: 'inline-block', marginInlineEnd: 5 }} />}{u.name} {u.owner ? <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>owner</span> : u.admin && <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>admin</span>}{u.role === 'teacher' && <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>teacher</span>}{u.disabled && <span className="adm-pill bad" style={{ marginInlineStart: 4 }}>disabled</span>}</div>
             <div className="ss">{u.online ? 'online' : 'last sync ' + rel(u.lastSync)}</div>
-            {u.email && <div className="ss" title="sign-in e-mail">{u.email}</div>}</div>
+            {u.email && <div className="ss" title="e-mail">{u.email}</div>}</div>
           {u.hasPush && <Icon name="bell" title="push notifications on" style={{ fontSize: 15, color: 'var(--label-3)' }} />}<Icon name="chevronRight" className="chev" />
         </div>)}
         {users && !users.length && <div className="adm-empty">No users yet.</div>}

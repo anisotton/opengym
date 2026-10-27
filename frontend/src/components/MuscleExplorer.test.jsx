@@ -51,7 +51,16 @@ afterEach(() => { act(() => { mounted.splice(0).forEach(root => root.unmount()) 
 describe('MuscleExplorer body-part chips keep the equipment filter', () => {
   // Biceps has dumbbell exercises under both "lower arms" and "upper arms" in the catalog, the
   // same shape as issue #71's original repro (lower arms/upper arms + dumbbell).
+  // Since ISO-1638 the library-visible catalogue is all body weight: two custom exercises (always
+  // visible) supply the dumbbell option under both body parts, the shape issue #71 needs.
+  const dumbbells = () => { mocks.S.customEx = [
+    { id: 'custom-dumb-lower', n: 'Custom lower-arm curl', custom: true, bp: 'lower arms', eq: 'dumbbell', tg: 'biceps', sm: [], st: [] },
+    // a second equipment under lower arms, or the explorer has no equipment strip to show there
+    { id: 'custom-bar-lower', n: 'Custom lower-arm barbell curl', custom: true, bp: 'lower arms', eq: 'barbell', tg: 'biceps', sm: [], st: [] },
+    { id: 'custom-dumb-upper', n: 'Custom upper-arm curl', custom: true, bp: 'upper arms', eq: 'dumbbell', tg: 'biceps', sm: [], st: [] },
+  ] }
   it('keeps the dumbbell filter when switching from lower arms to upper arms', () => {
+    dumbbells()
     const host = render()
     act(() => { muscleChip(host, 'Biceps').click() })
 
@@ -72,6 +81,7 @@ describe('MuscleExplorer body-part chips keep the equipment filter', () => {
   // "All" body parts is the one chip that does clear the equipment filter — it spans every
   // body part, so there is no "still valid here" question to answer.
   it('"All" body parts still clears the equipment filter', () => {
+    dumbbells()
     const host = render()
     act(() => { muscleChip(host, 'Biceps').click() })
     act(() => { chipByText(host, 'lower arms').click() })

@@ -287,9 +287,9 @@ const effortOf = S => {
 /* ---------- window + aggregates ---------- */
 const iso = d => d.toISOString().slice(0, 10);
 
-export function reviewWindow(S, since) {
+export function reviewWindow(S, since, now = new Date()) {
   const all = (S.workouts || []).filter(w => w && w.d);
-  const cutoffDate = new Date(); cutoffDate.setDate(cutoffDate.getDate() - MAX_WEEKS * 7);
+  const cutoffDate = new Date(now); cutoffDate.setDate(cutoffDate.getDate() - MAX_WEEKS * 7);
   const cutoff = iso(cutoffDate);
   const from = since && since > cutoff ? since : cutoff;
   return all.filter(w => w.d >= from).slice(-MAX_SESSIONS);
@@ -472,17 +472,22 @@ export function workoutMeta(S, workoutId) {
  * Build a job payload.
  *
  * @param {object} S      the profile's synced state
- * @param {object} opts   { handle, kind, intake?, note?, refine?, previous?, workoutId?, cohort?, lang? }
+ * @param {object} opts   { handle, kind, intake?, note?, refine?, previous?, workoutId?, cohort?, lang?, now? }
  *
  * `handle` is the opaque per-profile pseudonym the payload carries instead of a uid. It is
  * supplied rather than derived because the two runtimes mint it differently: the server keys
  * an HMAC on its instance secret (api/coach/handle.js), the phone draws a random one once and
  * keeps it. Either way it is 16 characters and never the uid.
+ *
+ * `opts.now` lets a caller pin "today" (defaults to the real clock) — a review's window is
+ * MAX_WEEKS back from it, so a test with fixed workout dates needs this to stay deterministic
+ * rather than drifting out of the window as the real calendar moves on (ISO-1617).
  */
 export function build(S, opts = {}) {
   if (typeof opts.handle !== 'string' || !opts.handle) throw new Error('payload.build: opts.handle is required');
   const coach = S.coach || {};
   const profile = opts.intake || coach.profile || null;
+  const now = opts.now ? new Date(opts.now) : new Date();
   const p = {
     coach_contract: CONTRACT,
     task: opts.kind === 'review' ? 'review' : opts.kind === 'debrief' ? 'debrief' : 'create',
@@ -494,7 +499,7 @@ export function build(S, opts = {}) {
       lang: langTag(opts.lang) || word(S.lang, 16) || 'en',
       unit: word(S.unit, 8) || 'kg',
       effortScale: effortOf(S),
-      today: iso(new Date())
+      today: iso(now)
     },
     coachProfile: profile && typeof profile === 'object' ? cleanProfile(profile) : null,
     plan: cleanPlan(S)
@@ -542,7 +547,7 @@ export function build(S, opts = {}) {
     }
     if (opts.cohort) p.cohort = cleanCohort(opts.cohort);
   } else if (opts.kind === 'review') {
-    const workouts = reviewWindow(S, coach.lastReview?.at ? String(coach.lastReview.at).slice(0, 10) : null);
+    const workouts = reviewWindow(S, coach.lastReview?.at ? String(coach.lastReview.at).slice(0, 10) : null, now);
     const detailFrom = Math.max(0, workouts.length - FULL_DETAIL_SESSIONS);
     p.window = {
       from: day(workouts[0]?.d),

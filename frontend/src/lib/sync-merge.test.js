@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { highestStamp, stampChange, keepReset, localExtras, mergeDeletions, stampDeletions, stampEdits, mergeBodyweight, mergeResetIds, mergeStampedMap, mergeStates, newerOf, resetIdsOf, RESET_ID_MAX, sinceReset, stampCustomEx, stampRoutines, stampWorkout, unionById } from './sync-merge.js'
+import { highestStamp, stampChange, keepReset, localExtras, mergeDeletions, stampDeletions, stampEdits, mergeBodyweight, mergeResetIds, mergeStampedMap, mergeStates, newerOf, resetIdsOf, RESET_ID_MAX, sinceReset, stampCustomEx, stampRoutines, stampWorkout, unionById, stampTeacherLibrary } from './sync-merge.js'
 import { mergeImport } from './import-csv.js'
 import { convertBodyWeight, convertStateUnit, convertWeight } from './units.js'
 import { retimeWorkout } from './workout-date.js'
@@ -475,6 +475,46 @@ describe('custom exercises keep the version edited last', () => {
   })
 })
 
+// ISO-1610: the teacher's own reusable library (S.teacherLibrary) merges exactly like routines —
+// same rule, own array — and must never bleed into S.routines on either side of a merge.
+describe('teacherLibrary keeps the version edited last, and never mixes with routines', () => {
+  const lib = (id, reps, ts) => ({ id, name: id, ex: [{ id: 'bench', sets: 3, reps }], ...(ts != null ? { _ts: ts } : {}) })
+
+  it('the older copy\'s entry wins when it was edited after the newer copy\'s, same as routines', () => {
+    const phone = base({ _ts: 100, teacherLibrary: [lib('a', 15, 90)] })
+    const desk = base({ _ts: 200, restSec: 60, teacherLibrary: [lib('a', 10, 20)] })
+    const m = mergeStates(phone, desk)
+    expect(m.restSec).toBe(60)
+    expect(m.teacherLibrary.find(x => x.id === 'a').ex[0].reps).toBe(15)
+    expect(mergeStates(desk, phone).teacherLibrary).toEqual(m.teacherLibrary)
+  })
+
+  it('a routine and a teacherLibrary entry sharing the same id never merge into one another', () => {
+    const a = base({ _ts: 100, routines: [{ id: 'x', name: 'personal', ex: [] }], teacherLibrary: [] })
+    const b = base({ _ts: 200, routines: [], teacherLibrary: [{ id: 'x', name: 'for students', ex: [] }] })
+    const m = mergeStates(a, b)
+    expect(ids(m.routines)).toEqual(['x'])
+    expect(m.routines[0].name).toBe('personal')
+    expect(ids(m.teacherLibrary)).toEqual(['x'])
+    expect(m.teacherLibrary[0].name).toBe('for students')
+  })
+
+  it('stampTeacherLibrary stamps a new or edited entry and leaves the rest alone', () => {
+    const prev = [lib('push', 10, 5), lib('pull', 8, 6)]
+    const next = JSON.parse(JSON.stringify(prev))
+    next[0].ex[0].reps = 12
+    next.push(lib('core', 20))
+    stampTeacherLibrary(prev, next, 1000)
+    expect(next.map(x => x._ts)).toEqual([1000, 6, 1000])
+  })
+
+  it('a reset wipes teacherLibrary the same way it wipes routines', () => {
+    const recorded = resetIdsOf(base({ teacherLibrary: [lib('old', 1, 5)] }))
+    const S = sinceReset(base({ teacherLibrary: [lib('old', 1, 5), lib('new', 1, 50)] }), 10, null)
+    expect(ids(S.teacherLibrary)).toEqual(['new'])
+    expect(recorded.teacherLibrary).toEqual(['old'])
+  })
+})
 
 // QA, v1.3.9 (t9): a copy converted to lb met the other device's kg copy, and the merge compared
 // the numbers as they were — the server ended in kg with lb numbers in it.

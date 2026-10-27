@@ -10,7 +10,9 @@
 // against its SHA-256 by the native Install plugin and handed to the system installer.
 
 import { MOBILE } from './mobile.js'
-import { BUILTIN_PX } from './anim-quality.js'
+// The animations built into an APK (openGym's Standard/Plus/HD kinds). This fork ships no
+// dataset animations, so every build is the Standard kind.
+const BUILTIN_PX = 180
 
 // Brilhart Fitness: no public release feed yet. UPDATE_FEED names the GitHub repository that
 // publishes the fork's APK releases ('owner/repo'); null keeps every update row in Settings

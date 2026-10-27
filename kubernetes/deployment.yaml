@@ -91,8 +91,6 @@ spec:
               path: /
               port: web
             initialDelaySeconds: 30
-          # No volume: the exercise stills and animations (180 px) are part of the web image since
-          # v1.4.0. They are licensed from Gym visual for openGym only; see NOTICE.md.
           resources:
             requests:
               memory: 32Mi

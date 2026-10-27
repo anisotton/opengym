@@ -13,7 +13,7 @@ import { tempData, spawnApi } from './helpers.mjs';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
 const ORIGIN = 'http://localhost:8080';
-const VERSION = '2026-10-18';
+const VERSION = '2026-10-25';
 const b64u = b => Buffer.from(b).toString('base64url');
 const sha = b => crypto.createHash('sha256').update(b).digest();
 
@@ -143,7 +143,7 @@ test('register/password (PASSWORD_LOGIN=1): no birthDate → birth-date-required
   const denied = h.audit().filter(e => e.ev === 'auth.register.denied').map(e => e.msg);
   assert.deepEqual(denied, ['birth-date-required', 'underage']);
 
-  const ok = await h.req('POST', '/api/register/password', { body: { name: 'Bea', password, termsVersion: VERSION, birthDate: ADULT_TODAY }, ip });
+  const ok = await h.req('POST', '/api/register/password', { body: { name: 'Bea', password, email: 'bea@example.com', termsVersion: VERSION, birthDate: ADULT_TODAY }, ip });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   const row = await h.user(ok.body.user.id);
   assert.equal(row.birth_date.toISOString().slice(0, 10), ADULT_TODAY);

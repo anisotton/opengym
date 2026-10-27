@@ -11,7 +11,7 @@ import { useUI } from './store/useUI.js'
 import { exercisePicker } from './sheets.jsx'
 import Library from './views/Library.jsx'
 import MuscleExplorer from './components/MuscleExplorer.jsx'
-import { BODYPARTS, EXDB } from './lib/exercises.js'
+import { BODYPARTS, EXDB, allExercises } from './lib/exercises.js'
 
 vi.mock('react-router-dom', () => ({ useNavigate: () => () => {} }))
 
@@ -85,9 +85,13 @@ describe('lists load their next page as you scroll', () => {
   })
 
   it('stops watching once everything is shown', () => {
-    // a body part with a few pages, not the whole catalogue
-    const count = bp => EXDB.filter(e => e.bp === bp).length
+    // a body part with a few pages, not the whole library. The curated set (ISO-1638) has no body
+    // part past one page of 40 on its own, so a few exercises of your own top the biggest one up.
+    const own = Array.from({ length: 8 }, (_, i) => ({ id: 'own' + i, n: 'my leg move ' + i, bp: 'upper legs', eq: 'body weight', custom: true }))
+    act(() => { useStore.getState().update(s => { s.customEx = own }, false) })
+    const count = bp => allExercises(useStore.getState().S).filter(e => e.bp === bp).length
     const bp = BODYPARTS.filter(b => count(b) > 40).sort((a, b) => count(a) - count(b))[0]
+    expect(bp).toBe('upper legs')
     const host = render(<Library />)
     act(() => [...host.querySelectorAll('.chips .chip')].find(c => c.textContent === bp).click())
     for (let i = 0; i < 10 && showMore(host); i++) comeIntoView()

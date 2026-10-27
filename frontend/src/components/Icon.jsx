@@ -95,6 +95,14 @@ const P = {
   /* ---- objects ---- */
   person: <><circle cx="12" cy="8" r="3.8" /><path d="M4.8 20.4a7.2 7.2 0 0 1 14.4 0" /></>,
   personCircle: <><circle cx="12" cy="12" r="8.4" /><circle cx="12" cy="10" r="2.9" /><path d="M6.6 18.4a5.8 5.8 0 0 1 10.8 0" /></>,
+  // Two overlapping `person` silhouettes — the back one smaller and offset up-left, for the
+  // "Alunos" tab (ISO-1610, teacher-only).
+  people: <><circle cx="8.6" cy="7.6" r="2.6" /><path d="M3.9 16.3a4.8 4.8 0 0 1 8.7-1.4" /><circle cx="15.3" cy="9.3" r="3.3" /><path d="M8.7 20.4a6.8 6.8 0 0 1 13.1 0" /></>,
+  // Classic "share": an upward arrow out of an open tray — used where navigator.share is
+  // feature-detected (ISO-1610's invite sheet; the codebase had no share affordance before).
+  share: <><path d="M12 4.2v10.3" /><path d="M8.3 7.7 12 4l3.7 3.7" /><path d="M5.4 11.6v6.2a2 2 0 0 0 2 2h9.2a2 2 0 0 0 2-2v-6.2" /></>,
+  // Two overlapping rounded rectangles — "duplicate" (ISO-1610's teacher library, "Duplicar").
+  copy: <><rect x="8.4" y="8.4" width="11.2" height="11.2" rx="2.2" /><path d="M15.6 8.4V6.2A2.2 2.2 0 0 0 13.4 4H6.2A2.2 2.2 0 0 0 4 6.2v7.2a2.2 2.2 0 0 0 2.2 2.2h2.2" /></>,
   clipboard: <><rect x="5.4" y="4.8" width="13.2" height="15.8" rx="2.6" /><path d="M9 4.8a1.6 1.6 0 0 1 1.6-1.6h2.8A1.6 1.6 0 0 1 15 4.8v1.4H9Z" /><path d="M9.2 11.6h5.6M9.2 15.2h4" /></>,
   list: <path d="M8.4 6.6h11.2M8.4 12h11.2M8.4 17.4h11.2M4.6 6.6h.01M4.6 12h.01M4.6 17.4h.01" />,
   grid: <><rect x="4" y="4" width="6.5" height="6.5" rx="1.6" /><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6" /><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6" /><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6" /></>,
@@ -135,6 +143,9 @@ const P = {
   camera: <><path d="M3.6 8.8a2 2 0 0 1 2-2h1.9l1.3-2.1h6.4l1.3 2.1h1.9a2 2 0 0 1 2 2v8.4a2 2 0 0 1-2 2H5.6a2 2 0 0 1-2-2Z" /><circle cx="12" cy="12.8" r="3.3" /></>,
   image: <><rect x="3.6" y="4.8" width="16.8" height="14.4" rx="2.6" /><circle cx="8.6" cy="9.6" r="1.7" /><path d="m4.4 17.4 4.8-4.6 3.3 3 3-2.6 4.1 4" /></>,
   warning: <><path d="M12 3.4 21.2 19.4H2.8Z" /><path d="M12 9.6v4.4" /><circle cx="12" cy="16.6" r=".9" fill="currentColor" stroke="none" /></>,
+  // Two rounded rectangles (the card itself, the chip) plus the magnetic stripe — "Payment
+  // plans" (ISO-1627), kept visually distinct from `dumbbell`'s "Training programs".
+  creditCard: <><rect x="2.6" y="5.6" width="18.8" height="12.8" rx="2.6" /><path d="M2.6 9.8h18.8" /><rect x="5.4" y="13.6" width="5.6" height="1.8" rx=".6" /></>,
 
   /* ---- v1.3.11: one icon per concept (the Settings redesign names them) ---- */
   // sound, not "notification": a speaker with two waves

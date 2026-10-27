@@ -33,7 +33,6 @@ docker compose pull   # prebuilt images from ghcr.io (amd64 + arm64; the same im
 docker compose up -d
 ```
 
-- The exercise stills and animations (180 px, ~80 MB) ship inside the web image; nothing is downloaded on first start. An old `media/` folder and its two volume lines from before v1.4.0 are no longer used: harmless if you keep them, safe to delete.
 - Open **http://localhost:8080** and create a profile with a passkey.
 - Rather build from source than pull prebuilt images? Skip `docker compose pull` and run
   `docker compose up -d --build` instead — no Node needed locally either way.
@@ -368,25 +367,32 @@ the same one the links in the mail open. To look at the three templates without 
   arrived). Single-use, valid 24 hours. An unconfirmed address does not block using the app, only
   the subscription that comes with Phase 3.
 - **Recovery ("Perdi meu acesso" / "I lost my access")** on the sign-in screen — a single-use
-  link, valid 15 minutes, that opens the same device-link ceremony a second device already uses to
-  add itself (`Settings → Account → Pair another device`): it creates a fresh passkey on whichever
-  device opens it and signs that device in. Existing passkeys are left exactly as they were; their
-  owner removes any they no longer trust in Settings afterwards. Requesting one never reveals
-  whether the address has an account — the answer is the same either way — so it cannot be used to
-  check who has signed up.
+  link, valid 15 minutes. By default it opens the same device-link ceremony a second device
+  already uses to add itself (`Settings → Account → Pair another device`): it creates a fresh
+  passkey on whichever device opens it and signs that device in. With `PASSWORD_LOGIN=1`
+  (ISO-1596), redeeming the link with a new password (`POST /api/recover/redeem` with a
+  `password`, instead of just a `token`) sets that password directly and signs the account in —
+  "forgot my password" without an admin handing out a one-time code. Either way the link is
+  single-use; existing passkeys are left exactly as they were, and every other session ends the
+  same way a password change always ends them. Requesting one never reveals whether the address
+  has an account — the answer is the same either way — so it cannot be used to check who has
+  signed up.
 
 Both links are stored only as a SHA-256 of the token actually mailed out, the same reasoning as an
 admin's password-reset code. Wrong or replayed tokens pause the caller's address (20 free, then 30
 seconds doubling to 15 minutes), the same shape as every other guess here. Audited as
 `auth.register.ok`, `auth.email.verify.ok` / `fail`, `auth.email.resend`, `auth.email.set` /
-`fail`, and `auth.recover.request` / `ok` / `fail`.
+`fail`, and `auth.recover.request` / `ok` / `fail` / `password` (the last only for a redeem that
+set a password instead of pairing a device).
 
 ### Password sign-in (optional)
 
 Passkeys are the default and stay the recommended way in. Some people cannot use them: a browser
 on a plain `http://` LAN address (passkeys need HTTPS or `localhost`), a Firefox setup that only
 offers a hardware key, a passkey on a phone that will not move to the desktop. For them there is
-an optional name-and-password sign-in, off unless you ask for it:
+an optional e-mail/name-and-password sign-in — **on by default for this fork's `.env.example`**,
+off by default in the code itself (an instance started with no `PASSWORD_LOGIN` at all gets
+passkey-only sign-in, the upstream default):
 
 ```bash
 PASSWORD_LOGIN=1
@@ -395,22 +401,24 @@ PASSWORD_LOGIN=1
 What changes when it is on:
 
 - The sign-in screen offers **Sign in with password**, and **Create new profile** can use a
-  password instead of a passkey — in browsers without passkey support too. With `INVITE_ONLY=1`
-  it asks for the invite code exactly like passkey signup does.
+  password instead of a passkey — in browsers without passkey support too. Either way needs the
+  same verified e-mail every passkey signup already requires (ISO-1397, see above) — confirmed by
+  the same mailed link — and, with `INVITE_ONLY=1`, the same invite code passkey signup asks for.
 - Settings → Account gets a **Password** row. Nobody has a password until they set one there.
   Setting a first password asks for the profile's passkey; changing it asks for the current
   password (or the passkey, if it was forgotten). Either signs the profile out everywhere else,
   and paired phones have to be paired again. Removing it asks for the password or the passkey
   too — a session on its own may be a copied cookie.
-- People sign in with their **profile name** — case and surrounding spaces do not matter — and the
-  password. Two profiles with a password cannot share a name; Settings says so when a name is
-  already taken that way.
-- Optionally with an **e-mail address** instead of the name: see *Signing in with an e-mail*
-  below.
+- People sign in with their account's **e-mail** — the one verified address every profile has,
+  confirmed or not — or, for a profile from before e-mail was required (ISO-1397), its **profile
+  name**. Case and surrounding spaces do not matter for either. Signing in with an unconfirmed
+  address still works — the password is the proof here, not the confirmation link — only the
+  "confirm your e-mail" banner is unaffected by it. Two profiles with a password cannot share a
+  name; Settings says so when a name is already taken that way.
 - A password cannot be removed while it is the profile's only way in (a profile made with a
   password has no passkey).
 - The password also confirms the changes that need proof — adding or removing a passkey, making
-  a code for another device — but only while `PASSWORD_LOGIN=1`.
+  a code for another device, changing the account's e-mail — but only while `PASSWORD_LOGIN=1`.
 
 **Switching it off again** turns every password route off, and a password kept from before no
 longer confirms anything either: an old or reused one must not be enough to add a passkey. A
@@ -419,54 +427,36 @@ browser that is still signed in. Before you switch it off, have those profiles a
 (**Settings → Account → Passkeys → Add a passkey**, confirmed with their password); the admin
 dashboard marks every profile that has a password.
 
-**Signing in with an e-mail.** Settings → Account also gets a **Sign-in e-mail** row, right under
-the password, and **Create new profile** with a password has an optional e-mail field. Whoever
-adds an address can type it at **Sign in with password** instead of their profile name (case and
-spaces do not matter). This is a different, older feature than the *verified* e-mail every new
-profile now has (see *Verified e-mail and recovering access* above) — and, while `PASSWORD_LOGIN`
-is on, it is the one `POST /api/account/email` answers: **nothing is ever mailed to this address**
-— no confirmation, no reset mail — a forgotten password is still reset with the admin's code
-below, which can be redeemed with the name or the e-mail. So the address is not proven to belong
-to anyone; it is only a second name that points at the account, and the password still opens it.
+**The account's e-mail is the one from *Verified e-mail and recovering access* above** — ISO-1596
+removed the second, unverified "sign-in e-mail" this section used to describe, which lived at the
+same `POST /api/account/email` route and the same `email` column under a different, older feature
+(#118) with different rules (nothing ever mailed, no `/api/me`, visible only to the owner and
+admins). The two collided — an instance with `PASSWORD_LOGIN=1` lost the verified address from
+`/api/me` and the confirmation mail entirely — which is exactly what ISO-1596 fixed: one `email`,
+one route, the same proof (`proveOwner`: current password or a passkey) and the same confirmation
+mail, whichever way an instance signs people in. An address an older deploy saved under the
+retired feature is not lost — it reads back as this account's e-mail, simply unconfirmed until its
+owner confirms it (or changes it, which asks for a fresh confirmation the normal way).
 
-- Adding, changing and removing it asks for the same proof as setting a password (the current
-  password or a passkey of the profile) — a session on its own may be a copied cookie.
-- An address belongs to one profile only, and can never be another password profile's name.
-  Taking one that is in use is refused ("Another profile already uses this e-mail address") — see
-  *What an e-mail gives away* below for what that says and how it is limited.
-- Wrong passwords count against the **account**, whether it was named by its name or its e-mail,
-  so switching between the two does not get around the pause.
-- Only the owner (in Settings) and admins (the user list and the user's page in the admin
-  dashboard) ever see the address. It is not written to the activity log (entries show it masked,
-  `a…@e…`) or the container log, is not part of what the Coach, the MCP server or plan sharing
-  see, and is not in `/api/me`. It is stored in PostgreSQL as `email` on the user, lower-cased.
-- With `PASSWORD_LOGIN` off, the row and the field are hidden and the address is not used; it
-  stays in the database for when the flag comes back.
+**Resetting a password.** Two ways, neither needing the forgotten password:
 
-**What an e-mail gives away.** A profile trying to take an address already in use is told so,
-which says "some profile on this instance uses this address" — never which one. The alternative,
-accepting it silently, would leave someone who typed their address on a second profile believing
-it worked. So the answer is made expensive instead: in Settings it comes only after the proof (a
-passkey prompt or a password check per try). Signing up with a password needs no proof, so there
-the answer costs less: it comes after the new password is hashed and, with `INVITE_ONLY=1`, only
-to someone with a valid invite code (a refusal leaves the code unused); on an open instance
-anyone can ask. Every such refusal — in Settings or on signup — counts against the visitor's
-address (and in Settings the account): 20 are free, then a pause of 30 seconds doubling to 15
-minutes. That leaves a few tries an hour, comparable to what the
-name-taken answer already says about names. The other thing to know: once someone has paused an
-account by wrong passwords under its name, trying a guessed address shows the same pause, which
-ties that address to that name — the price of not letting a switch to the e-mail skip the pause.
+- **Self-serve, no admin (ISO-1596).** The same **Recovery** link described above
+  (*Verified e-mail and recovering access*), redeemed with a new password instead of pairing a
+  device: single-use, valid 15 minutes, signs the account in with the new password and ends every
+  other session the way a password change always does.
+- **Admin-issued code.** In the admin dashboard open the user and choose **Reset password**. You
+  get a one-time code such as `K7WQ-2MZP-4HXA` to hand over in person or by message: it is shown
+  once, works once, is valid for 24 hours and is stored only as a hash. Issuing it removes their
+  current password and signs them out everywhere at once — their passkeys keep working. They
+  enter their e-mail (or their profile name, for an account from before e-mail was required), the
+  code and a new password under **Sign in with password → Have a reset code?**. The same code
+  gets someone back in who lost their only passkey (#219). Admin accounts cannot be reset from the
+  dashboard, so one admin cannot take over another's login; an admin sets their own password in
+  Settings.
 
-**Resetting a password.** There is no e-mail. In the admin dashboard open the user and choose
-**Reset password**. You get a one-time code such as `K7WQ-2MZP-4HXA` to hand over in person or
-by message: it is shown once, works once, is valid for 24 hours and is stored only as a hash.
-Issuing it removes their current password and signs them out everywhere at once — their passkeys
-keep working. They enter their name (or their sign-in e-mail), the code and a new password under **Sign in with password →
-Have a reset code?**. The same code gets someone back in who lost their only passkey (#219).
-Admin accounts cannot be reset from the dashboard, so one admin cannot take over another's login;
-an admin sets their own password in Settings. Every step is in the activity log
-(`admin.password.reset`, `auth.password.reset`, `auth.password.ok` / `fail` / `locked`, and
-`auth.email.set` / `change` / `remove` / `fail` for the sign-in e-mail).
+Every step is in the activity log (`admin.password.reset`, `auth.password.reset`,
+`auth.password.ok` / `fail` / `locked`, `auth.recover.password`, and `auth.email.set` / `change` /
+`fail` for the account's e-mail).
 
 **On a plain-HTTP LAN**, set `ORIGIN` to exactly the address people type, for example
 `ORIGIN=http://192.168.1.20:8080`. Browsers do not send `Sec-Fetch-Site` to plain-http addresses,
@@ -517,6 +507,57 @@ profile that only has a password cannot sign in.
 
 The mobile app keeps pairing: someone with a password signs in to the website with it and pairs
 from Settings → Account → "Pair the mobile app", as with a passkey.
+
+### Sign in with Google (optional)
+
+Off by default — an instance with neither `GOOGLE_CLIENT_ID` nor `GOOGLE_CLIENT_SECRET` set has
+no `/api/auth/google/*`, `/api/account/google/*` or `/api/register/google` route at all (a plain
+404) and the sign-in screen never shows the button. Turning it on:
+
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an OAuth
+   client of type **Web application**.
+2. Add an **Authorized redirect URI**: `https://your-domain.example/api/auth/google/callback` (or
+   whatever `GOOGLE_REDIRECT_URI` names, if you set one — the default is `${APP_URL}/api/auth/
+   google/callback`). **Google only accepts a redirect URI on a public top-level domain or on
+   literal `localhost`** — not a `.lyra`/`.local`/`.internal` address, a bare IP or a self-signed
+   certificate's name. An instance only reachable on a private network cannot offer Google sign-in
+   until it has a real public domain (see *Expose it over HTTPS on your own domain* above).
+3. Put the client id and secret in `.env`:
+
+   ```bash
+   GOOGLE_CLIENT_ID=123456789-abc.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-...
+   ```
+
+What changes when it is on:
+
+- The sign-in and signup screens offer **Sign in with Google** / **Continue with Google**. A
+  Google account whose e-mail matches an existing, **confirmed** profile's e-mail links and signs
+  in automatically; one whose e-mail matches an account that has *not* confirmed its e-mail yet is
+  refused rather than linked — Google proving an address is not the same as this account's owner
+  proving it, and linking on that alone would let anyone who merely shares (or once owned) an
+  address ride into someone else's profile. No matching account at all opens "Complete your
+  profile" — a birth date and Terms acceptance are all that is still needed, since Google already
+  proved the e-mail (no confirmation link is mailed for a Google signup).
+- Settings → Account → Ways to sign in gets a **Google** row: linking asks the same proof as
+  adding a passkey, and shows the linked account's e-mail and the date once done.
+- Google counts as a way into the profile the same way a password does while `PASSWORD_LOGIN=1` —
+  it cannot be unlinked, and a password or the profile's last passkey cannot be removed either,
+  while it is the only one left (`last-way-in`, same rule and the same per-account lock as the
+  password/passkey one). A profile created through Google with no password and no passkey can
+  still confirm every change that normally asks for one — adding a passkey, changing the e-mail,
+  **deleting its own account** — by reauthenticating with the *same* Google account instead
+  (**Confirm with Google**, in the same proof sheet): a fresh, one-time, 5-minute proof tied to
+  that one action and that one browser session, never a lasting way to skip the check.
+- `GET /api/me`'s `google` field (e-mail, linked date, or `null`) and `GET /api/config`'s
+  `google_login` flag are what the client reads — see `api/openapi.yaml` (tag `google`) for the
+  full route list and every result code the callback can come back with.
+
+**Switching it off again** takes every Google route away (404) the same way turning `PASSWORD_LOGIN`
+off does for the password routes; an existing link is kept in the database (so it comes back if
+you turn it back on) but stops counting as a way in and stops being removable through the API
+while it is off. Before switching it off, make sure every Google-only profile (no password, no
+passkey) has added one of those first, the same caution as switching off passwords.
 
 ## 5. Fitting it into an existing stack
 
@@ -780,8 +821,12 @@ own Price after that cycle, so the only statuses an account ever reports are `ac
 
 What each route does:
 
+- `GET /api/billing/plans` — the sellable catalog (see "The catalog" below): id, display text,
+  interval and amount in centavos for each plan that is `available`, in the order to show them.
 - `POST /api/billing/checkout` — requires a signed-in, e-mail-verified profile (Phase 2) and a
-  `plan` (`monthly`/`quarterly`/`yearly`) in the body; returns the Checkout Session's hosted URL.
+  `plan` (`monthly`/`quarterly`/`yearly`, or a later addition) in the body; returns the Checkout
+  Session's hosted URL, or 409 `already-subscribed` if the account's last subscription is still
+  `active`/`past_due` — two tabs completing Checkout at once must not end up billed twice.
 - `POST /api/billing/portal` — the Stripe Customer Portal, for changing the plan, the card on file,
   or cancelling. Cancelling there is always "at period end", no proration: access continues until
   `current_period_end`, and the account only goes read-only once that date passes and the
@@ -808,6 +853,90 @@ Whether an account may write at all is one function, `canWrite(subscription)` in
 
 Forms of payment are configured once in the Dashboard (Settings → Payment methods), never in
 code — Checkout never names them, so nothing here needs changing to add or remove one.
+
+### The catalog (ISO-1623)
+
+The plan catalog — names, prices, which plan is on sale — lives in PostgreSQL
+(`billing_plans`/`billing_prices`, migration `010_billing_catalog.sql`), mirrored from Stripe
+rather than hard-coded by env. The migration itself only creates the two tables (plus
+`billing_admin_actions`, unused until the admin UI that manages this catalog lands); filling them
+is a separate, idempotent boot step (`seedCatalogFromEnv` in `api/billing.js`):
+
+- Runs once, automatically, the first time an instance boots with billing on (`STRIPE_API_KEY` and
+  `STRIPE_WEBHOOK_SECRET` both set) and the catalog is still empty — never again after that, so a
+  later edit to the catalog is never clobbered by a redeploy.
+- Reads the four `STRIPE_PRICE_*` Prices from Stripe and validates each one (BRL, a recurring
+  interval the catalog expects) before writing anything; any divergence skips the **whole** seed
+  (logged, nothing partial) and billing keeps working exactly as it did before this migration —
+  reading `STRIPE_PRICE_*` directly, the same as every build before ISO-1623. The four env vars
+  stay mandatory either way; they're the seed's only source, and the rollback path below depends
+  on them still being there.
+- A Price, once in the catalog, is immutable (enforced by a trigger, not just convention) —
+  changing a value means minting a new Stripe Price and publishing it as the plan's new `current`
+  one; the old row stays forever, `retired`, so a subscription still billed off it keeps showing
+  the exact name and amount it was sold at.
+
+**Rollback:** reverting the code means `STRIPE_PRICE_*` drive billing again, unchanged — nothing
+about the legacy path was removed. The two new tables can be left in place (inert) or dropped —
+`DROP TABLE billing_admin_actions, billing_plans, billing_prices` — neither touches any existing
+table. Nothing in Stripe needs undoing: the seed only ever reads Prices, never creates one.
+
+### Managing the catalog (ISO-1619/ISO-1630)
+
+`/api/admin/billing/catalog/*` (requireAdmin) is the admin side ISO-1623 above left for a
+follow-up — creating, pricing, publishing and taking plans on/off sale without ever touching
+`.env`. Everything it does keeps the same invariant the read path already relied on: **Stripe is
+the source of truth, the DB is a mirror** — no route here writes a subscription's own desired
+state, only the catalog it buys from.
+
+- `GET /api/admin/billing/catalog` — every plan (including `available:false` ones) and every
+  Price in any `state`, plus how many live subscriptions are billed off each one and
+  `liveWritesDisabled` (see the live gate, below).
+- `POST .../plan/new` ("criar oferta") — mints a Stripe Price (`active:false`,
+  `metadata.bf_plan`/`bf_version`) and persists a new plan, born `available:false` with that
+  Price a `draft`. Reuses the one Stripe Product every Price in this catalog shares
+  (`scripts/stripe-setup.mjs`) — refuses `400 no-product` if the catalog has never been seeded or
+  hand-created yet, rather than minting a second Product.
+- `POST .../plan/display` ("editar apresentação") — display text only, database-only (no Stripe
+  call, no live gate). `version` works like `programs.rev`: a stale one is `409 {code: stale,
+  current}`.
+- `POST .../plan/availability` ("ativar/desativar") — `prices.update active` on the plan's
+  *current* Price, then `available` in the DB, in that order, both directions.
+- `POST .../plan/price` ("nova versão de valor") — a new `draft` Price for a plan that already
+  sells one (optionally with `decisionRef`, a free-text pointer to whatever approved the value).
+  Never changes the plan itself.
+- `POST .../plan/publish` ("publicar versão") — Stripe first (activates the new Price, deactivates
+  the old one), then one DB transaction flips both Prices' `state` and the plan's
+  `currentPriceId` together. **Never migrates an existing subscriber onto the new Price** — a
+  subscription billed off the now-`retired` Price keeps showing exactly the name and amount it was
+  sold at, forever (grandfathering).
+- `POST .../order` ("reordenar") — batch `sortOrder` update in one transaction; `order` must name
+  exactly the current plan set. Database-only — does **not** pass through the live gate.
+- `POST .../reconcile` — adopts any Stripe Price tagged `metadata.bf_plan` the catalog doesn't
+  know yet (as a `draft`, never auto-published) and records any `subscriptions.priceId` the
+  catalog has never heard of as `retired`, with its amount read straight off Stripe rather than
+  invented. Read-only against Stripe — no live gate.
+- `GET .../actions` — the last 100 `billing_admin_actions` rows (see below).
+
+**The live gate.** Every write above that touches Stripe refuses `423 {code:
+live-writes-disabled}` whenever the configured key is a live one (`sk_live_`/`rk_live_`) *unless*
+`BILLING_ADMIN_LIVE=1` is set — the one override. `stripeIsLive()` (`api/billing.js`) is the same
+check `GET .../catalog`'s own `liveWritesDisabled` field reports, so a UI greys the write buttons
+out before anyone tries; a sandbox key (`sk_test_`/`rk_test_`) never trips it. This instance's
+`seedCatalogFromEnv` boot seed uses the same check to refuse seeding a Price whose own `livemode`
+disagrees with the key's.
+
+**Proof and audit.** Every write that touches Stripe (`plan/new`, `plan/availability`,
+`plan/price`, `plan/publish`) additionally requires: a fresh `proveOwner` proof (the admin's own
+password or passkey — the same `OwnerProof` shape account-settings routes use) in the body; a
+`reason` of at least 10 characters (enforced by a database constraint on
+`billing_admin_actions`, not just the 400 at the door); and an `Idempotency-Key` header, minted
+once per confirmation dialog — a replayed key is handed back the first attempt's own result
+instead of calling Stripe a second time. Every one of those four writes leaves a row in
+`billing_admin_actions` (actor, reason, the request, before/after, every Stripe id it touched,
+and its outcome) — `GET .../actions` is how an operator reads that trail back.
+`plan/display`, `order` and `reconcile` write nothing there: none of the three is financial (the
+first two never call Stripe at all; reconcile only ever reads it).
 
 ### Account deletion and Stripe (ISO-1447, Phase 4 — LGPD)
 
@@ -903,12 +1032,7 @@ docker compose up -d --build
 ```
 
 The app shell is versioned (`?v=N`) so clients pick up changes on next load. Your `./data` is
-untouched; the exercise media come with the new image.
-
-The exercise media inside the image (`catalogue/media`, stills and clips) are Gym visual's, under
-the licence in `catalogue/media/NOTICE.md` and the attribution in `NOTICE.md`: they come with the
-image, not from a download at runtime, and they are not covered by the AGPL — read that notice
-before redistributing the image or the repository.
+untouched.
 
 ## Passkeys fail even though `RP_ID` looks right
 
@@ -1028,7 +1152,6 @@ browser (see section 2).
 |---|---|
 | No passkey prompt on my phone | You're on `http://` or an IP, not HTTPS. Set up a domain (section 3). |
 | "verification failed" on login | `RP_ID`/`ORIGIN` don't match the URL in the address bar. See the section above — start with what the server logged on startup. |
-| Exercise pictures missing | You are on an image older than v1.4.0 or a custom build: `docker compose pull && docker compose up -d`. A source build needs `catalogue/media/` checked out. |
 | Port 8080 already used | Set `WEB_PORT=9090` in `.env` (and update `ORIGIN` for local testing). |
 | A photo or video will not upload ("refused as too large", or it stops partway) | A proxy in front caps the body or cuts the request off: see [Photos and videos](#photos-and-videos-of-custom-exercises) for the body size and timeouts it needs. |
 | No "Reminders" page in Settings | Requires a signed-in profile and HTTPS (or `localhost`) — guest mode and plain HTTP over LAN can't subscribe. |
@@ -1039,8 +1162,6 @@ browser (see section 2).
 | The app says the server "answered with something other than openGym (HTTP 200)" | Something other than the API answered `/api/*` with a success page — an auth proxy's sign-in page, or a catch-all route serving `index.html`. Every API answer is JSON; forward `/api/*` to the API unchanged. |
 | The app says "Your server answered with an error (HTTP …)" | The code is what the server or its proxy sent: 502/504 usually means the API container is down or unreachable from `web`, 413 that the proxy's upload limit is too small. Changes stay on the device and go through once the server answers. |
 | `docker compose pull` fails with "denied" / "unauthorized" | The prebuilt images aren't published yet, or need to be, or the GHCR package is still private — build from source instead (`docker compose up -d --build`). |
-| Exercise images/GIFs blank when a routine is open | Fixed in current images (issue #79). On an older build, see the note below. |
-| An exercise shows a plain tile instead of its animation when offline | The web app installed on the home screen keeps the media of every exercise in your plan and your current workout, fetched in the background once the app has settled (not on a cellular or Data Saver connection, where the browser says so), plus everything it has shown you, up to 150 MB, across updates. In an ordinary browser tab nothing is fetched ahead: only what it has shown you is kept. An exercise outside your plan that was never shown while online has nothing to show offline. The phone app carries its exercise media inside the package, so it has them offline anyway. |
 
 ### `VITE_IMG_BASE` / `VITE_GIF_BASE` are build-time, not run-time
 

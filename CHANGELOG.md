@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+**Third-party exercise media removed (ISO-1601/ISO-1603)**
+
+- 🖼️ **The built-in exercise library no longer ships or downloads any Gym visual/ExerciseDB
+  image or GIF.** The 1,324 built-in exercises keep their ids, names, attributes and
+  instruction text (MIT, `hasaneyldrm/exercises-dataset`) and now show a neutral icon instead
+  of a picture — exactly like any exercise the app has never had media for.
+- 🐳 **`docker-compose.yml` dropped the `media` service** and the `web` container's `./media`
+  bind mounts; `scripts/fetch-media.sh`, the Kubernetes `media-download` init container and its
+  PVC, and the CDN build variables (`VITE_IMG_BASE`/`VITE_GIF_BASE` in `npm run build:mobile`)
+  are gone too. A fresh `docker compose up -d --build` no longer downloads anything beyond the
+  app itself.
+- 📝 Photos and videos of your own custom exercises are unaffected — that upload path
+  (`/api/media/`) never touched the third-party dataset.
 **Security fixes ported from openGym v1.4.2**
 
 - 🔒 **The API base can no longer leave the origin** (GHSA-375x-wfvj-jf7q). A link such as
@@ -69,9 +82,12 @@ What this fork keeps different:
   confirmation and recovery, Terms/Privacy acceptance, minimum age, the admin program catalog, the
   serif brand and the light theme are untouched. `UPDATE_FEED` stays unset: no public releases, so
   the app never offers a download.
-- **Exercise media inside the web image**, as upstream does, under Gym visual's licence written
-  for openGym (`catalogue/media/NOTICE.md`). ⚠️ That licence has to be cleared with the lawyer
-  before a paid launch.
+- **No third-party exercise media at all.** openGym v1.4.0's `catalogue/media` (13,109 Gym visual
+  stills and clips, licensed to openGym only) is not in this fork: the catalogue is used for its
+  text (5,632 exercises, instructions, translations, muscle map) and the only pictures are
+  Brilhart's own, for the 128 curated exercises the library shows (ISO-1601/1638). openGym's
+  animation-quality packs, the male/female drawing choice and the `exercise-media` nginx location
+  went with the media; an exercise without Brilhart media shows its muscle map.
 - **Admin dashboard** keeps account and subscription data only (ISO-1447): no training data, no
   live-workout row; upstream's owner pill and role controls were added on top.
 

@@ -18,7 +18,6 @@ openGym ships in two flavors from the same codebase:
 | Accounts | passkey sign-in, one profile per person | none — the phone *is* the account |
 | Data | synced to your server, readable on desktop | stays on the device (file in the app's private storage) |
 | Reminders | Web Push from your server | native local notifications, no server involved |
-| Exercise media | served by your server (`exercise-media/`) | packed into the app (`exercise-media/`) |
 
 The mobile flavor never talks to a backend by default: no sign-in screen, no sync, no
 telemetry. State is mirrored from `localStorage` into `opengym-state.json` in the app's
@@ -93,6 +92,23 @@ the server address they were entered for (scheme, host and port), including the 
 and with nothing else: a pairing with any other address goes without them. Disconnecting from
 the server removes them. Both are kept in the phone's secure storage (Android Keystore / iOS
 Keychain), never in synced data or backups.
+### "Sign in with Google" — web only, for now (ISO-1598)
+
+On a self-hosted instance with `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` set, the browser PWA
+offers "Sign in with Google" next to passkeys and e-mail/password. The button never appears on
+this Capacitor build, in any state, regardless of what `GET /api/config` says — the app itself
+knows it is a WebView even when the API does not. The reason is Google's own policy, not a
+choice of this app's: Google's OAuth consent screen refuses to load inside an embedded WebView
+(`Error 403: disallowed_useragent`), which is exactly what the mobile app's shell is. A profile
+that already linked Google (from the browser) still shows the link, read-only, in Settings →
+Account → "Jeitos de entrar" — linking or unlinking it has to happen in a browser.
+
+The fix, when it lands, is to open the OAuth flow in the platform's own browser instead of the
+WebView — Android's Custom Tabs (`@capacitor-community/custom-tabs` or an Android Browser
+Intent) or iOS's `ASWebAuthenticationSession` — and bring the result back into the app through a
+custom URL scheme or universal/app link, the same shape most native "Sign in with Google"
+integrations use. That is new native-side code and a new dependency either way, so it is
+deliberately out of scope here.
 
 ### Connection states
 
@@ -219,66 +235,12 @@ Worth checking on a real device after changes here: turning it on shows Health C
 permission screen; a finished workout appears in Health Connect within a few seconds; deleting it
 in openGym removes it there; turning it off with "remove" leaves no openGym record behind.
 
-### Animation quality and the animation packs (store apps)
+### Exercise media in the app
 
-Settings → Workout → **Animation quality**, in the store apps only (the web and a self-hosted
-server show nothing new): **Auto** (360 px on a phone, 720 px on a tablet), **Still only** (no
-animation, just the still), **Built in** (the files inside the app), or 240, 360, 480, 720 or
-1080 px. Plus **Download over Wi-Fi only** (on by default) and, per pack on the device, its size
-and **Delete**.
-
-- **Licence first.** The animations are licensed from Gym visual. The repository, the web build
-  and every self-hosted server only ever have the 180 px files. Anything larger reaches people
-  only inside the official store apps: built into the package, or as an **Apple-hosted asset pack**
-  (Background Assets, iOS 26) or a **Play asset pack** (Play Asset Delivery) that the store
-  delivers. Never from a server of
-  ours, never at a URL anyone can fetch. No tool here opens a media file; packs are planned from
-  file names alone.
-- **The packs.** One per quality and figure: `anim-<px>-male`, `anim-<px>-female` for 240, 360,
-  480, 720 and 1080, all on demand. A figure's pack holds every drawing that figure shows: per
-  catalogue exercise its drawing for that figure, or its own when it is drawn once (those are in
-  both packs). Inside a pack a drawing sits at `<packId>/<drawing id>.webp`, so the male and the
-  female pack of a quality (which share every drawing made once), or two qualities, never claim
-  the same path in the one tree Background Assets reads all packs as.
-  `node scripts/media/make-pack-manifests.mjs <out>` writes, per pack, the ids and the manifest
-  `xcrun ba-package` takes (`fileSource` `<px>/<id>.webp`, relative to a source root with one
-  folder per quality), plus a summary. `--layout clip` writes `clip/<id>.webp` instead.
-- **What shows** (`src/lib/anim-quality.js`, `clipSources`): the chosen quality's pack for the
-  figure shown if it is installed, else the next smaller installed pack of that figure, else the
-  built-in file, then the still. Never a blank, and never the other figure's drawing. Custom
-  exercises keep their own media (`components/CustomMedia.jsx`) and never go through any of this.
-- **Downloads.** Choosing a quality whose pack is not there starts its download for the figure
-  shown, and the built-in animations show meanwhile; switching the figure (Look & Home → Exercise
-  drawings) fetches the other figure's pack of that quality. Auto does the same, over Wi-Fi.
-- **This device only.** The choice is kept in the WebView's localStorage (`gym_anim_v1`), never in
-  the synced profile: packs are downloaded per device, and a phone and an iPad want different
-  sizes. Switching quality or figure never writes the profile; `src/lib/anim-data-safety.test.js`
-  holds that, and that every exercise a profile refers to keeps a picture at every quality.
-- **iOS:** `AnimationPacksPlugin.swift` (`AssetPackManager`: status, download with progress,
-  remove, the folder of a pack's files). Before iOS 26 it answers "unavailable" and the setting
-  offers only Still only and Built in. Apple-hosted packs need the downloader extension
-  `ios/App/AnimationPacksDownloader` (a `StoreDownloaderExtension`), added and embedded by
-  `ios/ci/add-asset-downloader.rb` (run once and commit the project; CI runs it until then), the
-  Info.plist keys `BAAppGroupID`, `BAHasManagedAssetPacks`, `BAUsesAppleHosting`, and the App
-  Group `group.ch.opengym.app` on the app and the extension. `scripts/ios/finish-ipa.sh` signs the
-  extension with its own profile (`EXT_PROFILE`).
-- **Android:** in the `play` flavour the same interface goes through Play Asset Delivery (status,
-  download with progress, Wi-Fi only with Play's own prompt for mobile data, remove) for the packs
-  its `assets/anim-packs.json` lists, and serves their files to the page at
-  `https://localhost/_opengym_pack/<packId>/<drawing>.webp`, never a file path. The pack modules
-  are generated on the release machine by `scripts/android/make-asset-packs.mjs` and never
-  committed. The `sideload` flavour (the APKs) answers "unavailable" and only ever has its
-  built-in animations: 180 px in the Standard APK, 240 px in Plus, 360 px in HD. Each APK's updater
-  stays with its own kind (`pickApk` in `lib/update.js`, told by `VITE_APK_VARIANT`).
-
-App Store Connect, once: the App Group `group.ch.opengym.app`; the bundle id
-`ch.opengym.app.AnimationPacksDownloader` (an app extension); the App Groups capability on
-`ch.opengym.app` and on the extension, both with that group; an App Store provisioning profile
-for each; then the ten packs uploaded as Apple-hosted background assets for the app.
-
-Worth checking on a device: picking 720 px starts a download that shows its progress; the
-animation sharpens once it is done; Delete frees the space and the animation falls back; on
-cellular with Wi-Fi only on, it waits; Still only shows stills everywhere a workout shows media.
+The only exercise pictures and animations are Brilhart's own (128 exercises, `frontend/public/brilhart`),
+bundled by Vite into every build — web, Android and iOS alike. The dataset's third-party media and
+openGym's downloadable animation packs are gone from this fork (ISO-1601/1638); an exercise without
+Brilhart media shows its muscle map instead.
 
 ## Prerequisites
 
@@ -299,8 +261,8 @@ npx cap open android        # opens Android Studio → run on emulator or device
 npx cap open ios            # opens Xcode (Mac only) → set your signing team, then run
 ```
 
-`npm run build:mobile` bakes the CDN media base into the bundle and copies the web build
-into both native projects — re-run it after every web-code change before building natively.
+`npm run build:mobile` copies the web build into both native projects — re-run it after every
+web-code change before building natively.
 
 > **Heads-up:** after `build:mobile`, `frontend/dist` contains the *mobile* bundle.
 > Run a plain `npm run build` again before deploying `dist` to a server.
@@ -339,10 +301,9 @@ each on its own kind. Android asks you to allow installs from the browser the fi
 standard for any app outside the Play Store. Check the `.sha256` if you got the file from anywhere
 else.
 
-Both are built and signed on the release machine with `scripts/android/build-release.sh`
-([APP_STORES.md](APP_STORES.md)), not in CI: anything above 180 px may only exist inside an app
-package (Gym visual licence), never in a CI artifact. The GitLab mirror's `build:apk` job only runs
-by hand and builds a plain 180 px APK; its releases link to GitHub's.
+Both are built and signed on the release machine (`cd frontend && npm run build:mobile`, then
+Gradle), not in CI. openGym's store-release scripts (animation packs, APK kinds) are not in this
+fork.
 
 The release APK carries native code for ARM only (`arm64-v8a`, `armeabi-v7a`), which is every
 phone; the x86 builds of the barcode scanner's library would add about 12 MB for emulators

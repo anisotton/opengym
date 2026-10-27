@@ -25,7 +25,8 @@ vi.mock('../store/useStore.js', () => {
   return { useStore }
 })
 
-const EX = { id: 'bench', n: 'bench press', gif: 'bench.gif', img: 'bench.jpg' }
+// Tagged like the 128 Brilhart exercises: only src 'brilhart' media is a picture here (ISO-1601).
+const EX = { id: 'bench', n: 'bench press', src: 'brilhart', gif: 'bench.gif', img: 'bench.jpg' }
 
 let host, root
 beforeEach(() => {

@@ -78,17 +78,17 @@ beforeEach(() => {
 afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { root.unmount(); host.remove() }) }) })
 
 describe('Settings with password sign-in', () => {
-  it('a signed-in browser gets a Password row in Account — and none on an instance without it', async () => {
+  it('a signed-in browser gets a Password row in "Ways to sign in" — and none on an instance without it', async () => {
     const page = mount(<Settings page="account" />)
     await settle()
-    const account = section(page, 'Account')
-    expect(titles(account)).toContain('Password')
-    expect(rowByTitle(account, 'Password').textContent).toContain('Not set. Handy for signing in where passkeys don’t work.')
+    const ways = section(page, 'Ways to sign in')
+    expect(titles(ways)).toContain('Password')
+    expect(rowByTitle(ways, 'Password').textContent).toContain('Not set — lets you sign in where passkeys do not work.')
 
     mocks.config = null
     const off = mount(<Settings page="account" />)
     await settle()
-    expect(titles(section(off, 'Account'))).not.toContain('Password')
+    expect(titles(section(off, 'Ways to sign in'))).not.toContain('Password')
   })
 
   it('a guest in a browser without passkeys can create a profile and sign in with a password', () => {

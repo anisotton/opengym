@@ -7,12 +7,12 @@ import { speedUnitOf } from '../lib/speed.js'
 import { formulaOf, FORMULA_NAMES } from '../lib/onerm.js'
 import { copyText } from '../lib/clipboard.js'
 import { useUI } from '../store/useUI.js'
-import { ACCENTS, ACCENT_NAMES, todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate } from '../lib/format.js'
+import { ACCENTS, ACCENT_NAMES, todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate, fmtDate } from '../lib/format.js'
+import { scopeItems } from '../lib/teacher.js'
 import { inventoryFor, ownsPlates } from '../lib/plates.js'
 import { BAR_TYPES, ownBarDefault } from '../lib/bar.js'
 import { dumbbellsOf } from '../lib/dumbbells.js'
 import { effortOf } from '../lib/history.js'
-import { figureOf } from '../lib/exercises.js'
 import { unlock, chime, playOnSilentSupported, vibrateSupported, appleTouchDevice } from '../lib/sound.js'
 import { REST_SOUND_IDS, restSoundOf } from '../lib/rest-sounds.js'
 import { scheduleModeOf, chooseFixedWeek, chooseRotation } from '../lib/rotation.js'
@@ -20,7 +20,7 @@ import { queueOf } from '../lib/queue.js'
 import { api, webauthnOK, passkeyRegister, passkeyError, IS_ANDROID } from '../lib/api.js'
 import { pushSupported, enablePush, disablePush, sendTestPush, syncPushSubscription } from '../lib/push.js'
 import { wakeLockSupported } from '../lib/wakelock.js'
-import { t, tn, LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, baseLang, dateLocale } from '../lib/i18n.js'
+import { t, tn, getLang, LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, baseLang, dateLocale } from '../lib/i18n.js'
 import { effectiveLang } from '../lib/default-lang.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, isAndroid, shareExport, shareExportBlob, syncReminder } from '../lib/mobile.js'
@@ -41,7 +41,6 @@ import Icon from '../components/Icon.jsx'
 import { durationSheet } from '../components/DurationWheel.jsx'
 import { showsConnection, showsLocalLine } from '../components/SyncBanner.jsx'
 import BackupFolderRow, { useBackupFolder, autoBackupSubtitle } from '../components/BackupFolderRow.jsx'
-import { AnimationQualityRow } from '../components/Animations.jsx'
 import { ServerSyncSection, KeptChangesRows, leaveServer, connectServer, passkeySignIn } from '../components/ServerSync.jsx'
 import { passwordOn, PasswordRow, openPasswordSignIn, openPasswordRegister } from '../components/PasswordAuth.jsx'
 import { usePasskeys, PasskeysRow, DeviceLinkRow } from '../components/Passkeys.jsx'
@@ -53,6 +52,7 @@ import { PAGES, ROOT_GROUPS, pageVisible, searchSettings, pageTrail } from './se
 import { platformNow } from '../lib/platform-now.js'
 import { pathBefore } from '../lib/nav.js'
 import WatchSettingsPage from './WatchSettings.jsx'
+import { GoogleRow } from '../components/GoogleAccount.jsx'
 
 /* Settings (v1.3.11). The root is one screen: an account card, eleven rows that each open a page
    (/settings/<page>), and a search over every row. Rare things live one level further down
@@ -96,6 +96,7 @@ export default function Settings({ page = null, find = null, via = null, entryKe
   const user = useStore(s => s.user)
   const billing = useStore(s => s.billing)
   const sync = useStore(s => s.sync)
+  const billingPlans = useStore(s => s.billingPlans)
   const coachLocal = useStore(s => s.coachLocal)
   // Name-and-password sign-in, where the instance offers it (#118).
   const config = useStore(s => s.config)
@@ -564,9 +565,6 @@ export default function Settings({ page = null, find = null, via = null, entryKe
             value={S.gifSize === 'mini' || S.gifSize === 'off' ? S.gifSize : 'full'}
             onChange={v => update(s => { s.gifSize = v })} />
         </Row>
-        {/* Store apps: how sharp the animations are, from packs this device downloads. Per device,
-            never synced: the profile is not touched (components/Animations.jsx). */}
-        <AnimationQualityRow />
       </Section>
       <Section>
         <Row icon="wrench" iconTint="var(--grey)" title={t('Fine-tuning')} subtitle={t('Buttons, timed sets')} accessory="chevron" onClick={() => open('advanced')} />
@@ -796,18 +794,6 @@ export default function Settings({ page = null, find = null, via = null, entryKe
             onChange={v => update(s => { s.body = v })}
           />
         </Row>
-        {/* Which figure the exercise animations show where both exist (about 940 exercises; the
-            rest are drawn once). Only the picture changes: the exercise and its id stay the same,
-            so nothing logged is touched, on this device or any other. */}
-        <Row icon="figureStrength" iconTint="var(--teal)" title={t('Exercise drawings')}
-          subtitle={t('Where an exercise is drawn on both figures. Your workouts stay exactly as they are.')}>
-          <Segmented
-            className="seg-inline"
-            options={[{ value: 'male', label: t('Male') }, { value: 'female', label: t('Female') }]}
-            value={figureOf(S)}
-            onChange={v => update(s => { s.exFigure = v })}
-          />
-        </Row>
       </Section>
       <Section title={t('On Home')}>
         {/* Membership QR codes on Home (views/CheckIn.jsx); off = no Home card, no route. */}
@@ -891,10 +877,8 @@ export default function Settings({ page = null, find = null, via = null, entryKe
         <Link to="/termos">{t('Terms of Use')}</Link> · <Link to="/privacidade">{t('Privacy Policy')}</Link><br />
         {user?.termsAcceptedAt && <>{t('You accepted version {0} on {1}.', user.termsVersion, new Date(user.termsAcceptedAt).toLocaleDateString(dateLocale()))}<br /></>}
         Brilhart Fitness v{__APP_VERSION__} · {t('free & open source (AGPL v3)')}<br />
-        <a href="https://github.com/anisotton/opengym" target="_blank" rel="noopener">{t('Source code')}</a><br />
-        {/* Attribution the media licence asks for word for word (agreement §8c), so it is not translated */}
-        Exercise media © Aliaksandr Makatserchyk, <a href="https://gymvisual.com/" target="_blank" rel="noopener">Gym visual</a>, gymvisual.com.
-        Media licensed for use in openGym only; see <a href="https://github.com/DuarteSantos8/openGym/blob/main/NOTICE.md" target="_blank" rel="noopener">NOTICE.md</a>
+        <a href="https://github.com/anisotton/opengym" target="_blank" rel="noopener">{t('Source code')}</a> · exercise data: openGym catalogue (ExerciseDB text, MIT)<br />
+        exercise media (128 exercises, incl. the port de bras ones) © Brilhart Fitness, all rights reserved
       </div>
     </>,
 
@@ -936,18 +920,21 @@ export default function Settings({ page = null, find = null, via = null, entryKe
               (ISO-1395), same as every other Stripe-gated piece of this phase. */}
           {billing?.enabled && <Row icon="crown" iconTint="var(--yellow)" title={t('Plan')}
             subtitle={billing.status === 'active' || billing.status === 'past_due'
-              ? ({ monthly: t('Monthly'), quarterly: t('Quarterly'), yearly: t('Yearly') })[billing.plan] || null
+              // Resolved against the catalog (ISO-1619/ISO-1627), not a fixed monthly/quarterly/
+              // yearly map — same graceful fallback (plain id, or null) SettingsPlan.jsx uses.
+              ? (billingPlans?.plans.find(p => p.id === billing.plan)?.display?.[getLang()]?.name
+                ?? billingPlans?.plans.find(p => p.id === billing.plan)?.display?.['pt-BR']?.name
+                ?? billing.plan ?? null)
               : t("Your subscription isn't active — you can view and export your history, but new workouts won't be logged.")}
             accessory="chevron" onClick={() => nav('/configuracoes')} />}
-          <PasskeysRow state={passkeys.st} changed={credsChanged} />
-          <DeviceLinkRow state={passkeys.st} />
-          {/* ISO-1397's own POST /api/account/email is a different handler, registered only while
-              PASSWORD_LOGIN is off — on, that path is PasswordRow's legacy sign-in address (#118),
-              which this row has nothing to do with. */}
-          {!pwOn && <AccountEmailRow user={user} />}
+          <MyTeacherRow />
+          {/* ISO-1596: the account's one verified e-mail is universal now, PASSWORD_LOGIN on or
+              off — and it is not itself a "way to sign in" (ISO-1595 §0/§5), so it stays in this
+              section rather than the "Ways to sign in" one right below. PasskeysRow/DeviceLinkRow
+              moved there too (ISO-1598) — they are not duplicated here. */}
+          <AccountEmailRow user={user} />
           <Row icon="qr" iconTint="var(--blue)" title={t('Pair the mobile app')} subtitle={t('Connect the Brilhart Fitness app on your phone to this account.')} accessory="chevron"
             onClick={() => useUI.getState().openSheet(close => <PairSheet close={close} />)} />
-          {pwOn && <PasswordRow version={credsV} />}
           <Row icon="signOut" iconTint="var(--red)" title={t('Sign out')} danger onClick={signOutHere} />
           <Row icon="shield" iconTint="var(--red)" title={t('Sign out everywhere')} subtitle={t('Ends this profile’s sessions on all your devices.')} danger onClick={signOutEverywhere} />
           <AccountIdRow id={user.id} />
@@ -970,6 +957,22 @@ export default function Settings({ page = null, find = null, via = null, entryKe
           <Row icon="lock" iconTint="var(--grey)" title={t('Passkeys not supported in this browser.')} />
           <KeptChangesRows />
         </>}
+      </Section>}
+
+      {/* ---------- ways to sign in (ISO-1595 §5): password, passkeys, Google, in that order.
+          A Capacitor profile that never linked Google has nothing to show here (Password/Passkeys/
+          DeviceLink are all web-only sign-in methods) and the section itself disappears — but one
+          that already linked Google from the browser still gets to see that link, read-only
+          (GoogleRow's own MOBILE branch, docs/MOBILE.md), so the section can't be gated on !MOBILE
+          alone; it has to survive long enough for GoogleRow to decide — but only when GoogleRow
+          will actually render something: an instance that turned google_login back off since the
+          link was made has nothing left to show either (GoogleRow's own `!googleOn` check), and the
+          section must not render empty under its title. */}
+      {user && !DEMO && (!MOBILE || (!!user.google && !!config?.google_login)) && <Section title={t('Ways to sign in')}>
+        {!MOBILE && pwOn && <PasswordRow version={credsV} />}
+        {!MOBILE && <PasskeysRow state={passkeys.st} changed={credsChanged} />}
+        <GoogleRow user={user} googleOn={!!config?.google_login} passkeysState={passkeys.st} />
+        {!MOBILE && <DeviceLinkRow state={passkeys.st} />}
       </Section>}
       {/* The connection banner already says this to a guest; the line is for when it is switched
           off, or its × hid it (#454). */}
@@ -1468,6 +1471,56 @@ function AccountIdRow({ id }) {
   if (!id) return null
   const copy = async () => { if (await copyText(id)) toast(t('Account ID copied')) }
   return <Row icon="personCircle" iconTint="var(--grey)" title={t('Account ID')} subtitle={<span className="acct-id">{id}</span>} onClick={copy} />
+}
+
+// ISO-1594/ISO-1610 — Tela 5: "Meu professor". Row absent (not "None") until GET
+// /api/account/teacher answers with one — same absence convention as every other conditional
+// row in this file. `scopeItems()` is the exact text the invite-accept screen (Tela 4) showed
+// before this account accepted — same source, so the two never read differently (critério de
+// aceite).
+function MyTeacherSheet({ link, close, onChanged }) {
+  const toast = useUI(s => s.toast)
+  const [share, setShare] = useState(link.shareBodyweight)
+  const scope = scopeItems()
+  const setShareOnServer = async v => {
+    try { await api('/api/account/teacher/bodyweight', { method: 'POST', body: JSON.stringify({ share: v }) }); setShare(v) }
+    catch { toast(t('Could not save. Try again.')) }
+  }
+  // Turning it off reduces what the teacher sees — no friction. Turning it on is a positive
+  // consent, same as the Tela 4 checkbox, so it gets the same short confirmation.
+  const onToggleShare = v => v
+    ? confirmSheet({
+        title: t('Share body weight?'), message: t('{0} will be able to see your body-weight progress. You can turn it off anytime.', link.teacher.name),
+        confirmText: t('Share'), onConfirm: () => setShareOnServer(true)
+      })
+    : setShareOnServer(false)
+  const unlink = () => confirmSheet({
+    title: t('Unlink from {0}?', link.teacher.name),
+    message: t('They stop seeing your workouts immediately. Routines they assigned stay with you.'),
+    confirmText: t('Unlink'), danger: true,
+    onConfirm: () => api('/api/account/teacher', { method: 'DELETE' })
+      .then(() => { close(); toast(t('Unlinked.')); onChanged() })
+      .catch(e => toast(e.status === 404 ? t('This link no longer exists.') : t('Could not unlink. Try again.')))
+  })
+  return <>
+    <h3>{t('My teacher')}</h3>
+    <div style={{ fontWeight: 600 }}>{link.teacher.name}</div>
+    <div className="muted small" style={{ marginBottom: 14 }}>{t('Since {0}', fmtDate(link.acceptedAt.slice(0, 10), true))}</div>
+    <div className="small" style={{ fontWeight: 600, margin: '10px 0 4px' }}>{t('{0} can see:', link.teacher.name)}</div>
+    <ul className="scope-list">{scope.sees.map((s, i) => <li key={i}>✓ {s}</li>)}</ul>
+    <Row title={t('Share body weight')}><Switch checked={share} onChange={onToggleShare} /></Row>
+    <div style={{ height: 10 }} />
+    <Button variant="danger" onClick={unlink}>{t('Unlink')}</Button>
+  </>
+}
+
+function MyTeacherRow() {
+  const [link, setLink] = useState(undefined) // undefined = not loaded yet, null = none, object = linked
+  const load = () => api('/api/account/teacher').then(d => setLink(d.teacher ? d : null)).catch(() => setLink(null))
+  useEffect(() => { load() }, [])
+  if (!link) return null
+  return <Row icon="person" iconTint="var(--teal)" title={t('My teacher')} value={link.teacher.name} accessory="chevron"
+    onClick={() => useUI.getState().openSheet(close => <MyTeacherSheet link={link} close={close} onChanged={load} />)} />
 }
 
 // Lets the mobile app's "connect to my server" mode (lib/remote.js) authenticate without a

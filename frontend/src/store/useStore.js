@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, setRemoteAuth, fetchBillingStatus } from '../lib/api.js'
+import { api, setRemoteAuth, fetchBillingStatus, fetchBillingPlans, fetchTeacherAssignments, ackTeacherAssignment } from '../lib/api.js'
 import { localTZ } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
 import { registerCustom, healCustomEx } from '../lib/exercises.js'
@@ -10,7 +10,8 @@ import { MOBILE, initReminderSync, nativeLoad, nativeSave, onAppActive, readJson
 import { initHealthSync, syncHealth } from '../lib/health-sync.js'
 import { refillIfComplete } from '../lib/rotation.js'
 import { liftLegacy } from '../lib/sync-legacy.js'
-import { mergeStates, localExtras, stampChange, highestStamp, stampRestore, stampReplace, inUnitOf, keepReset, resetIdsOf, mergeResetIds, entryKey } from '../lib/sync-merge.js'
+import { mergeStates, localExtras, stampChange, stampTeacherLibrary, highestStamp, stampRestore, stampReplace, inUnitOf, keepReset, resetIdsOf, mergeResetIds, entryKey } from '../lib/sync-merge.js'
+import { applyAssignments } from '../lib/teacher.js'
 import { convertStateUnit } from '../lib/units.js'
 import { pendingRefCount, settleMedia, loadPending } from '../lib/media-owed.js'
 import { referencedHashes } from '../lib/media-refs.js'
@@ -73,6 +74,15 @@ const ADOPT_KEY = 'gym_adopt'
 const BILLING_KEY = 'gym_billing'
 const loadBilling = () => { try { return JSON.parse(localStorage.getItem(BILLING_KEY)) } catch { return null } }
 const saveBilling = b => { try { if (b) localStorage.setItem(BILLING_KEY, JSON.stringify(b)); else localStorage.removeItem(BILLING_KEY) } catch { /* storage refused — only the cache is lost */ } }
+// The last GET /api/billing/plans this device saw (ISO-1627) — the catalog itself, not any one
+// account's subscription to it, so unlike BILLING_KEY above it is never cleared on sign-out or on
+// a different account signing in: the plans on sale are the instance's, not the account's.
+// SettingsPlan reads this instead of a hard-coded PLANS array, same offline-first reasoning as
+// `billing` above — a device that last saw the catalog keeps showing it until the next fetch
+// succeeds, rather than an empty "no plans" screen the moment it has no network.
+const PLANS_KEY = 'gym_billing_plans'
+const loadBillingPlans = () => { try { return JSON.parse(localStorage.getItem(PLANS_KEY)) } catch { return null } }
+const saveBillingPlans = p => { try { if (p) localStorage.setItem(PLANS_KEY, JSON.stringify(p)); else localStorage.removeItem(PLANS_KEY) } catch { /* storage refused — only the cache is lost */ } }
 // Reads the mark with no argument, sets or clears it with one. Storage that cannot be read owes nothing.
 function logoutOwed(on) {
   try {
@@ -251,6 +261,17 @@ export const DEF = {
   // cleared) replaces that role's curated exercise-id whitelist with a single user-chosen
   // exercise id; the stamp is what lets a sync keep the choice made last (lib/sync-merge.js).
   balanceTemplate: DEFAULT_TEMPLATE_ID, balanceOverrides: {},
+  // The teacher's own reusable routines (ISO-1594/ISO-1610, views/TeacherLibrary.jsx) — a
+  // namespace of its own, never merged into `routines`: a routine built for reuse with students
+  // is not the teacher's personal plan. Each entry is a routine snapshot ({ id, name, ex, ... }),
+  // stamped and merged like `routines` (stampTeacherLibrary/lib/sync-merge.js) but kept apart so
+  // the two never collide. Assigning one to a student copies it (lib/teacher.js importAssignment
+  // builds an independent snapshot) — editing it here never touches what a student already has.
+  teacherLibrary: [],
+  // The student's recommended-Program card (ISO-1610, lib/teacher.js importAssignment), set when
+  // a teacher's assignment is `kind: 'program'`. Unlike an assigned routine, this is never added
+  // to `routines`/`week` — it is a recommendation the student opts into, not a standing plan.
+  teacherProgram: null,
 }
 const clone = o => JSON.parse(JSON.stringify(o))
 
@@ -307,7 +328,7 @@ function loadState() {
 // weigh-ins and custom exercises. A custom exercise is all a new guest may have made — with its
 // photo or video, which the server counts as unreferenced until the state that names it lands —
 // so a profile created from such a copy takes it at once, like one holding a workout.
-const hasData = st => !!((st.workouts || []).length || (st.routines || []).length || (st.bodyweight || []).length || (st.customEx || []).length || (st.measurements || []).length)
+const hasData = st => !!((st.workouts || []).length || (st.routines || []).length || (st.bodyweight || []).length || (st.customEx || []).length || (st.measurements || []).length || (st.teacherLibrary || []).length)
 
 // Decide whether a pulled account state may replace the local saved state. A local active workout
 // is deliberately carried forward: the server stores completed/saved state, while the in-progress
@@ -657,7 +678,7 @@ export const useStore = create((set, get) => {
     // after Checkout/the Portal, or right after another device's cancellation, should not show a
     // stale plan state for up to POLL_MS. Unawaited: boot does not block on it, and the cached
     // answer (loadBilling) is already on screen either way (ISO-1395).
-    if (get().user) get().refreshBillingStatus()
+    if (get().user) { get().refreshBillingStatus(); get().refreshBillingPlans(); get().refreshTeacherAssignments() }
   }
 
   // A signed-in device shows what the server has. Coming back — to the tab, the window, the app,
@@ -671,8 +692,10 @@ export const useStore = create((set, get) => {
     lastCheck = Date.now()
     // Piggybacks the billing refresh on this same, already-throttled cadence (ISO-1395) rather
     // than a timer of its own — nothing here awaits it, so a slow or failed answer never holds up
-    // the rev check it rode in on.
+    // the rev check it rode in on. The teacher-assignments pull (ISO-1610) rides the same cadence.
     get().refreshBillingStatus()
+    get().refreshBillingPlans()
+    get().refreshTeacherAssignments()
     // A sign-in still deciding what becomes of this copy: no check of its own. One whose adoption
     // never ran or did not get through (no server, a pairing that failed on the way to it) runs it
     // here, question and all; one already running is left to answer.
@@ -1354,6 +1377,9 @@ export const useStore = create((set, get) => {
     // `config` above, which is memory-only and re-asked every boot — billing has to survive one
     // this device never gets to repeat until the network is back.
     billing: loadBilling(),
+    // The catalog (ISO-1627) — { plans: [{id, display, interval, intervalCount, sortOrder,
+    // amountCents, introAmountCents}] } or null before the first fetch. See PLANS_KEY above.
+    billingPlans: loadBillingPlans(),
     needsMobileOnboarding: false,   // mobile build only — set true by boot() on a genuine first launch
     // Mobile build only: the first-start permission steps (views/PermissionSteps.jsx) are due.
     // Set when that first launch's choice is made; never persisted, the steps keep their own
@@ -1389,11 +1415,13 @@ export const useStore = create((set, get) => {
       const prev = get().S
       const S = clone(prev)
       mut(S)
-      // What the change removed, and which routines, workouts, settings and plan days it touched,
-      // each with one time that comes after every stamp the copy already carries: a conflict then
-      // keeps a removal and the edit made last, even from a device whose clock runs behind
-      // (lib/sync-merge.js stampChange).
-      S._ts = stampChange(prev, S, Date.now())
+        // What the change removed, and which routines, workouts, settings and plan days it touched,
+        // each with one time that comes after every stamp the copy already carries: a conflict then
+        // keeps a removal and the edit made last, even from a device whose clock runs behind
+        // (lib/sync-merge.js stampChange). The teacher's reusable library (ISO-1610) is stamped the
+        // way routines were before stampChange — stampChange does not know that list.
+        S._ts = stampChange(prev, S, Date.now())
+        stampTeacherLibrary(prev.teacherLibrary, S.teacherLibrary)
       persist(S, push)
       // A photo or video added to a workout is a change worth the day's backup too: the one
       // finishing wrote went before the finish screen's pictures (autoBackupNow). Not a removal,
@@ -1598,6 +1626,64 @@ export const useStore = create((set, get) => {
         saveBilling(b)
         set({ billing: b })
       } catch { /* offline, refused, whatever — the cached answer stands */ }
+    },
+
+    // GET /api/billing/plans (ISO-1627) — same cadence and the same "never clear on failure"
+    // rule as refreshBillingStatus above. A 404 (billing not configured on this instance) is
+    // cached as `{plans:[]}` the same way as a genuinely empty catalog: SettingsPlan already
+    // renders "No plans available" for that, and this device has nothing else useful to show.
+    // Returns whether it actually refreshed — callers that care about the difference between
+    // "offline, cache stands" and "just got the latest" (SettingsPlan's own error toast) can
+    // check it; the background callers (boot, checkRev) ignore it, same as refreshBillingStatus.
+    async refreshBillingPlans() {
+      if (!get().user) return true
+      try {
+        const p = await fetchBillingPlans()
+        saveBillingPlans(p)
+        set({ billingPlans: p })
+        return true
+      } catch (e) {
+        if (e?.status === 404) { saveBillingPlans({ plans: [] }); set({ billingPlans: { plans: [] } }); return true }
+        return false
+      }
+    },
+
+    // GET /api/account/assignments (ISO-1594/ISO-1610): a teacher's routine/Program assignment,
+    // or the end of one, pulled the same way billing status is — piggybacked on checkRev's
+    // cadence rather than a timer of its own. Applies the whole pending+ended batch in one go
+    // through lib/teacher.js's applyAssignments (pure, idempotent, and the one place that knows
+    // a `kind: 'program'` ending has to clear S.teacherProgram rather than leave it — replacing
+    // the draft's relevant fields outright, never Object.assign-merging a partial result onto
+    // it, which would silently keep a stale value for any key the result omits).
+    //
+    // The ack only goes out once the push that carried this exact change is confirmed by the
+    // server (`await get().pushState()`, then `owes()` — not just "scheduled" via the ordinary
+    // debounce): acking first and pushing after would let the server drop this assignment from
+    // `pending`/`ended` before this device's copy of it ever reached the server, so a crash, a
+    // sign-out, or the mobile build's storage being evicted between the two could lose it for
+    // good — nothing would ever hand it to this account again. A push that fails (offline,
+    // refused) leaves `owes()` true: the ack is skipped and the next poll just sees the same
+    // pending/ended entries and re-applies them — free, since applyAssignments is idempotent.
+    async refreshTeacherAssignments() {
+      if (!get().user) return
+      let data
+      try { data = await fetchTeacherAssignments() }
+      catch { return } // offline, refused — the next poll tries again
+      const pending = data?.pending || [], ended = data?.ended || []
+      if (!pending.length && !ended.length) return
+      get().update(s => { Object.assign(s, applyAssignments(s, { pending, ended })) })
+      await get().pushState()
+      if (owes()) return // the push did not land — ack nothing; the next poll retries from the server's own copy
+      if (pending.length) {
+        import('./useUI.js').then(({ useUI }) => useUI.getState().toast(t('New routine from your teacher'))).catch(() => {})
+      }
+      for (const a of ended) {
+        const name = a.payload?.name || t('Your routine')
+        import('./useUI.js').then(({ useUI }) => useUI.getState().toast(t('Your teacher ended "{0}"', name))).catch(() => {})
+      }
+      for (const a of [...pending, ...ended]) {
+        ackTeacherAssignment(a.id).catch(() => {})
+      }
     },
 
     // `adopt` (a sign-in, a pairing — { alwaysAsk } for a device link): adoptProfile follows and

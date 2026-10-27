@@ -15,7 +15,7 @@ import { tempData, spawnApi } from './helpers.mjs';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
 const ORIGIN = 'http://localhost:8080';
-const VERSION = '2026-10-18';
+const VERSION = '2026-10-25';
 const b64u = b => Buffer.from(b).toString('base64url');
 const sha = b => crypto.createHash('sha256').update(b).digest();
 
@@ -152,7 +152,7 @@ test('register/password (PASSWORD_LOGIN=1) follows the same rule', async t => {
   const denied = h.audit().filter(e => e.ev === 'auth.register.denied').map(e => e.msg);
   assert.deepEqual(denied, ['terms-required', 'terms-version-stale'], 'audited like register/options');
 
-  const ok = await h.req('POST', '/api/register/password', { body: { name: 'Bea', password, birthDate: '1990-05-05', termsVersion: VERSION }, ip });
+  const ok = await h.req('POST', '/api/register/password', { body: { name: 'Bea', password, email: 'bea@example.com', birthDate: '1990-05-05', termsVersion: VERSION }, ip });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   const row = await h.user(ok.body.user.id);
   assert.equal(row.terms_accepted_version, VERSION);
@@ -160,8 +160,10 @@ test('register/password (PASSWORD_LOGIN=1) follows the same rule', async t => {
 
   const me = await h.req('GET', '/api/me', { cookie: ok.cookie, ip });
   assert.equal(me.status, 200);
-  assert.deepEqual(Object.keys(me.body), ['user', 'termsVersion', 'termsAcceptedAt', 'needsTerms'],
-    'the terms fields are there even with PASSWORD_LOGIN, unlike the e-mail ones');
+  // ISO-1596: the e-mail fields are always there now too, PASSWORD_LOGIN or not — the terms
+  // fields were never the only ones unconditional, that was just true before this pass.
+  assert.deepEqual(Object.keys(me.body), ['user', 'email', 'emailVerified', 'needsEmail', 'termsVersion', 'termsAcceptedAt', 'needsTerms', 'google'],
+    'the terms and e-mail fields are both there with PASSWORD_LOGIN on');
   assert.equal(me.body.termsVersion, VERSION);
   assert.ok(isIso(me.body.termsAcceptedAt), me.body.termsAcceptedAt);
   assert.equal(me.body.needsTerms, false);

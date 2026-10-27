@@ -77,9 +77,6 @@ COPY --chmod=755 web/05-check-base-path.sh /docker-entrypoint.d/
 # Owned by uid 101 (not root, as the static tree would otherwise be): 40-substitute-app-url.sh
 # rewrites index.html in place at start-up, as that user, and sed needs the directory too.
 COPY --from=build --chown=101:0 /app/frontend/dist /usr/share/nginx/html
-# The exercise stills and animations, 180 px, licensed from Gym visual for openGym only: see
-# catalogue/media/NOTICE.md. They ship inside the image; nothing is downloaded at start-up.
-COPY catalogue/media/ /usr/share/nginx/html/exercise-media/
 
 # Substitutes __APP_URL__ in the served index.html at start-up — nginx.conf.template's own
 # envsubst (20-envsubst-on-templates.sh, part of this base image) only covers /etc/nginx/templates,

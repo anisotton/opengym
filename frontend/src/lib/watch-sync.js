@@ -15,9 +15,7 @@
 // The iPhone app only. Without a paired watch with the app on it, nothing is sent and nothing
 // arrives: the phone behaves exactly as before.
 import { MOBILE, nativePlatform } from './mobile.js'
-import { EXIDX, gifSrc, figureOf, isAssisted } from './exercises.js'
-import { packId, packDrawingId } from './anim-quality.js'
-import { getState as animPacks } from './anim-packs.js'
+import { EXIDX, gifSrc, isAssisted } from './exercises.js'
 import { exerciseNameFor, getLang, baseLang, onLangChange } from './i18n.js'
 import { modeOf, setLabel, lastEntryFor, effectiveRoutineIds, isBw, isPerSide } from './history.js'
 import { isWarmupRow, isSideSet, syncSideAggregate } from './workout-model.js'
@@ -157,28 +155,23 @@ export function buildSnapshot(S, { timer = null, ready = null } = {}) {
 
 /**
  * The running workout's animations for the watch, from what this phone itself shows for each
- * exercise: the smallest downloaded animation pack of the figure (240 px, `packId` + `drawing`, read
- * through Background Assets on the phone) when there is one, else the app's built-in clip (`path` inside the app package:
- * the 180 px animated WebP of the store build, an MP4 loop in other builds). The native side makes
+ * exercise: Brilhart's own built-in clip (`path` inside the app package; the dataset's third-party
+ * animations are gone from this fork, ISO-1601). The native side makes
  * each into a small GIF and sends it as a file; the watch deletes them when the workout ends.
  * Nothing is ever fetched from anywhere.
  */
-export const WATCH_PACK_PX = 240
-export function clipsFor (S, packs = animPacks().packs || {}) {
+export function clipsFor (S) {
   const A = S && S.active
   if (!A || !Array.isArray(A.entries)) return []
-  const figure = figureOf(S)
-  const pid = packId(WATCH_PACK_PX, figure)
-  const pack = packs[pid] && packs[pid].state === 'ready' ? pid : null
   const out = [], seen = new Set()
   for (const e of A.entries) {
     const ex = e && EXIDX[e.id]
+    // Only Brilhart's own clips exist (exercises.js): an exercise without one sends nothing.
     if (!ex || seen.has(e.id) || !ex.gif) continue
     seen.add(e.id)
-    const drawing = packDrawingId(ex, figure)
-    // a pack's files are read through Background Assets on the phone, never by a path
-    if (pack && drawing && /^[A-Za-z0-9_-]+$/.test(drawing)) { out.push({ exId: e.id, packId: pack, drawing }); continue }
-    const path = gifSrc(ex, figure)
+    // BASE-relative ('./brilhart/…' in the app package, '/brilhart/…' under a server): the native
+    // side resolves it inside the package, so the base prefix goes.
+    const path = gifSrc(ex).replace(/^\.?\//, '')
     if (!/\.(webp|mp4|gif)$/i.test(path) || /^[a-z]+:|^\//i.test(path) || path.includes('..')) continue
     out.push({ exId: e.id, path })
   }

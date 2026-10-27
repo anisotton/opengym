@@ -28,7 +28,8 @@ const isOn = el => el.className.split(/\s+/).includes('on')
 const rows = host => [...host.querySelectorAll('.list .item:not(.ex-new)')].map(r => r.querySelector('.ss').textContent)
 
 // A cable triceps exercise: the catalogue has plenty of other triceps work, on cables and off.
-const CABLE_TRI = EXDB.find(e => e.tg === 'triceps' && e.eq === 'cable')
+// A library-visible (ISO-1638) triceps exercise: the close-grip push-up, body weight like the whole curated set.
+const CABLE_TRI = EXDB.find(e => e.id === '0259')
 
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -76,10 +77,11 @@ describe('swap picker opens on the same muscle', () => {
     const listed = rows(host)
     expect(listed.length).toBeGreaterThan(1)
     expect(listed.every(s => s.startsWith('Triceps'))).toBe(true)
-    // Cable first: once something else shows up, no cable exercise follows it.
-    const firstOther = listed.findIndex(s => !s.endsWith('cable'))
-    expect(listed[0].endsWith('cable')).toBe(true)
-    if (firstOther > 0) expect(listed.slice(firstOther).some(s => s.endsWith('cable'))).toBe(false)
+    // Same equipment first: once something else shows up, no exercise of that equipment follows it
+    // (the curated set is all body weight, so this is the swapped exercise's own equipment).
+    const firstOther = listed.findIndex(s => !s.endsWith(CABLE_TRI.eq))
+    expect(listed[0].endsWith(CABLE_TRI.eq)).toBe(true)
+    if (firstOther > 0) expect(listed.slice(firstOther).some(s => s.endsWith(CABLE_TRI.eq))).toBe(false)
     // The exercise being swapped away is not offered as its own replacement.
     expect([...host.querySelectorAll('.list .item .tt')].map(x => x.textContent)).not.toContain(CABLE_TRI.n)
 

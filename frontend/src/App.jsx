@@ -6,7 +6,10 @@ import { useUI } from './store/useUI.js'
 import { bindUI } from './components/ui.jsx'
 import { setWeightDecimals } from './lib/format.js'
 import { accentValue, applyAccent } from './lib/accent.js'
-import { setLang, useLang, baseLang } from './lib/i18n.js'
+import { setLang, useLang, baseLang, t } from './lib/i18n.js'
+import { parseGoogleCallback, takePendingReauth } from './lib/google-reauth.js'
+import { resumeGoogleReauth } from './lib/api.js'
+import { passwordError } from './components/PasswordAuth.jsx'
 import { effectiveLang } from './lib/default-lang.js'
 import { setPlayOnSilent, setVibrate, setAlarmBuzzer, setNativeBuzzer } from './lib/sound.js'
 import { buzzAsAlarm } from './lib/rest-alert.js'
@@ -34,11 +37,10 @@ import Toast from './components/Toast.jsx'
 import SyncBanner from './components/SyncBanner.jsx'
 import RestTimer from './components/RestTimer.jsx'
 import TimerFlash from './components/TimerFlash.jsx'
-import { openDeviceLinkRedeem } from './components/Passkeys.jsx'
+import { openDeviceLinkRedeem, AddPasskeySheet } from './components/Passkeys.jsx'
 import { needsEmailPromptDue, openNeedsEmailPrompt } from './components/AccountEmail.jsx'
 import { openTermsSheet } from './components/TermsSheet.jsx'
 import { useOnline } from './components/ServerSync.jsx'
-import { useAnimPacksBoot } from './components/Animations.jsx'
 import Login from './views/Login.jsx'
 import EmailVerify from './views/EmailVerify.jsx'
 import Legal from './views/Legal.jsx'
@@ -63,6 +65,10 @@ import CoachChat from './views/CoachChat.jsx'
 import Measurements from './views/Measurements.jsx'
 import CoachIntake from './views/CoachIntake.jsx'
 import CoachSetup from './views/CoachSetup.jsx'
+import Students from './views/Students.jsx'
+import StudentDetail from './views/StudentDetail.jsx'
+import TeacherLibrary from './views/TeacherLibrary.jsx'
+import TeacherInviteAccept from './views/TeacherInviteAccept.jsx'
 
 // last known scrollY per route, so back-navigation can put the page where it was
 const scrollPositions = new Map()
@@ -101,9 +107,6 @@ function Shell() {
   useEffect(() => { setAlarmBuzzer(MOBILE && S.vibrate !== false && S.vibrateOnSilent ? buzzAsAlarm : null) }, [S.vibrate, S.vibrateOnSilent])
   // iPhone app: the page cannot buzz (no navigator.vibrate), its native side can.
   useEffect(() => { if (MOBILE) nativePlatform().then(p => { if (p === 'ios') setNativeBuzzer(buzzAsAlarm) }) }, [])
-  // Store apps: which animation packs this device has, and the one the chosen quality wants for
-  // the figure shown (components/Animations.jsx). Nothing on the web.
-  useAnimPacksBoot()
   const isGuest = useStore(s => s.isGuest())
   const needsMobileOnboarding = useStore(s => s.needsMobileOnboarding)
   const permSteps = useStore(s => s.permSteps)
@@ -203,6 +206,65 @@ function Shell() {
     needsEmailOffered.current = true
     openNeedsEmailPrompt()
   }, [ready, user?.id, user?.needsEmail, emailSheetRoute, linkCode, needsTerms])
+  // Google's own redirect back, for the signed-in half (ISO-1595 §4.5, ISO-1597/ISO-1598):
+  // always a full-page navigation, landing on #/configuracoes (api/billing.js's own fixed
+  // route for this case too — not Settings.jsx itself, which is where the result actually
+  // belongs) with the result in the `google` query param. The signed-out half (login/signup,
+  // landing on #/entrar) is Login.jsx's own job — it reads the same query itself, since it
+  // needs the full screen for several of the results (ISO-1595 §4.1/§4.3), not just a toast.
+  // `reauth-ok` resumes whatever ProveOwner's "Confirm with Google" was for (lib/google-reauth.js)
+  // — the one request that action needed all along, now that the proof exists; every other
+  // result here is already final and just needs a word about it.
+  const googleCB = parseGoogleCallback(loc.search)
+  const [googleBusy, setGoogleBusy] = useState(() => !!googleCB && !!(user || isGuest))
+  useEffect(() => {
+    if (!googleCB || !(user || isGuest)) return
+    let cancelled = false
+    let wentHome = false
+    const pending = takePendingReauth()
+    ;(async () => {
+      try {
+        if (googleCB.google === 'reauth-ok' && pending && googleCB.proof) {
+          if (pending.kind === 'delete-account') {
+            await useStore.getState().deleteAccount({ googleProof: googleCB.proof })
+            if (cancelled) return
+            wentHome = true
+            navigate('/home', { replace: true })
+            useUI.getState().toast(t('Account deleted'))
+            return
+          }
+          if (pending.kind === 'add-passkey') {
+            const ready2 = await resumeGoogleReauth(pending, googleCB.proof)
+            if (cancelled) return
+            useUI.getState().openSheet(close => <AddPasskeySheet state={{ passkeys: [], password: false }} initialReady={ready2} close={close} done={() => {}} />)
+          } else {
+            await resumeGoogleReauth(pending, googleCB.proof)
+            if (cancelled) return
+            const doneToast = {
+              'remove-password': t('Password removed'),
+              'unlink-google': t('Google unlinked.'),
+              'set-password': t('Password saved — you are signed out everywhere else.'),
+              'set-email': t('E-mail saved'),
+            }[pending.kind]
+            useUI.getState().toast(doneToast || t('Done'))
+          }
+        } else if (googleCB.google === 'linked') useUI.getState().toast(t('Google linked.'))
+        else if (googleCB.google === 'already-linked') useUI.getState().toast(t('This Google account is already linked to a different profile.'))
+        else if (googleCB.google === 'reauth-mismatch') useUI.getState().toast(t('That Google account doesn’t match the one linked to this profile.'))
+        else if (googleCB.google === 'cancelled') { /* silent, ISO-1595 §4.6 — a real decline is not an error */ }
+        else if (googleCB.google !== 'ok') useUI.getState().toast(t("We couldn't link your Google account. Try again."))
+      } catch (e) {
+        if (!cancelled) useUI.getState().toast(passwordError(e))
+      } finally {
+        if (!cancelled) {
+          setGoogleBusy(false)
+          if (!wentHome) navigate('/settings', { replace: true })
+        }
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc.search])
   useEffect(() => {
     const onScroll = () => {
       // Modals pins the body while a sheet is open; scrollY is 0 then, not a position.
@@ -275,6 +337,12 @@ function Shell() {
   // The first-launch card has no tabs either: they changed the route behind it.
   const noTabs = inWorkout || loc.pathname === '/coach' || needsMobileOnboarding || permSteps
 
+  const authed = user || isGuest
+  // The boot screen in index.html covers the start; it goes once there is something to show.
+  // Ahead of every early return below: a hook that runs on some renders only is a hook-count
+  // mismatch the moment the condition flips (the Google callback screen, say).
+  useEffect(() => { if (ready || authed) hideBoot() }, [ready, authed])
+
   // Reachable whether signed in or out, and ahead of the Login/Routes split below: the person
   // opening a mailed link has usually lost any session on this device, but may also click it on
   // the same browser that is already signed in (EmailVerify.jsx, RecoverAccess.jsx — ISO-1398).
@@ -286,10 +354,23 @@ function Shell() {
   if (loc.pathname === '/termos') return <><div id="app" className="vfade"><Legal id="termos" /></div><Modals /><Toast /></>
   if (loc.pathname === '/privacidade') return <><div id="app" className="vfade"><Legal id="privacidade" /></div><Modals /><Toast /></>
   if (loc.pathname === '/recuperar') return <><div id="app" className="vfade"><RecoverAccess /></div><Modals /><Toast /></>
+  // The invite-accept screen (ISO-1594/ISO-1610) owns its own signed-out state (a short prompt,
+  // then the ordinary Login in place) rather than falling through to the generic `!authed`
+  // branch below, which would show Login with no mention of the invite at all. Checked ahead of
+  // googleBusy below: the Google redirect always lands on #/configuracoes (never on this path),
+  // but keeping the specific route first means that stays true even if that ever changes.
+  if (loc.pathname.startsWith('/professor/convite/')) return <><div id="app" className="vfade"><TeacherInviteAccept /></div><Modals /><Toast /></>
+  // Processing a signed-in Google result (above): avoids a one-frame flash of whatever
+  // #/configuracoes would otherwise render (SettingsPlan, api/billing.js's own route) before the
+  // effect above lands on Settings itself.
+  if (googleBusy) return (
+    <div id="app">
+      <div style={{ paddingTop: '44vh', display: 'flex', justifyContent: 'center', fontSize: 34, color: 'var(--label-3)' }}>
+        <Icon name="dumbbell" />
+      </div>
+    </div>
+  )
 
-  const authed = user || isGuest
-  // The boot screen in index.html covers the start; it goes once there is something to show.
-  useEffect(() => { if (ready || authed) hideBoot() }, [ready, authed])
   if (!ready && !authed) return (
     <div id="app">
       <div style={{ paddingTop: '44vh', display: 'flex', justifyContent: 'center', fontSize: 34, color: 'var(--label-3)' }}>
@@ -327,6 +408,12 @@ function Shell() {
       <Route path="/coach/intake" element={<CoachIntake />} />
       <Route path="/coach/proposal" element={<Navigate to="/coach" replace />} />
       <Route path="/coach/setup" element={<CoachSetup />} />
+      {/* Teacher-only (ISO-1594/ISO-1610) — same gated-redirect pattern as /admin below.
+          A teacher is also always a student of their own account (D11); only the role
+          check gates this, never anything about the account's own training data. */}
+      <Route path="/alunos" element={user?.role === 'teacher' ? <Students /> : <Navigate to="/home" replace />} />
+      <Route path="/alunos/biblioteca" element={user?.role === 'teacher' ? <TeacherLibrary /> : <Navigate to="/home" replace />} />
+      <Route path="/alunos/:id" element={user?.role === 'teacher' ? <StudentDetail /> : <Navigate to="/home" replace />} />
       <Route path="/admin" element={user?.admin ? <Admin /> : <Navigate to="/home" replace />} />
       <Route path="*" element={<Navigate to="/home" replace />} />
     </Routes>

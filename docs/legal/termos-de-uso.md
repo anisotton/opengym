@@ -2,7 +2,7 @@
 
 # Termos de Uso
 
-Versão: 2026-10-18
+Versão: 2026-10-25
 
 ## Quem somos e o que é o serviço
 
@@ -83,8 +83,9 @@ Se você descumprir estas regras, podemos remover o conteúdo em questão, suspe
 O Brilhart Fitness reúne peças com licenças diferentes:
 
 - o código-fonte do aplicativo é software livre, licenciado sob a GNU AGPL-3.0 (Affero General Public License, versão 3 ou posterior), e está disponível em https://github.com/anisotton/opengym;
-- os textos de descrição e instrução dos exercícios vêm do conjunto de dados hasaneyldrm/exercises-dataset, sob a licença MIT;
-- as imagens e GIFs dos exercícios são de terceiros (Gym visual), com todos os direitos reservados aos seus titulares, e são exibidos no app apenas para ilustrar os exercícios — você não pode copiá-los ou redistribuí-los;
+- os textos de descrição e instrução dos exercícios da biblioteca geral vêm do conjunto de dados hasaneyldrm/exercises-dataset, sob a licença MIT;
+- as animações e imagens dos exercícios da Brilhart são de titularidade da Brilhart Fitness, com todos os direitos reservados, exibidas no app apenas para ilustrar os exercícios — você não pode copiá-las nem redistribuí-las;
+- as instruções dos exercícios da Brilhart passam por revisão de profissional da Brilhart Fitness; enquanto não revisadas, aparecem no app marcadas como rascunho, sem prejuízo do aviso de saúde mais adiante nestes termos;
 - a marca, o nome e a identidade visual da Brilhart Escola e do Brilhart Fitness pertencem aos seus titulares e não podem ser usados sem autorização.
 
 Os seus registros de treino, rotinas, medidas, fotos e vídeos continuam sendo seus. Você nos concede apenas uma licença limitada, gratuita e revogável para armazenar, processar e exibir esse conteúdo dentro do app, para você, na medida necessária para prestar o serviço. Não usamos suas fotos ou vídeos para publicidade nem os mostramos a outros usuários.
@@ -124,7 +125,7 @@ Recomendamos que você exporte seus dados de tempos em tempos e guarde uma cópi
 
 ## Alterações destes termos e versão
 
-Cada versão destes termos é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-18.
+Cada versão destes termos é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-25.
 
 Podemos atualizar estes termos para acompanhar mudanças no app ou na lei. Mudanças de preço seguem a regra da seção "Assinatura, preços, primeiro mês e renovação". Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app. Se você não aceitar, a versão anterior continua valendo até o fim do período já pago, e a assinatura não renova. Você também pode exportar e excluir seus dados a qualquer momento.
 

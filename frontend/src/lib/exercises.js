@@ -1,24 +1,55 @@
 import { EXDB, EXALIAS } from './exercises-data.js'
+import { EXBRILHART } from './exercises-brilhart.js'
+import { BRILHART_124 } from './exercises-brilhart-124.js'
 import MUSCLE_MAP from './exercise-muscle-map.json' with { type: 'json' }
 import V13_IDS from './catalogue-v13-ids.json' with { type: 'json' }
+import { USER_EXERCISE_MUSCLE_OVERRIDES, exerciseMuscleMetadataFor } from './exercise-muscle-batch-1.js'
 import { t, getVersion, exerciseNameSearchText } from './i18n-core.js'
 
 export { EXDB }
 
+// ISO-1638: Brilhart's own GIF for 124 existing EXDB exercises, keyed by the same 4-digit id
+// (exercises-brilhart-124.js, generated from the Brilhart media package's manifest). Looked up
+// by id, not spread like EXBRILHART, since it overlays onto an EXDB row rather than adding one.
+const BRILHART_124_MEDIA = {}
+export const BRILHART_124_IDS = new Set()
+BRILHART_124.forEach(({ id, img, gif }) => { BRILHART_124_MEDIA[id] = { img, gif }; BRILHART_124_IDS.add(id) })
+
+// Every exercise the library, search, filters, muscle explorer and routine/swap picker show —
+// the 124 Brilhart-illustrated EXDB exercises plus the 4 port de bras (bf01-04). The other
+// ~5,500 EXDB exercises stay fully resolvable (EXIDX below still indexes all of CATALOGUE) for
+// a routine, workout or history entry that already cites one; they just never appear for a user
+// browsing or picking an exercise to add (ISO-1638 — "hide from the catalogue, never delete the
+// data").
+export const LIBRARY_IDS = new Set([...BRILHART_124_IDS, ...EXBRILHART.map(e => e.id)])
+
 // EXDB carries each exercise as the catalogue describes it in words (target, secondary muscles).
 // Where someone has drawn the muscles more precisely (catalogue "muscleMap": the compound lifts,
-// machines and Olympic lifts, ExRx-informed and owner-approved), that layer is applied here, so
-// the pickers and every muscle map see the corrected model while EXDB stays the plain list.
+// machines and Olympic lifts, ExRx-informed and owner-approved), that layer is applied here, and
+// the fork's own owner-approved muscle metadata (exercise-muscle-batch-1.js) on top of it; for
+// the 124 Brilhart-illustrated ids, Brilhart's own media too, as a narrow overlay — so the
+// pickers and every muscle map see the corrected/illustrated model while EXDB stays the plain
+// list (the compatibility/raw export).
 const catalogueExercise = ex => {
-  const metadata = MUSCLE_MAP[ex?.id]
-  if (!metadata) return ex
-  const out = { ...ex, ...metadata }
+  const metadata = { ...(MUSCLE_MAP[ex?.id] || {}), ...exerciseMuscleMetadataFor(ex?.id) }
+  const media = BRILHART_124_MEDIA[ex?.id]
+  if (!Object.keys(metadata).length && !media) return ex
+  const out = { ...ex, ...metadata, ...(media ? { src: 'brilhart', img: media.img, gif: media.gif } : {}) }
   if (Array.isArray(out.primaries)) out.primaries = [...out.primaries]
   if (Array.isArray(out.secondaries)) out.secondaries = [...out.secondaries]
   return out
 }
 
-export const CATALOGUE = EXDB.map(catalogueExercise)
+// EXBRILHART (exercises-brilhart.js) is appended raw, not run through catalogueExercise: that
+// overlay is keyed to EXDB's 4-digit ids and exerciseMuscleMetadataFor('bf01') always misses, so
+// running it would be a no-op that only risked tying the two datasets together by accident.
+export const CATALOGUE = [...EXDB.map(catalogueExercise), ...EXBRILHART]
+
+// The subset of CATALOGUE a user actually browses (Library, search, filters, muscle explorer,
+// the "add/replace/swap exercise" picker — ISO-1638). EXIDX/exOr below still index the full
+// CATALOGUE, so a ~1,200 EXDB id hidden from here keeps resolving for a routine, workout or
+// history entry that cites it.
+export const LIBRARY_CATALOGUE = CATALOGUE.filter(ex => LIBRARY_IDS.has(ex.id))
 
 // The generated dataset already supplies secondary muscles for most exercises. Keep the
 // handful of conservative catalogue additions that are useful to the muscle map here so a
@@ -39,6 +70,8 @@ export const smOf = ex => {
   return [...new Set([...base, ...(SECONDARY_ADDITIONS[ex?.id] || [])])]
 }
 
+// Indexes every id, library-visible or not: a routine/workout/history entry must keep resolving
+// by id regardless of what the library currently shows (ISO-1638).
 export const EXIDX = {}
 CATALOGUE.forEach(e => { EXIDX[e.id] = e })
 // The id of a drawing that is no exercise of its own (the female figure of a male exercise) looks
@@ -51,7 +84,8 @@ for (const [id, to] of Object.entries(EXALIAS)) {
 // file, an import, the Coach's output), so the app goes on storing only exercise ids. An id
 // already in state is left alone: rewriting it would move history behind the user's back.
 export const canonicalExId = id => (typeof id === 'string' && Object.hasOwn(EXALIAS, id) && EXIDX[EXALIAS[id]] ? EXALIAS[id] : id)
-export const BODYPARTS = [...new Set(CATALOGUE.map(e => e.bp))].sort()
+// Body-part filter chips only ever need to span what the library actually shows.
+export const BODYPARTS = [...new Set(LIBRARY_CATALOGUE.map(e => e.bp))].sort()
 
 // Equipment options present in a given list of exercises, most common first (issue #6).
 // Deriving them from the *already filtered* list keeps the chip row short and means
@@ -114,8 +148,10 @@ export function healCustomEx(list) {
   })
   return changed ? out : list
 }
-// Full searchable catalogue — customs first so your own exercises are easy to find.
-export const allExercises = st => [...(st.customEx || []), ...CATALOGUE]
+// Full searchable catalogue — customs first so your own exercises are easy to find. Built-ins
+// are the library-visible subset (ISO-1638): a hidden EXDB id never shows up to search, filter
+// or pick, even though EXIDX above still resolves it for a routine/workout/history that cites it.
+export const allExercises = st => [...(st.customEx || []), ...LIBRARY_CATALOGUE]
 
 function searchableText(value) {
   if (Array.isArray(value)) return value.map(searchableText).join(' ')
@@ -171,33 +207,22 @@ export function matchesExerciseSearch(exercise, query) {
   return searchScore(exercise, query) > 0
 }
 
-// Media normally sits next to the app (img/ and gif/, mounted into the web container).
-// A build can point them somewhere else — the demo build pulls them off a CDN instead of
-// shipping ~140 MB of images into the deployment. `import.meta.env` is undefined in plain
-// Node; the guard keeps this module loadable without Vite.
+// `import.meta.env` is undefined in plain Node; the guard keeps this module loadable
+// without Vite.
 const ENV = import.meta.env || {}
-// Under their own folder since v1.4.0: a docker-compose.yml from before then still mounts the old
-// dataset's media over img/ and gif/, and would hide the catalogue's files if they lived there.
-const IMG_BASE = ENV.VITE_IMG_BASE || 'exercise-media/still/'
-const GIF_BASE = ENV.VITE_GIF_BASE || 'exercise-media/clip/'
-// The animations are MP4 loops, except in the Android release: there they are animated WebP
-// (VITE_CLIP_EXT=webp, staged from APP_MEDIA_DIR), shown as a plain image. The WebView's video
-// player stalled at every loop of these 3-second clips on real phones; an image decodes like the
-// GIFs the app had before and loops by itself.
-const CLIP_EXT = ENV.VITE_CLIP_EXT === 'webp' ? '.webp' : '.mp4'
-// About 940 exercises are drawn twice, on a male and on a female figure: `fv` names the female
-// drawing of a male exercise, `mv` the male drawing of a female one. Which figure shows is a
-// setting (figureOf); the exercise, its id and everything logged against it stay the same either
-// way, so switching back and forth is only ever a different picture. An exercise drawn once shows
-// that drawing whatever the setting.
-export const figureOf = S => (S?.exFigure === 'female' || S?.exFigure === 'male')
-  ? S.exFigure
-  : (S?.body === 'female' ? 'female' : 'male')
-const drawing = (ex, figure) => (figure === 'female' ? ex.fv : figure === 'male' ? ex.mv : null) || null
-export const imgSrc = (ex, figure) => IMG_BASE + (drawing(ex, figure) ? drawing(ex, figure) + '.webp' : ex.img)
-const clipFile = f => (CLIP_EXT !== '.mp4' && f.endsWith('.mp4') ? f.slice(0, -4) + CLIP_EXT : f)
-export const gifSrc = (ex, figure) => GIF_BASE + clipFile(drawing(ex, figure) ? drawing(ex, figure) + '.mp4' : ex.gif)
-// The catalogue's animations are short MP4 loops; a fork's or an older build's may still be GIFs.
+// The only exercise media are Brilhart's own — the 4 port de bras exercises (exercises-brilhart.js)
+// and the 124-id overlay onto EXDB (exercises-brilhart-124.js, ISO-1638), both tagged
+// `src: 'brilhart'` — shipped inside the app bundle at frontend/public/brilhart/ (ISO-1601: the
+// dataset's third-party pictures and animations are gone from the library and from every build;
+// an exercise without `img`/`gif` shows its muscle map instead, Media.jsx). BASE_URL is Vite's own
+// base ('./' here, see vite.config.js), so this resolves the same way the app's other bundled
+// assets (favicon, manifest) already do, offline-safe for the Android/iOS build too.
+const BRILHART_BASE = (ENV.BASE_URL || './') + 'brilhart/'
+// `file` defaults to the exercise's own top-level img/gif, but a caller showing one of several
+// views (Media.jsx, ISO-1606) passes that view's file name instead.
+export const imgSrc = (ex, file = ex.img) => BRILHART_BASE + file
+export const gifSrc = (ex, file = ex.gif) => BRILHART_BASE + file
+// Kept for callers from before the media removal: a fork's or an older build's clip may be a video.
 export const isVideoSrc = src => /\.(mp4|webm)(\?|$)/i.test(src || '')
 
 // Cardio exercises log time + speed instead of weight × reps.

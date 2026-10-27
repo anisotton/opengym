@@ -146,12 +146,21 @@ test('applyStripeEvent: an event for an account that no longer exists is a no-op
       }
     }
   };
+  // resolveUserId returns null before applyStripeEvent ever reaches its own fetch-latest retrieve
+  // (ISO-1625 T2b) — a ghost event never makes a Stripe call at all, so the default 404 `route`
+  // above is never actually exercised here either way.
   await assert.doesNotReject(() => applyStripeEvent(pool, event));
   assert.equal((await pool.query('SELECT 1 FROM subscriptions WHERE id = $1', ['sub_ghost'])).rows.length, 0);
 
-  // Control: the same event for an account that does exist still applies normally.
+  // Control: the same event for an account that does exist still applies normally. `u_alive`
+  // passes resolveUserId, so applyStripeEvent's own fetch-latest retrieve (ISO-1625 T2b) does
+  // reach Stripe this time — mocked to hand back the exact same object the event itself carries.
   await createUser(pool, { id: 'u_alive', name: 'Ana', created: new Date().toISOString() });
   const alive = { ...event, id: 'evt_alive', data: { object: { ...event.data.object, id: 'sub_alive', metadata: { userId: 'u_alive', plan: 'monthly' } } } };
+  route = (method, url) => {
+    if (method === 'GET' && url === '/v1/subscriptions/sub_alive') return { status: 200, json: alive.data.object };
+    return { status: 404, json: { error: { message: 'unexpected call: ' + method + ' ' + url, type: 'invalid_request_error' } } };
+  };
   await applyStripeEvent(pool, alive);
   assert.equal((await pool.query('SELECT user_id FROM subscriptions WHERE id = $1', ['sub_alive'])).rows[0]?.user_id, 'u_alive');
 });

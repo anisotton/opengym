@@ -72,8 +72,8 @@ services:
       # needs backing up — if you lose it, sign the provider in again.
       - ./coach-auth:/coach-auth
 
-  # Builds the React frontend (multi-stage) and serves it, proxying /api → api
-  # and the exercise animations, which are part of the image. Single origin for passkeys.
+  # Builds the React frontend (multi-stage) and serves it, proxying /api → api.
+  # Single origin for passkeys.
   web:
     image: ghcr.io/anisotton/opengym-web:latest
     build:
