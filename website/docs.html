@@ -29,7 +29,7 @@
 <!-- Umami web analytics for opengym.duarte-santos.ch (self-hosted, cookieless). -->
 <script defer src="https://stats.duarte-santos.ch/script.js" data-website-id="db36019e-50f4-453c-9c56-d0588aefe233"></script>
 <script type="application/ld+json">
-{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is openGym really free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes — free as in cost and as in freedom (AGPL-3.0). No pro tier, no locked features, no ads, and the license keeps every fork open source too."}}, {"@type": "Question", "name": "Why isn't openGym on the Play Store or App Store?", "acceptedAnswer": {"@type": "Answer", "text": "By choice (and on iOS, by Apple's rules for sideloading). Store accounts cost money, impose terms that sit badly with the AGPL, and put a gatekeeper between you and an app whose whole point is that your data is yours. The signed Android APK is a direct download."}}, {"@type": "Question", "name": "Should I pick the mobile app or self-host?", "acceptedAnswer": {"@type": "Answer", "text": "To simply track your training: the mobile app. For data on your own hardware, synced across devices, with profiles for the people you train with: self-host with Docker. The backup file migrates everything between the two, or pair the app to your server."}}, {"@type": "Question", "name": "What's on the openGym roadmap?", "acceptedAnswer": {"@type": "Answer", "text": "Percentage/training-max programming (5/3/1-style), more starter plans, body measurements alongside weight, per-exercise notes and a plate calculator, more instruction languages. Community-driven — ideas and merge requests welcome."}}, {"@type": "Question", "name": "Where does the exercise database come from?", "acceptedAnswer": {"@type": "Answer", "text": "From hasaneyldrm/exercises-dataset: 1,324 exercises with text and instructions, MIT-licensed. The dataset's images and animations were third-party media with disputed ownership and have been removed from this project — the library is text-only."}}, {"@type": "Question", "name": "What does the AGPL license mean for me?", "acceptedAnswer": {"@type": "Answer", "text": "You can self-host, use, modify and share openGym freely. Only if you run a modified version as a network service must you offer that version's source under the same license. Using or self-hosting it unmodified obliges you to nothing."}}]}
+{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is openGym really free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes — free as in cost and as in freedom (AGPL-3.0). No pro tier, no locked features, no ads, and the license keeps every fork open source too."}}, {"@type": "Question", "name": "Why isn't openGym on the Play Store or App Store?", "acceptedAnswer": {"@type": "Answer", "text": "By choice (and on iOS, by Apple's rules for sideloading). Store accounts cost money, impose terms that sit badly with the AGPL, and put a gatekeeper between you and an app whose whole point is that your data is yours. The signed Android APK is a direct download."}}, {"@type": "Question", "name": "Should I pick the mobile app or self-host?", "acceptedAnswer": {"@type": "Answer", "text": "To simply track your training: the mobile app. For data on your own hardware, synced across devices, with profiles for the people you train with: self-host with Docker. The backup file migrates everything between the two, or pair the app to your server."}}, {"@type": "Question", "name": "What's on the openGym roadmap?", "acceptedAnswer": {"@type": "Answer", "text": "Percentage/training-max programming (5/3/1-style), more starter plans, body measurements alongside weight, per-exercise notes and a plate calculator, more instruction languages. Community-driven — ideas and merge requests welcome."}}, {"@type": "Question", "name": "Where does the exercise database come from?", "acceptedAnswer": {"@type": "Answer", "text": "From hasaneyldrm/exercises-dataset: 1,324 exercises with text and instructions, MIT-licensed. The dataset's own images and animations were third-party media with disputed ownership and have been removed from this project. Brilhart Fitness's own illustrated library now covers 128 of these exercises with its own media; the rest stay text-only."}}, {"@type": "Question", "name": "What does the AGPL license mean for me?", "acceptedAnswer": {"@type": "Answer", "text": "You can self-host, use, modify and share openGym freely. Only if you run a modified version as a network service must you offer that version's source under the same license. Using or self-hosting it unmodified obliges you to nothing."}}]}
 </script>
 </head>
 <body class="topnav">
@@ -280,9 +280,12 @@
 
   <h3 id="f-plan">Routines &amp; the plan builder</h3>
   <ul>
-    <li><b>1,324 exercises</b> — searchable, with animated demonstrations and step-by-step
-        instructions, plus a <b>filter for the equipment you actually own</b> (the filter
-        options adapt to what you've picked, so every combination on screen has results).</li>
+    <li><b>128 exercises</b> — the 124 with Brilhart's own animated demonstration plus the 4
+        port de bras ones, searchable, with step-by-step instructions, and a <b>filter for the
+        equipment you actually own</b> (the filter options adapt to what you've picked, so every
+        combination on screen has results). A routine or workout logged against any of
+        openGym's wider 1,324-exercise dataset keeps opening exactly as before — it just isn't
+        offered to browse or add anymore.</li>
     <li><b>Your own exercises:</b> a name and a body part is enough; they behave like built-in
         ones everywhere, with an optional description instead of an animation.</li>
     <li><b>Supersets:</b> plan them into a routine, or pair two exercises <i>mid-session</i>
@@ -928,13 +931,17 @@ Leg Day,Leg Press,2026-08-21,200,1</code></pre>
   <p>That dataset's images and animations were third-party media with disputed ownership
      (between <a href="https://gymvisual.com/" rel="noopener">Gym visual</a> and ExerciseDB) that
      openGym never redistributed — an instance used to download them from upstream on first run.
-     They have been removed from this project entirely; the exercise library is text-only now.
-     Full third-party notices, including the body-diagram geometry, are in
+     They have been removed from this project entirely. Full third-party notices, including the
+     body-diagram geometry, are in
      <a href="https://github.com/DuarteSantos8/openGym/blob/main/NOTICE.md" rel="noopener">NOTICE.md</a>.</p>
-  <p>The Brilhart Fitness fork also ships 4 port de bras exercises with its own images and
-     animations — <b>© Brilhart Fitness, all rights reserved</b>, not MIT or AGPL, included in
+  <p>The Brilhart Fitness fork also ships its own images and animations for 128 exercises — the
+     4 port de bras ones plus 124 of the dataset's own exercises, illustrated with Brilhart's
+     media instead — <b>© Brilhart Fitness, all rights reserved</b>, not MIT or AGPL, included in
      the repository only as an aggregate work alongside the AGPL code (see
-     <code>frontend/public/brilhart/COPYRIGHT.md</code>).</p>
+     <code>frontend/public/brilhart/COPYRIGHT.md</code>). The app's exercise library, search and
+     picker show only these 128 plus your own custom exercises; the rest of the dataset stays
+     text-only and keeps resolving for any routine, workout or history entry that already cites
+     one.</p>
   <h3>What does the AGPL mean for me?</h3>
   <p>You can self-host, use, modify and share openGym freely. If you run a <i>modified</i>
      version as a network service, you must offer that version's source under the same
