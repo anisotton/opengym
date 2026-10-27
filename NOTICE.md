@@ -10,8 +10,8 @@ forked from <https://github.com/DuarteSantos8/openGym> on 2026-09-29 and maintai
 Anderson Isotton (Isotton Corp). It remains under the **GNU AGPL v3.0**; the original copyright
 and every notice below are kept unchanged. As required by section 5(a) of the AGPL, changes made
 in this fork are recorded in its git history (commits after upstream `e88062e`), and the complete
-source of the version running on any instance is published here. This fork also adds 4 exercises
-with media of its own, **© Brilhart Fitness** rather than AGPL — see "Brilhart exercise media"
+source of the version running on any instance is published here. This fork also ships its own
+media, **© Brilhart Fitness** rather than AGPL, for 128 exercises — see "Brilhart exercise media"
 below.
 
 ## App store exception
@@ -25,13 +25,27 @@ not otherwise limit the license.
 
 ## Brilhart exercise media
 
-The 4 port de bras exercises added for this fork (`frontend/src/lib/exercises-brilhart.js`, ids
-`bf01`–`bf04`) ship with their own images and animations under `frontend/public/brilhart/`.
-**© Brilhart Fitness, all rights reserved.** This media is **not** licensed under the MIT license
-that covers the 1,324 built-in exercises' text above, and **not** under openGym's AGPL — it is
-included in this repository only as an aggregate work alongside the AGPL code, per AGPL section
-5. Reuse outside this app needs Brilhart Fitness's written permission. See
-`frontend/public/brilhart/COPYRIGHT.md`.
+`frontend/public/brilhart/` ships Brilhart's own images and animations for 128 exercises,
+**© Brilhart Fitness, all rights reserved**:
+
+- the 4 port de bras exercises added for this fork (`frontend/src/lib/exercises-brilhart.js`,
+  ids `bf01`–`bf04`) — their text (name, instructions) is Brilhart's own too, not from the
+  dataset below;
+- 124 of the 1,324 built-in exercises from the dataset below (`frontend/src/lib/
+  exercises-brilhart-124.js` overlays the media onto the matching `frontend/src/lib/
+  exercises-data.js` id) — only the image and animation are Brilhart's; the exercise's name,
+  attributes and instructions stay the dataset's own MIT-licensed text, unchanged.
+
+This media is **not** licensed under the MIT license that covers the built-in exercises' text
+below, and **not** under openGym's AGPL — it is included in this repository only as an aggregate
+work alongside the AGPL code, per AGPL section 5. Reuse outside this app needs Brilhart Fitness's
+written permission. See `frontend/public/brilhart/COPYRIGHT.md`.
+
+As of this version, the app's own exercise library, search, filters, muscle explorer and
+exercise picker show only these 128 Brilhart-illustrated exercises plus a user's own custom
+ones — the rest of the dataset below stays in the app text-only, resolving normally for any
+routine, workout or history entry that already cites one, but no longer offered to browse or
+add.
 
 ## Body diagram geometry
 
@@ -112,11 +126,13 @@ SOFTWARE.
 
 ### Images & animations — removed, third-party, never MIT nor AGPL
 
-**Removed from this project as of this version (ISO-1601/ISO-1603).** The exercise thumbnails
-(180×180) and animations described below are no longer shipped, downloaded or referenced
-anywhere in this repository, its container images or its mobile builds — the 1,324 built-in
-exercises are text-only now (metadata and instructions, MIT, above). The history below is kept
-for provenance; it no longer describes what this project does.
+**Removed from this project as of ISO-1601/ISO-1603.** The exercise thumbnails (180×180) and
+animations described below — the disputed-ownership ones this section is about — are no longer
+shipped, downloaded or referenced anywhere in this repository, its container images or its
+mobile builds. 124 of the 1,324 built-in exercises since gained different, Brilhart-owned media
+instead ("Brilhart exercise media" above); the rest stay text-only (metadata and instructions,
+MIT, above). The history below is kept for provenance; it no longer describes what this project
+does.
 
 The thumbnails and animations were **not** covered by the MIT license above and **not** by
 openGym's AGPL. Their ownership was **unresolved**, and openGym stated this plainly rather than

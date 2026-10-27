@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { LANGS, DERIVED_LOCALES } from './i18n-core.js'
 import { PT_BR_OVERRIDES } from '../locales/pt-BR.js'
-import { BODYPARTS, allExercises } from './exercises.js'
+import { CATALOGUE } from './exercises.js'
 
 const PACK_KEYS = [
   'English exercise names',
@@ -27,14 +27,20 @@ describe('exercise-name toggle locale coverage', () => {
     }
   })
 })
-// The Library, picker and editor chips show t(bp) and t(eq) for the catalogue's own values, which
-// no t('literal') names, so check-source-strings cannot see them. 'full body' came with the
+// The Library, picker and editor chips show t(bp) and t(eq) for an exercise's own values, which
+// are no t('literal') names, so check-source-strings cannot see them. 'full body' came with the
 // catalogue in v1.3.8 and stayed English in every language until QA found it (v1.3.9).
+//
+// Sourced from the full CATALOGUE, not exercises.js's BODYPARTS/allExercises: those are scoped
+// to the library-visible subset since ISO-1638 (124 Brilhart-illustrated ids + bf01-04), but a
+// routine, workout or history entry can still cite any of the ~1,200 hidden EXDB ids and render
+// its bp/eq text the same way — translation coverage must not shrink just because the picker
+// curated its own list.
 describe('catalogue body parts and equipment', () => {
   const packs = import.meta.glob('../locales/*.js', { eager: true, import: 'default' })
   it('every body part and every piece of equipment of the catalogue has a word in each pack', () => {
-    const terms = [...BODYPARTS, ...new Set(allExercises({}).map(e => e.eq).filter(Boolean))]
-    expect(BODYPARTS).toContain('full body')
+    const terms = [...new Set(CATALOGUE.map(e => e.bp)), ...new Set(CATALOGUE.map(e => e.eq).filter(Boolean))]
+    expect(terms).toContain('full body')
     for (const [file, pack] of Object.entries(packs)) {
       const missing = terms.filter(k => !Object.hasOwn(pack, k) || !String(pack[k]).trim())
       expect(missing, file).toEqual([])
