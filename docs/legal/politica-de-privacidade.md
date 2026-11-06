@@ -2,7 +2,7 @@
 
 # Política de Privacidade
 
-Versão: 2026-10-25
+Versão: 2026-10-26
 
 ## Controladora e contato
 
@@ -125,7 +125,7 @@ Se esta instância oferecer a comparação com outros usuários e você optar po
 
 ## Alterações e versão
 
-Cada versão desta política é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-25.
+Cada versão desta política é identificada pela data em que entrou em vigor. A versão atual é a de 2026-10-26.
 
 Podemos atualizar esta política para acompanhar mudanças no app ou na lei. Quando a mudança for relevante, você verá o novo texto e precisará aceitá-lo no próximo acesso para continuar usando o app. Se você não aceitar, a versão anterior continua valendo até o fim do período já pago, e a assinatura não renova. Você também pode exportar e excluir seus dados a qualquer momento.
 

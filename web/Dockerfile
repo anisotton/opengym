@@ -46,6 +46,11 @@ LABEL maintainer="Duarte Santos https://gitlab.com/DuarteSantos8" \
 
 COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
+# vite build copies frontend/public/* into dist preserving the host file's mode. Some hosts'
+# ACL/umask (e.g. a shared checkout under restrictive group ACLs) hand out 660 on new files, which
+# the non-root nginx worker can't read — a silent 403 on whatever media landed in public/ last,
+# while index.html and assets/ (generated inside the container) are unaffected.
+RUN chmod -R a+rX /usr/share/nginx/html
 
 # Substitutes __APP_URL__ in the served index.html at start-up — nginx.conf.template's own
 # envsubst (20-envsubst-on-templates.sh, part of this base image) only covers /etc/nginx/templates,
