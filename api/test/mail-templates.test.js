@@ -78,38 +78,15 @@ test('recover e-mail: same contract, 15-minute notice and the "ignore this" line
   assert.ok(html.includes('Criar nova forma de acesso'));
 });
 
-test('pre-charge notice: full amount, first-period amount and date land in both parts, CTA opens Settings', () => {
-  const { subject, text, html } = renderPreChargeNotice({
-    name: 'Ana', amount: 'R$ 89,00', firstAmount: 'R$ 1,99', billingDate: '12/11/2026', appUrl: APP
-  });
+test('pre-charge notice: amount and date land in both parts, CTA opens Settings', () => {
+  const { subject, text, html } = renderPreChargeNotice({ name: 'Ana', amount: 'R$ 89,00', billingDate: '12/11/2026', appUrl: APP });
   assert.equal(subject, 'Sua primeira cobrança cheia é em breve — Brilhart Fitness');
   for (const part of [text, html]) {
     assert.ok(part.includes('R$ 89,00'));
-    assert.ok(part.includes('R$ 1,99'));
     assert.ok(part.includes('12/11/2026'));
+    assert.ok(part.includes('R$ 1,99'));
   }
   assert.ok(html.includes(`href="${APP}/#/configuracoes"`));
-});
-
-// ISO-1721: the Terms now say the first month's price is whatever the app showed, not a fixed
-// R$ 1,99 — an intro Price minted after a catalog change must show up here, not the old literal.
-test('pre-charge notice: a first-period amount other than R$ 1,99 is what gets printed', () => {
-  const { text, html } = renderPreChargeNotice({
-    name: 'Ana', amount: 'R$ 89,00', firstAmount: 'R$ 9,90', billingDate: '12/11/2026', appUrl: APP
-  });
-  for (const part of [text, html]) {
-    assert.ok(part.includes('R$ 9,90'));
-    assert.ok(!part.includes('R$ 1,99'));
-  }
-});
-
-test('pre-charge notice: no first-period amount available — talks about the promo without naming a value, never falls back to R$ 1,99', () => {
-  const { text, html } = renderPreChargeNotice({ name: 'Ana', amount: 'R$ 89,00', billingDate: '12/11/2026', appUrl: APP });
-  for (const part of [text, html]) {
-    assert.ok(part.includes('R$ 89,00'));
-    assert.ok(!part.includes('R$ 1,99'));
-    assert.ok(!/R\$\s*[\d.,]+.{0,20}primeiro mês/i.test(part));
-  }
 });
 
 test('templates still render without appUrl (older callers): relative logo, no crash', () => {

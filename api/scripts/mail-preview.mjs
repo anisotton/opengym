@@ -21,7 +21,7 @@ const token = 'c2FtcGxlLXRva2VuLW5vdC1yZWFs.9f1c2b7e4a';
 const samples = {
   'verify-email': renderVerifyEmail({ name: 'Ana', link: `${appUrl}/#/verificar-email?token=${encodeURIComponent(token)}`, appUrl }),
   'recover-access': renderRecoverEmail({ name: 'Ana', link: `${appUrl}/#/recuperar?token=${encodeURIComponent(token)}`, appUrl }),
-  'pre-charge-notice': renderPreChargeNotice({ name: 'Ana', amount: 'R$ 89,00', firstAmount: 'R$ 1,99', billingDate: '12/11/2026', appUrl })
+  'pre-charge-notice': renderPreChargeNotice({ name: 'Ana', amount: 'R$ 89,00', billingDate: '12/11/2026', appUrl })
 };
 
 mkdirSync(outDir, { recursive: true });

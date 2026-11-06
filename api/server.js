@@ -4763,18 +4763,11 @@ setFirstPeriodNoticeHook(async (uid, sub) => {
   const amount = cents != null
     ? (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
     : 'o valor do seu plano';
-  // sub.priceAmount is whatever the subscription's current line item costs, and firstPeriod is
-  // still true at this point — i.e. this is the intro Price the account was actually charged at
-  // signup, frozen on the row by applyStripeEvent, not a live read of today's catalog intro price
-  // (ISO-1721: a later intro-price change must not rewrite what an earlier subscriber paid).
-  const firstAmount = sub.priceAmount != null
-    ? (sub.priceAmount / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-    : null;
   const d = sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
   const billingDate = d
     ? `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`
     : 'em breve';
-  const { subject, text: body, html } = renderPreChargeNotice({ name: user.name, amount, firstAmount, billingDate, appUrl: APP_URL });
+  const { subject, text: body, html } = renderPreChargeNotice({ name: user.name, amount, billingDate, appUrl: APP_URL });
   try { await sendMail({ to: user.email, subject, text: body, html }); }
   catch (e) { console.error('mail: could not send pre-charge notice e-mail', e.message); }
 });
