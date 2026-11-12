@@ -49,6 +49,10 @@ export default function TabBar({ onStart }) {
       </button>
       <Tab active={on('stats')} icon="chart" label={t('Stats')} onClick={() => nav('/stats')} />
       <Tab active={on('library')} icon="list" label={t('Exercises')} onClick={() => nav('/library')} />
+      {/* Teacher-only 6th tab (ISO-1594/ISO-1610) — the account also trains itself (D11), so it
+          keeps the other 5 and gets this one besides, never instead. `cur` already covers every
+          /alunos/* sub-route (the first path segment), so no alias is needed in `on()` above. */}
+      {user?.role === 'teacher' && <Tab active={on('alunos')} icon="people" label={t('Students')} onClick={() => nav('/alunos')} />}
     </nav>
   )
 }

@@ -17,7 +17,7 @@
 // 2G-class one. Safari and Firefox say nothing about the connection, and there it runs; the set is
 // bounded by the plan (a few MB for a typical one) and each file goes once.
 //
-// Not in the phone app: it has no service worker, and its media comes from the CDN.
+// Not in the phone app: it has no service worker.
 import { EXIDX, imgSrc, gifSrc } from './exercises.js'
 
 // The worker's media cache, public/sw.js MEDIA. Duplicated because the worker is not bundled;

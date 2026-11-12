@@ -8,6 +8,10 @@ import assert from 'node:assert/strict';
 import { renderVerifyEmail } from '../mail-templates/verify-email.js';
 import { renderRecoverEmail } from '../mail-templates/recover-access.js';
 import { renderPreChargeNotice } from '../mail-templates/pre-charge-notice.js';
+import {
+  renderPlanChangeScheduled, renderCancelScheduled, renderCancelImmediate, renderCancellationResumed,
+  renderCollectionSuspended, renderCollectionResumed
+} from '../mail-templates/billing-action.js';
 import { renderEmail, escapeHtml, logoUrl } from '../mail-templates/layout.js';
 
 const APP = 'https://fit.brilhart.com.br';
@@ -74,19 +78,99 @@ test('recover e-mail: same contract, 15-minute notice and the "ignore this" line
   assert.ok(html.includes('Criar nova forma de acesso'));
 });
 
-test('pre-charge notice: amount and date land in both parts, CTA opens Settings', () => {
-  const { subject, text, html } = renderPreChargeNotice({ name: 'Ana', amount: 'R$ 89,00', billingDate: '12/11/2026', appUrl: APP });
+test('pre-charge notice: full amount, first-period amount and date land in both parts, CTA opens Settings', () => {
+  const { subject, text, html } = renderPreChargeNotice({
+    name: 'Ana', amount: 'R$ 89,00', firstAmount: 'R$ 1,99', billingDate: '12/11/2026', appUrl: APP
+  });
   assert.equal(subject, 'Sua primeira cobrança cheia é em breve — Brilhart Fitness');
   for (const part of [text, html]) {
     assert.ok(part.includes('R$ 89,00'));
-    assert.ok(part.includes('12/11/2026'));
     assert.ok(part.includes('R$ 1,99'));
+    assert.ok(part.includes('12/11/2026'));
   }
   assert.ok(html.includes(`href="${APP}/#/configuracoes"`));
+});
+
+// ISO-1721: the Terms now say the first month's price is whatever the app showed, not a fixed
+// R$ 1,99 — an intro Price minted after a catalog change must show up here, not the old literal.
+test('pre-charge notice: a first-period amount other than R$ 1,99 is what gets printed', () => {
+  const { text, html } = renderPreChargeNotice({
+    name: 'Ana', amount: 'R$ 89,00', firstAmount: 'R$ 9,90', billingDate: '12/11/2026', appUrl: APP
+  });
+  for (const part of [text, html]) {
+    assert.ok(part.includes('R$ 9,90'));
+    assert.ok(!part.includes('R$ 1,99'));
+  }
+});
+
+test('pre-charge notice: no first-period amount available — talks about the promo without naming a value, never falls back to R$ 1,99', () => {
+  const { text, html } = renderPreChargeNotice({ name: 'Ana', amount: 'R$ 89,00', billingDate: '12/11/2026', appUrl: APP });
+  for (const part of [text, html]) {
+    assert.ok(part.includes('R$ 89,00'));
+    assert.ok(!part.includes('R$ 1,99'));
+    assert.ok(!/R\$\s*[\d.,]+.{0,20}primeiro mês/i.test(part));
+  }
 });
 
 test('templates still render without appUrl (older callers): relative logo, no crash', () => {
   const { html } = renderVerifyEmail({ name: 'Ana', link: LINK });
   assert.ok(html.includes('<img'));
   assert.ok(html.includes(LINK.replace(/&/g, '&amp;')));
+});
+
+/* ISO-1625 (T2b, plan §5 item 5): one notice per admin subscription action. Same contract as every
+   template above — self-contained plain text, the key facts (plan/amount/date) in both parts. */
+test('plan-change-scheduled: plan name, amount and effective date land in both parts', () => {
+  const { subject, text, html } = renderPlanChangeScheduled({
+    name: 'Ana', planName: 'Trimestral', amount: 'R$ 237,00', effectiveDate: '12/11/2026', appUrl: APP
+  });
+  assert.match(subject, /Trimestral/);
+  for (const part of [text, html]) {
+    assert.ok(part.includes('Trimestral'));
+    assert.ok(part.includes('R$ 237,00'));
+    assert.ok(part.includes('12/11/2026'));
+  }
+  assert.ok(html.includes(`href="${APP}/#/configuracoes"`));
+});
+
+test('cancel-scheduled: effective date lands in both parts, says access continues until then', () => {
+  const { subject, text, html } = renderCancelScheduled({ name: 'Ana', effectiveDate: '12/11/2026', appUrl: APP });
+  assert.match(subject, /cancelar/);
+  for (const part of [text, html]) {
+    assert.ok(part.includes('12/11/2026'));
+    assert.ok(/acesso/i.test(part));
+  }
+});
+
+test('cancel-immediate: says access ends now, no effective date to carry', () => {
+  const { subject, text, html } = renderCancelImmediate({ name: 'Ana', appUrl: APP });
+  assert.match(subject, /cancelada/);
+  for (const part of [text, html]) assert.ok(/imediat/i.test(part));
+});
+
+test('cancellation-resumed: says the scheduled cancellation was undone', () => {
+  const { subject, text, html } = renderCancellationResumed({ name: 'Ana', appUrl: APP });
+  assert.match(subject, /desfeito/);
+  for (const part of [text, html]) assert.ok(/desfeito/i.test(part));
+});
+
+test('collection-suspended: with resumesAt, the auto-resume date lands in both parts; without, it does not', () => {
+  const withDate = renderCollectionSuspended({ name: 'Ana', resumesAt: '12/11/2026', appUrl: APP });
+  assert.ok(withDate.text.includes('12/11/2026'));
+  assert.ok(withDate.html.includes('12/11/2026'));
+  const noDate = renderCollectionSuspended({ name: 'Ana', resumesAt: null, appUrl: APP });
+  assert.ok(!noDate.text.includes('12/11/2026'));
+  for (const part of [withDate.text, withDate.html, noDate.text, noDate.html]) assert.ok(/suspens/i.test(part));
+});
+
+test('collection-resumed: says billing resumed, distinct wording from cancellation-resumed', () => {
+  const { subject, text, html } = renderCollectionResumed({ name: 'Ana', appUrl: APP });
+  assert.match(subject, /retomada/);
+  for (const part of [text, html]) assert.ok(/cobrança/i.test(part));
+});
+
+test('billing-action templates escape a user-sourced name the same way every other template does', () => {
+  const { html } = renderCollectionResumed({ name: '<Ana & Zé>', appUrl: APP });
+  assert.ok(!html.includes('<Ana'), 'name never reaches the markup raw');
+  assert.ok(html.includes('&lt;Ana &amp; Zé&gt;'));
 });

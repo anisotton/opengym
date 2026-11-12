@@ -37,6 +37,9 @@ vi.mock('../lib/api.js', () => ({
 }))
 vi.mock('../lib/demo.js', () => ({ DEMO: false, REPO: 'https://example.invalid' }))
 vi.mock('../sheets.jsx', () => ({ askAddDeviceData: vi.fn(), confirmSheet: vi.fn() }))
+// Login.jsx reads the Google callback's own query string (ISO-1595 §4) via useSearchParams —
+// none of this file's cases carry one, so a plain, empty one is enough.
+vi.mock('react-router-dom', () => ({ useSearchParams: () => [new URLSearchParams(), vi.fn()] }))
 
 const mounted = []
 function mount(el) {

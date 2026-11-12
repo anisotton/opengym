@@ -71,9 +71,10 @@ describe('Admin user drill-down', () => {
     expect(buttons).toContain('Disable account')
     expect(buttons).not.toContain('Download their data')
     expect(sheet.textContent).not.toMatch(/Workout|Weigh-in|Routine/)
-    // Account + subscription tiles instead, with no subscription configured reading as '—'.
+    // Plan/Status/Next charge moved into <SubscriptionPanel> (ISO-1627) — only "Last sync"
+    // (not billing) stays a plain Account tile.
     const tiles = [...sheet.querySelectorAll('.tile')].map(t => t.textContent)
-    expect(tiles).toEqual(['Plan—', 'Status—', 'Next charge—', 'Last syncnever'])
+    expect(tiles).toEqual(['Last syncnever'])
   })
 })
 

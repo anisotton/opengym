@@ -1,15 +1,16 @@
-// The account's own verified e-mail (ISO-1397/1398): the under-18 notice shown at sign-up and at
-// the old-account migration sheet below, the "resend confirmation" button reused in three places
-// (this file's own sheet, Login.jsx's post-signup screen, SyncBanner.jsx's reminder), and
-// Settings → Account → E-mail itself. Distinct from PasswordAuth.jsx's EmailRow — the older,
-// optional, never-sent-to sign-in address (#118) — which this never touches.
+// The account's own verified e-mail (ISO-1397/1398/1596): the under-18 notice shown at sign-up
+// and at the old-account migration sheet below, the "resend confirmation" button reused in three
+// places (this file's own sheet, Login.jsx's post-signup screen, SyncBanner.jsx's reminder), and
+// Settings → Account → E-mail itself — the only e-mail an account has, PASSWORD_LOGIN on or off,
+// since ISO-1596 retired PasswordAuth.jsx's older, optional, never-sent-to sign-in address
+// (#118, EmailRow).
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { isMinor } from '../lib/age.js'
 import { accountEmailResend, accountEmailSet, recoverRequest } from '../lib/api.js'
-import { looksLikeEmail, foldEmail, passwordError, ProveOwner } from './PasswordAuth.jsx'
+import { looksLikeEmail, foldEmail, passwordError, passwordOn, ProveOwner } from './PasswordAuth.jsx'
 import { Row, Button } from './ui.jsx'
 
 const ui = () => useUI.getState()
@@ -133,7 +134,7 @@ export function AddEmailSheet({ current, close }) {
     <h3>{title}</h3>
     <div className="small" style={{ marginBottom: 6, fontWeight: 600, overflowWrap: 'anywhere' }}>{foldEmail(clean)}</div>
     <div className="dim small" style={{ marginBottom: 14 }}>{t('First confirm that it is you.')}</div>
-    <ProveOwner passkey password={false} submitText={t('Save')} onProof={save} />
+    <ProveOwner passkey password={false} submitText={t('Save')} onProof={save} resumeAction={{ kind: 'set-email', email: foldEmail(clean) }} />
     <div style={{ height: 8 }} />
     <Button type="button" variant="ghost" className="dim" onClick={() => setStep('edit')}>{t('Back')}</Button>
   </>
@@ -166,12 +167,16 @@ export function openNeedsEmailPrompt() {
   ui().openSheet(close => <AddEmailSheet close={() => { localStorage.setItem(DEFERRED_KEY, String(Date.now())); close() }} />)
 }
 
-/* ------------------------------------------------------------- "Perdi meu acesso" (Login.jsx) -
-   POST /api/recover/request answers 200 either way (api/server.js's own anti-enumeration
-   contract) — this sheet shows the same neutral "if that's a known e-mail…" line regardless of
-   whether the address exists, never a distinct error for "no such account". Opening the mailed
-   link lands on RecoverAccess.jsx (#/recuperar?token=). */
+/* ------------------------------------------------------------- "Esqueci minha senha" / "Perdi
+   meu acesso" (Login.jsx, ISO-1595 §3.1) - POST /api/recover/request answers 200 either way
+   (api/server.js's own anti-enumeration contract) — this sheet shows the same neutral "if that's
+   a known e-mail…" line regardless of whether the address exists, never a distinct error for "no
+   such account". Opening the mailed link lands on RecoverAccess.jsx (#/recuperar?token=), which
+   now offers a new password as well as a new passkey (ISO-1596) — so the one body below is
+   worded to fit both, and only the title/link text still varies with whether this instance even
+   has a password to forget. */
 function RecoverRequestSheet({ close }) {
+  const pwOn = passwordOn(useStore.getState().config)
   const [email, setEmail] = useState('')
   const [sent, setSent] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -189,14 +194,14 @@ function RecoverRequestSheet({ close }) {
     <div className="muted small" style={{ marginBottom: 14 }}>
       {/* 15 minutes, one use — RECOVER_TTL_MS (api/email-tokens.js), not the 24h/reusable
           confirmation link above: a different token, a different TTL. */}
-      {t('If {0} has an account here, we sent a link to set up a new passkey on this device. It is valid for 15 minutes and works once.', foldEmail(email))}
+      {t('If {0} has an account here, we sent a link to continue on this device. It is valid for 15 minutes and works once.', foldEmail(email))}
     </div>
     <Button variant="primary" onClick={close}>{t('Done')}</Button>
   </>
   return <>
-    <h3>{t('Lost access to your device?')}</h3>
+    <h3>{pwOn ? t('Forgot your password?') : t('Lost access to your device?')}</h3>
     <div className="muted small" style={{ marginBottom: 14 }}>
-      {t('Enter the e-mail you added to your account. If it matches one, we send a link to set up a passkey on this device.')}
+      {t('Enter the e-mail you added to your account. If it matches one, we send a link to continue on this device.')}
     </div>
     <form onSubmit={go} noValidate>
       <input ref={ref} className="input" type="email" name="email" autoComplete="email" inputMode="email" placeholder={t('E-mail address')} maxLength={254}

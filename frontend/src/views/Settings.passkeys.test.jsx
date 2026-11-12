@@ -82,16 +82,18 @@ afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { ro
 const asked = path => mocks.api.mock.calls.filter(([p]) => p === path).length
 
 describe('Settings: passkeys and another device', () => {
-  it('a signed-in browser lists its passkeys and offers a code for another device, in Account', async () => {
+  it('a signed-in browser lists its passkeys and offers a code for another device, in "Ways to sign in"', async () => {
     const page = mount(<Settings />)
     await settle()
-    const account = section(page, 'Account')
-    expect(titles(account)).toEqual(expect.arrayContaining(['Passkeys', 'Add another device']))
-    expect(rowByTitle(account, 'Passkeys').textContent).toContain('2 passkeys')
-    // Above pairing and the password, which are about other ways in.
-    const order = titles(account)
-    expect(order.indexOf('Passkeys')).toBeLessThan(order.indexOf('Pair the mobile app'))
-    expect(order.indexOf('Add another device')).toBeLessThan(order.indexOf('Password'))
+    const ways = section(page, 'Ways to sign in')
+    expect(titles(ways)).toEqual(expect.arrayContaining(['Passkeys', 'Add another device']))
+    expect(rowByTitle(ways, 'Passkeys').textContent).toContain('2 passkeys')
+    // ISO-1595 §5's own order: password, then passkeys, then Google — "Add another device" is
+    // not itself a way to sign in, and stays right after the passkey rows it is about.
+    const order = titles(ways)
+    expect(order.indexOf('Password')).toBeLessThan(order.indexOf('Passkeys'))
+    expect(order.indexOf('Passkeys')).toBeLessThan(order.indexOf('Add another device'))
+    expect(titles(section(page, 'Account')).indexOf('Pair the mobile app')).toBeGreaterThanOrEqual(0)
   })
 
   it('a guest gets neither, and nothing is asked', async () => {
@@ -111,7 +113,7 @@ describe('Settings: passkeys and another device', () => {
       await settle()
       expect(titles(page)).not.toContain('Passkeys')
       expect(titles(page)).not.toContain('Add another device')
-      expect(titles(section(page, 'Account'))).toContain('Password')
+      expect(titles(section(page, 'Ways to sign in'))).toContain('Password')
     } finally { mocks.list = list }
   })
 
@@ -125,14 +127,14 @@ describe('Settings: passkeys and another device', () => {
     })
     const page = mount(<Settings />)
     await settle()
-    expect(titles(section(page, 'Account'))).not.toEqual(expect.arrayContaining(['Passkeys']))
-    expect(titles(section(page, 'Account'))).not.toContain('Password')
+    expect(titles(section(page, 'Ways to sign in'))).not.toEqual(expect.arrayContaining(['Passkeys']))
+    expect(titles(section(page, 'Ways to sign in'))).not.toContain('Password')
 
     mocks.api.mockImplementation(answer)
     mocks.sync = { ...mocks.sync, lastSynced: mocks.sync.lastSynced + 30000 }   // a check that found both sides in step
     act(() => mounted.at(-1).root.render(<Settings />))
     await settle()
-    expect(titles(section(page, 'Account'))).toEqual(expect.arrayContaining(['Passkeys', 'Add another device', 'Password']))
+    expect(titles(section(page, 'Ways to sign in'))).toEqual(expect.arrayContaining(['Passkeys', 'Add another device', 'Password']))
     expect(asked('/api/account/passkeys')).toBe(2)
     expect(asked('/api/account/password')).toBe(2)
 
@@ -165,7 +167,7 @@ describe('Settings: passkeys and another device', () => {
     await settle()
     expect(asked('/api/account/passkeys')).toBe(1)
     expect(asked('/api/account/password')).toBe(1)
-    act(() => rowByTitle(section(page, 'Account'), 'Passkeys').click())
+    act(() => rowByTitle(section(page, 'Ways to sign in'), 'Passkeys').click())
     const list = mount(mocks.sheets.at(-1).render(() => {}))
     await settle()
     act(() => rowByTitle(list, 'Laptop').click())

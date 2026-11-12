@@ -68,7 +68,8 @@ function ProveIdentitySheet({ close, passkeysState }) {
   return <>
     <h3>{t('Confirm it’s you')}</h3>
     <div className="muted small" style={{ marginBottom: 14 }}>{t('Before deleting, confirm with a passkey or your current password.')}</div>
-    <ProveOwner passkey={passkeysState.passkeys.length > 0} password={passkeysState.password} danger submitText={t('Delete account')} onProof={toFinal} />
+    <ProveOwner passkey={passkeysState.passkeys.length > 0} password={passkeysState.password} danger submitText={t('Delete account')} onProof={toFinal}
+      resumeAction={{ kind: 'delete-account' }} />
     <div style={{ height: 8 }} />
     <Button variant="ghost" className="dim" onClick={close}>{t('Cancel')}</Button>
   </>

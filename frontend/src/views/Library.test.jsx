@@ -7,7 +7,7 @@ import { resolve } from 'node:path'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Library from './Library.jsx'
-import { EXDB } from '../lib/exercises.js'
+import { EXDB, LIBRARY_CATALOGUE, LIBRARY_IDS } from '../lib/exercises.js'
 import { CASED_NAME_LANGS, EXERCISE_NAME_LANGS, _setLangState } from '../lib/i18n-core.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -74,8 +74,10 @@ describe('Library favourites', () => {
   })
 
   it('keeps a favourite on top inside a body-part filter, but never pulls one in from elsewhere', () => {
-    const chest = EXDB.filter(e => e.bp === 'chest')
-    const legs = EXDB.find(e => e.bp !== 'chest')
+    // From LIBRARY_CATALOGUE (ISO-1638), not the full EXDB: the Library only ever renders the
+    // library-visible subset, so a favourite outside it would never show up to test against.
+    const chest = LIBRARY_CATALOGUE.filter(e => e.bp === 'chest')
+    const legs = LIBRARY_CATALOGUE.find(e => e.bp !== 'chest')
     mocks.S.favEx = [chest[4].id, legs.id]
     const host = render()
     const chip = [...host.querySelectorAll('.chips .chip')].find(b => b.textContent === 'chest')
@@ -93,12 +95,19 @@ describe('Library exercise-name casing per language', () => {
   afterEach(() => _setLangState('en', {}, null, null))
 
   for (const lang of EXERCISE_NAME_LANGS) {
+    // de.js only covers "equipment exercises" (not body-weight ones, by its own file comment),
+    // and since ISO-1638 the library is 124 Brilhart-illustrated ids + bf01-04 — all body-weight
+    // — so German has nothing of its own to show here today. Still asserted explicitly (not
+    // skipped) so a future German entry among those ids, or a future all-equipment language
+    // with the same gap, is caught rather than silently passing either way.
+    const hasOverlap = Object.keys(packs[`../exercise-names/${lang}.js`]).some(id => LIBRARY_IDS.has(id))
     it(`${lang}: every translated row is ${CASED_NAME_LANGS.includes(lang) ? 'left in its own casing' : 'title-cased'}`, () => {
       const pack = packs[`../exercise-names/${lang}.js`]
       _setLangState(lang, {}, null, pack)
       const rows = [...render().querySelectorAll('.item .tt')].slice(1)   // drop "Create your own"
       expect(rows.length).toBeGreaterThan(0)
       const translated = rows.filter(el => Object.values(pack).some(n => el.textContent.startsWith(n)))
+      if (!hasOverlap) { expect(translated.length, lang).toBe(0); return }
       expect(translated.length, lang).toBeGreaterThan(0)
       for (const el of translated) expect(el.classList.contains('capitalize'), `${lang}: ${el.textContent}`).toBe(!CASED_NAME_LANGS.includes(lang))
     })

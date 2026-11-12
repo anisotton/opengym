@@ -113,7 +113,7 @@ describe('Admin → Reset password', () => {
   })
 })
 
-describe('Admin → sign-in e-mail', () => {
+describe('Admin → account e-mail (ISO-1397/1596)', () => {
   it('shows the address in the list and on the profile, and names it on the reset code sheet', async () => {
     mocks.answers['/api/admin/users'] = { users: [{ id: 'u1', name: 'Mallory', workouts: 0, lastSync: null, disabled: false, password: true, email: 'mallory@example.com' }], invite_only: false, password_login: true }
     mocks.answers['/api/admin/user'] = detail({ password: true, email: 'mallory@example.com', resetUntil: null })
@@ -127,7 +127,7 @@ describe('Admin → sign-in e-mail', () => {
     await act(async () => { await mocks.confirm.mock.calls[0][0].onConfirm() })
     await settle()
     const code = render(mocks.sheets.slice(before).find(s => s.opts?.locked).render(() => {}))
-    expect(code.textContent).toContain('or their sign-in e-mail mallory@example.com')
+    expect(code.textContent).toContain('or their e-mail mallory@example.com')
   })
 
   it('shows nothing where the server sends no address', async () => {

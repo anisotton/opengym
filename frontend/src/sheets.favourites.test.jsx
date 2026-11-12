@@ -4,7 +4,7 @@
 import React, { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
-import { EXDB } from './lib/exercises.js'
+import { EXDB, LIBRARY_CATALOGUE } from './lib/exercises.js'
 import { DEF, useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
 import { exerciseDetailSheet, exercisePicker } from './sheets.jsx'
@@ -86,11 +86,13 @@ describe('exercise picker', () => {
     const chip = h => [...h.querySelectorAll('.chips .chip')].find(b => b.textContent.startsWith('Favourites'))
     expect(chip(host)).toBeUndefined()
     useUI.setState({ sheets: [] })
-    useStore.setState(s => ({ S: { ...s.S, favEx: [EXDB[5].id, EXDB[9].id] } }))
+    // From LIBRARY_CATALOGUE (ISO-1638), not raw EXDB indices: the picker only ever lists the
+    // library-visible subset, so a favourite outside it would never show up here.
+    useStore.setState(s => ({ S: { ...s.S, favEx: [LIBRARY_CATALOGUE[5].id, LIBRARY_CATALOGUE[9].id] } }))
     exercisePicker(vi.fn())
     host = renderTop()
     expect(chip(host).textContent).toBe('Favourites (2)')
     act(() => chip(host).click())
-    expect(names(host)).toEqual([EXDB[5].n, EXDB[9].n])
+    expect(names(host)).toEqual([LIBRARY_CATALOGUE[5].n, LIBRARY_CATALOGUE[9].n])
   })
 })

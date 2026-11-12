@@ -42,7 +42,22 @@ afterEach(() => {
 describe('exercise picker equipment filter', () => {
   // The exact reproduction from issue #71: "lower arms" + "dumbbell", then switch to "upper arms".
   // Both body parts have dumbbell exercises, so the filter must stay selected across the switch.
+  //
+  // Since ISO-1638 the library-visible catalogue is 124 Brilhart-illustrated ids + bf01-04, all
+  // body weight — nothing left in it to offer a second equipment option at all. Two custom
+  // exercises (always picker-visible, regardless of the library curation) supply the dumbbell
+  // option this regression test needs; the bug it guards against is about the picker's own
+  // equipment-filter state, not about which catalogue backs it.
   it('keeps the dumbbell filter when switching from lower arms to upper arms', () => {
+    useStore.setState(s => ({
+      S: {
+        ...s.S,
+        customEx: [
+          { id: 'custom-dumb-lower', n: 'Custom lower-arm curl', custom: true, bp: 'lower arms', eq: 'dumbbell', tg: 'forearms', sm: [], st: [] },
+          { id: 'custom-dumb-upper', n: 'Custom upper-arm curl', custom: true, bp: 'upper arms', eq: 'dumbbell', tg: 'biceps', sm: [], st: [] },
+        ],
+      },
+    }))
     exercisePicker(vi.fn())
     const host = renderTop()
 

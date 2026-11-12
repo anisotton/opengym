@@ -9,6 +9,7 @@ import { bwSheet, goalSheet, dayOverrideSheet, calendarSheet, startFlow, starter
 import { canWriteFromBilling } from '../lib/billing.js'
 import { openManagePortal } from './SettingsPlan.jsx'
 import LineChart from '../components/LineChart.jsx'
+import TeacherProgramCard from '../components/TeacherProgramCard.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
 import { tappable } from '../lib/use-sheet-keyboard.js'
@@ -154,6 +155,11 @@ export default function Home() {
         </Button>
       </div>}
     </div>
+
+    {/* ISO-1594/ISO-1610 §6: a teacher's `kind: 'program'` assignment (S.teacherProgram) —
+        absent (not an empty state) when there is no current recommendation, same convention as
+        the rest of this screen's conditional cards. */}
+    {user && <TeacherProgramCard />}
 
     {/* Jump to the gym check-in cards (QR membership codes). Shown here as a quick tap on
         arrival at the gym; folds away per user via the "Gym check-in" switch in Settings. */}

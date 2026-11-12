@@ -12,11 +12,19 @@ describe('userFromMe', () => {
     })
   })
 
-  it('an older server (no terms or e-mail fields) never asks for terms and adds no e-mail fields', () => {
+  it('an older server (no terms, e-mail or google fields) never asks for terms and adds neither', () => {
     const u = userFromMe({ user: { id: 'u' } })
     expect(u).toEqual({ id: 'u', termsVersion: null, termsAcceptedAt: null, needsTerms: false })
     expect('needsEmail' in u).toBe(false)
     expect('email' in u).toBe(false)
+    expect('google' in u).toBe(false)
+  })
+
+  it('carries google (ISO-1597), null or linked, whenever the server sends it', () => {
+    const base = { user: { id: 'u' }, needsTerms: false, termsVersion: null }
+    expect(userFromMe({ ...base, google: null })).toMatchObject({ google: null })
+    const linked = { email: 'ada@gmail.com', linkedAt: '2026-10-18T00:00:00.000Z' }
+    expect(userFromMe({ ...base, google: linked })).toMatchObject({ google: linked })
   })
 
   it('a given base replaces me.user', () => {

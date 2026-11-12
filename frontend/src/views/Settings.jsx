@@ -5,14 +5,15 @@ import { workoutControls } from '../lib/workout-controls.js'
 import { speedUnitOf } from '../lib/speed.js'
 import { copyText } from '../lib/clipboard.js'
 import { useUI } from '../store/useUI.js'
-import { todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate } from '../lib/format.js'
+import { todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate, fmtDate } from '../lib/format.js'
+import { scopeItems } from '../lib/teacher.js'
 import { inventoryFor, ownsPlates } from '../lib/plates.js'
 import { effortOf } from '../lib/history.js'
 import { unlock, playOnSilentSupported, vibrateSupported } from '../lib/sound.js'
 import { api, webauthnOK, IS_ANDROID } from '../lib/api.js'
 import { pushSupported, enablePush, disablePush, sendTestPush, syncPushSubscription } from '../lib/push.js'
 import { wakeLockSupported } from '../lib/wakelock.js'
-import { t, LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, baseLang, dateLocale } from '../lib/i18n.js'
+import { t, getLang, LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, baseLang, dateLocale } from '../lib/i18n.js'
 import { effectiveLang } from '../lib/default-lang.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, isAndroid, shareExport, shareExportBlob, syncReminder } from '../lib/mobile.js'
@@ -32,12 +33,14 @@ import { DeleteAccountRow } from '../components/DeleteAccount.jsx'
 import { Section, Row, SelectRow, Switch, Segmented, Button } from '../components/ui.jsx'
 import SignupFlow from '../components/SignupFlow.jsx'
 import { AccountEmailRow } from '../components/AccountEmail.jsx'
+import { GoogleRow } from '../components/GoogleAccount.jsx'
 
 export default function Settings() {
   const nav = useNavigate()
   const S = useStore(s => s.S)
   const user = useStore(s => s.user)
   const billing = useStore(s => s.billing)
+  const billingPlans = useStore(s => s.billingPlans)
   const coachLocal = useStore(s => s.coachLocal)
   // Name-and-password sign-in, where the instance offers it (#118).
   const config = useStore(s => s.config)
@@ -311,18 +314,21 @@ export default function Settings() {
             (ISO-1395), same as every other Stripe-gated piece of this phase. */}
         {billing?.enabled && <Row icon="crown" iconTint="var(--yellow)" title={t('Plan')}
           subtitle={billing.status === 'active' || billing.status === 'past_due'
-            ? ({ monthly: t('Monthly'), quarterly: t('Quarterly'), yearly: t('Yearly') })[billing.plan] || null
+            // Resolved against the catalog (ISO-1619/ISO-1627), not a fixed monthly/quarterly/
+            // yearly map — same graceful fallback (plain id, or null) SettingsPlan.jsx uses.
+            ? (billingPlans?.plans.find(p => p.id === billing.plan)?.display?.[getLang()]?.name
+              ?? billingPlans?.plans.find(p => p.id === billing.plan)?.display?.['pt-BR']?.name
+              ?? billing.plan ?? null)
             : t("Your subscription isn't active — you can view and export your history, but new workouts won't be logged.")}
           accessory="chevron" onClick={() => nav('/configuracoes')} />}
-        <PasskeysRow state={passkeys.st} changed={credsChanged} />
-        <DeviceLinkRow state={passkeys.st} />
-        {/* ISO-1397's own POST /api/account/email is a different handler, registered only while
-            PASSWORD_LOGIN is off — on, that path is PasswordRow's legacy sign-in address (#118),
-            which this row has nothing to do with. */}
-        {!pwOn && <AccountEmailRow user={user} />}
+        <MyTeacherRow />
+        {/* ISO-1596: the account's one verified e-mail is universal now, PASSWORD_LOGIN on or
+            off — and it is not itself a "way to sign in" (ISO-1595 §0/§5), so it stays in this
+            section rather than the "Ways to sign in" one right below. PasskeysRow/DeviceLinkRow
+            moved there too (ISO-1598) — they are not duplicated here. */}
+        <AccountEmailRow user={user} />
         <Row icon="link" iconTint="var(--blue)" title={t('Pair the mobile app')} subtitle={t('Connect the Brilhart Fitness app on your phone to this account.')} accessory="chevron"
           onClick={() => useUI.getState().openSheet(close => <PairSheet close={close} />)} />
-        {pwOn && <PasswordRow version={credsV} />}
         <Row icon="signOut" iconTint="var(--red)" title={t('Sign out')} danger onClick={signOutHere} />
         <Row icon="shield" iconTint="var(--red)" title={t('Sign out everywhere')} subtitle={t('Ends this profile’s sessions on all your devices.')} danger onClick={signOutEverywhere} />
         <AccountIdRow id={user.id} />
@@ -341,6 +347,22 @@ export default function Settings() {
         <Row icon="lock" iconTint="var(--grey)" title={t('Passkeys not supported in this browser.')} />
         <KeptChangesRows />
       </>}
+    </Section>}
+
+    {/* ---------- ways to sign in (ISO-1595 §5): password, passkeys, Google, in that order.
+        A Capacitor profile that never linked Google has nothing to show here (Password/Passkeys/
+        DeviceLink are all web-only sign-in methods) and the section itself disappears — but one
+        that already linked Google from the browser still gets to see that link, read-only
+        (GoogleRow's own MOBILE branch, docs/MOBILE.md), so the section can't be gated on !MOBILE
+        alone; it has to survive long enough for GoogleRow to decide — but only when GoogleRow
+        will actually render something: an instance that turned google_login back off since the
+        link was made has nothing left to show either (GoogleRow's own `!googleOn` check), and the
+        section must not render empty under its title. */}
+    {user && !DEMO && (!MOBILE || (!!user.google && !!config?.google_login)) && <Section title={t('Ways to sign in')}>
+      {!MOBILE && pwOn && <PasswordRow version={credsV} />}
+      {!MOBILE && <PasskeysRow state={passkeys.st} changed={credsChanged} />}
+      <GoogleRow user={user} googleOn={!!config?.google_login} passkeysState={passkeys.st} />
+      {!MOBILE && <DeviceLinkRow state={passkeys.st} />}
     </Section>}
     {!user && !DEMO && !MOBILE && <p className="sect-f" style={{ marginTop: -18, marginBottom: 22 }}>{t('Guest mode — data lives only in this browser.')}</p>}
 
@@ -606,7 +628,7 @@ export default function Settings() {
       {user?.termsAcceptedAt && <>{t('You accepted version {0} on {1}.', user.termsVersion, new Date(user.termsAcceptedAt).toLocaleDateString(dateLocale()))}<br /></>}
       Brilhart Fitness v{__APP_VERSION__} · {t('free & open source (AGPL v3)')}<br />
       <a href="https://github.com/anisotton/opengym" target="_blank" rel="noopener">source code</a> · exercise data: hasaneyldrm/exercises-dataset (MIT)<br />
-      exercise images and animations © <a href="https://gymvisual.com/" target="_blank" rel="noopener">Gym visual</a>
+      exercise media (128 exercises, incl. the port de bras ones) © Brilhart Fitness, all rights reserved
     </div>
   </div>
 }
@@ -890,6 +912,56 @@ function AccountIdRow({ id }) {
   if (!id) return null
   const copy = async () => { if (await copyText(id)) toast(t('Account ID copied')) }
   return <Row icon="person" iconTint="var(--grey)" title={t('Account ID')} subtitle={<span className="acct-id">{id}</span>} onClick={copy} />
+}
+
+// ISO-1594/ISO-1610 — Tela 5: "Meu professor". Row absent (not "None") until GET
+// /api/account/teacher answers with one — same absence convention as every other conditional
+// row in this file. `scopeItems()` is the exact text the invite-accept screen (Tela 4) showed
+// before this account accepted — same source, so the two never read differently (critério de
+// aceite).
+function MyTeacherSheet({ link, close, onChanged }) {
+  const toast = useUI(s => s.toast)
+  const [share, setShare] = useState(link.shareBodyweight)
+  const scope = scopeItems()
+  const setShareOnServer = async v => {
+    try { await api('/api/account/teacher/bodyweight', { method: 'POST', body: JSON.stringify({ share: v }) }); setShare(v) }
+    catch { toast(t('Could not save. Try again.')) }
+  }
+  // Turning it off reduces what the teacher sees — no friction. Turning it on is a positive
+  // consent, same as the Tela 4 checkbox, so it gets the same short confirmation.
+  const onToggleShare = v => v
+    ? confirmSheet({
+        title: t('Share body weight?'), message: t('{0} will be able to see your body-weight progress. You can turn it off anytime.', link.teacher.name),
+        confirmText: t('Share'), onConfirm: () => setShareOnServer(true)
+      })
+    : setShareOnServer(false)
+  const unlink = () => confirmSheet({
+    title: t('Unlink from {0}?', link.teacher.name),
+    message: t('They stop seeing your workouts immediately. Routines they assigned stay with you.'),
+    confirmText: t('Unlink'), danger: true,
+    onConfirm: () => api('/api/account/teacher', { method: 'DELETE' })
+      .then(() => { close(); toast(t('Unlinked.')); onChanged() })
+      .catch(e => toast(e.status === 404 ? t('This link no longer exists.') : t('Could not unlink. Try again.')))
+  })
+  return <>
+    <h3>{t('My teacher')}</h3>
+    <div style={{ fontWeight: 600 }}>{link.teacher.name}</div>
+    <div className="muted small" style={{ marginBottom: 14 }}>{t('Since {0}', fmtDate(link.acceptedAt.slice(0, 10), true))}</div>
+    <div className="small" style={{ fontWeight: 600, margin: '10px 0 4px' }}>{t('{0} can see:', link.teacher.name)}</div>
+    <ul className="scope-list">{scope.sees.map((s, i) => <li key={i}>✓ {s}</li>)}</ul>
+    <Row title={t('Share body weight')}><Switch checked={share} onChange={onToggleShare} /></Row>
+    <div style={{ height: 10 }} />
+    <Button variant="danger" onClick={unlink}>{t('Unlink')}</Button>
+  </>
+}
+
+function MyTeacherRow() {
+  const [link, setLink] = useState(undefined) // undefined = not loaded yet, null = none, object = linked
+  const load = () => api('/api/account/teacher').then(d => setLink(d.teacher ? d : null)).catch(() => setLink(null))
+  useEffect(() => { load() }, [])
+  if (!link) return null
+  return <Row icon="person" iconTint="var(--teal)" title={t('My teacher')} value={link.teacher.name} accessory="chevron"
+    onClick={() => useUI.getState().openSheet(close => <MyTeacherSheet link={link} close={close} onChanged={load} />)} />
 }
 
 // Lets the mobile app's "connect to my server" mode (lib/remote.js) authenticate without a

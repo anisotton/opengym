@@ -10,7 +10,7 @@ import { DEF, useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
 import { exercisePicker } from './sheets.jsx'
 import Library from './views/Library.jsx'
-import { EXDB, searchExercises } from './lib/exercises.js'
+import { LIBRARY_CATALOGUE, searchExercises } from './lib/exercises.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const mounted = []
@@ -40,8 +40,10 @@ beforeEach(() => {
 })
 afterEach(() => { act(() => { mounted.splice(0).forEach(root => root.unmount()) }) })
 
-// The screens run the same search over the same catalogue, so the expected numbers come from it.
-const matches = q => searchExercises(EXDB, q).length
+// The screens run the same search over the same catalogue, so the expected numbers come from
+// it — LIBRARY_CATALOGUE (ISO-1638), the library-visible subset Library/the picker actually
+// search, not the full EXDB.
+const matches = q => searchExercises(LIBRARY_CATALOGUE, q).length
 
 describe('exercise search result count', () => {
   for (const [where, open] of [
@@ -54,15 +56,15 @@ describe('exercise search result count', () => {
       expect(count(host)).toBeNull()
       expect(host.querySelector('.search').classList.contains('has-count')).toBe(false)
 
-      act(() => type(input, 'bench press'))
-      const n = matches('bench press')
+      act(() => type(input, 'push'))
+      const n = matches('push')
       expect(n).toBeGreaterThan(1)
       expect(count(host).textContent).toBe(String(n))
       expect(count(host).getAttribute('aria-label')).toBe(`${n} exercises`)
       expect(host.querySelector('.search').classList.contains('has-count')).toBe(true)
 
-      act(() => type(input, 'bench press dumbbell incline'))
-      expect(Number(count(host).textContent)).toBe(matches('bench press dumbbell incline'))
+      act(() => type(input, 'push up diamond'))
+      expect(Number(count(host).textContent)).toBe(matches('push up diamond'))
 
       act(() => type(input, ''))
       expect(count(host)).toBeNull()
@@ -71,9 +73,9 @@ describe('exercise search result count', () => {
     it(`${where}: counts a body-part filter too, and reads "1 exercise" for one`, () => {
       const host = open()
       act(() => chip(host, 'neck').click())
-      const neck = EXDB.filter(e => e.bp === 'neck').length
+      const neck = LIBRARY_CATALOGUE.filter(e => e.bp === 'neck').length
       expect(Number(count(host).textContent)).toBe(neck)
-      const one = EXDB.find(e => searchExercises(EXDB, e.n).length === 1)
+      const one = LIBRARY_CATALOGUE.find(e => searchExercises(LIBRARY_CATALOGUE, e.n).length === 1)
       act(() => chip(host, 'All').click())
       act(() => type(host.querySelector('.search input'), one.n))
       expect(count(host).textContent).toBe('1')
