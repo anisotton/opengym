@@ -2805,8 +2805,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'iCloud Keychain, Google Password Manager বা কোনো পাসওয়ার্ড ম্যানেজারে রাখা পাসকি আপনার অন্য ডিভাইসেও থাকে। সেখানে “পাসকি দিয়ে সাইন ইন করুন” চেষ্টা করুন।',
   'Another device still signed in?': 'অন্য কোনো ডিভাইসে এখনো সাইন ইন করা আছে?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'সেখানে সেটিংস → অ্যাকাউন্ট → আরেকটি ডিভাইস যোগ করুন খুলুন, তারপর কোডটি এখানে “আমার কাছে কোড আছে” দিয়ে দিন।',
-  'Ask your admin': 'আপনার অ্যাডমিনকে জিজ্ঞেস করুন',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'যিনি আপনার Brilhart Fitness সার্ভার চালান, তিনি অ্যাডমিন ড্যাশবোর্ডে আপনার জন্য রিকভারি কোড বানাতে পারেন। কোডটি “আমার কাছে কোড আছে” দিয়ে দিন, এই ডিভাইস নতুন পাসকি পাবে।',
   'Running the server yourself?': 'সার্ভার নিজেই চালান?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'এই অ্যাপে: কোডটি ব্রাউজারে আপনার Brilhart Fitness সাইটে দিন, তারপর সেখানে সেটিংস → অ্যাকাউন্ট থেকে অ্যাপটি আবার পেয়ার করুন।',
   'I have a code': 'আমার কাছে কোড আছে',
@@ -3945,4 +3943,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "\"ইন্টিগ্রেশন\" বন্ধ থাকলে আপনার ওয়েবহুক কিছু পাঠায় না। সেগুলো সেট আপ করাই থাকে।",
   "{0} of {1} modules on.": "{1}টির মধ্যে {0}টি মডিউল চালু।",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "\"স্বাস্থ্য\" বন্ধ থাকলে {0} সিঙ্ক বন্ধ রাখে। কিছুই বিচ্ছিন্ন হয় না, আর \"স্বাস্থ্য\" ফিরলেই সব পুষিয়ে নেয়।",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Brilhart টিমকে জিজ্ঞেস করুন",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "তাঁরা আপনার প্রোফাইলের জন্য রিকভারি কোড বানাতে পারেন। কোডটি “আমার কাছে কোড আছে” দিয়ে দিন, এই ডিভাইস নতুন পাসকি পাবে।",
 }

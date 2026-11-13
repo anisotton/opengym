@@ -2742,8 +2742,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'พาสคีย์ที่เก็บใน iCloud Keychain, Google Password Manager หรือโปรแกรมจัดการรหัสผ่านจะอยู่ในอุปกรณ์อื่นของคุณด้วย ลอง “เข้าสู่ระบบด้วยพาสคีย์” ที่นั่น',
   'Another device still signed in?': 'มีอุปกรณ์อื่นที่ยังเข้าสู่ระบบอยู่ไหม',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'ที่เครื่องนั้น เปิด ตั้งค่า → บัญชี → เพิ่มอุปกรณ์อื่น แล้วใส่รหัสที่นี่ผ่าน “ฉันมีรหัส”',
-  'Ask your admin': 'ถามผู้ดูแลระบบ',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'ผู้ที่ดูแลเซิร์ฟเวอร์ Brilhart Fitness ของคุณสร้างรหัสกู้คืนให้ได้ในแดชบอร์ดผู้ดูแล ใส่รหัสผ่าน “ฉันมีรหัส” แล้วอุปกรณ์นี้จะได้พาสคีย์ใหม่',
   'Running the server yourself?': 'คุณดูแลเซิร์ฟเวอร์เองหรือเปล่า',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'ในแอปนี้: ใส่รหัสในเว็บ Brilhart Fitness ของคุณผ่านเบราว์เซอร์ แล้วจับคู่แอปใหม่จาก ตั้งค่า → บัญชี ที่นั่น',
   'I have a code': 'ฉันมีรหัส',
@@ -3882,4 +3880,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "เว็บฮุกจะหยุดส่งระหว่างที่ \"การเชื่อมต่อ\" ปิดอยู่ แต่ยังตั้งค่าไว้เหมือนเดิม",
   "{0} of {1} modules on.": "เปิดอยู่ {0} จาก {1} โมดูล",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "{0} จะหยุดซิงก์ระหว่างที่ \"สุขภาพ\" ปิดอยู่ ไม่มีอะไรถูกตัดการเชื่อมต่อ และจะตามทันเมื่อเปิด \"สุขภาพ\" อีกครั้ง",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "ถามทีม Brilhart",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "ทีมงานสร้างรหัสกู้คืนสำหรับโปรไฟล์ของคุณได้ ใส่รหัสผ่าน “ฉันมีรหัส” แล้วอุปกรณ์นี้จะได้พาสคีย์ใหม่",
 }

@@ -2466,8 +2466,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'Passkeys som sparas i iCloud-nyckelring, Googles lösenordshanterare eller en lösenordshanterare finns även på dina andra enheter. Prova ”Logga in med passkey” där.',
   'Another device still signed in?': 'Är en annan enhet fortfarande inloggad?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'Öppna Inställningar → Konto → Lägg till en annan enhet där, och ange sedan koden här med ”Jag har en kod”.',
-  'Ask your admin': 'Fråga din admin',
-  "Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.": "Den som driver din Brilhart Fitness-server kan skapa en återställningskod åt dig i adminpanelen. Ange den med ”Jag har en kod”, så får den här enheten en ny passkey.",
   'Running the server yourself?': 'Driver du servern själv?',
   "In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.": "I den här appen: ange koden på din Brilhart Fitness-sida i en webbläsare och parkoppla sedan appen igen från Inställningar → Konto där.",
   'I have a code': 'Jag har en kod',
@@ -3904,4 +3902,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "Dina webhooks skickar inget medan ”Integrationer” är av. De förblir inställda.",
   "{0} of {1} modules on.": "{0} av {1} moduler på.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "{0} slutar synka medan ”Hälsa” är av. Inget kopplas bort, och allt kommer ikapp när ”Hälsa” är tillbaka.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Fråga Brilhart-teamet",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "De kan skapa en återställningskod för din profil. Ange den med ”Jag har en kod”, så får den här enheten en ny passkey.",
 }

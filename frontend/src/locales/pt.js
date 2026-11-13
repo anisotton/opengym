@@ -2733,8 +2733,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'As passkeys guardadas no Porta-chaves iCloud, no Gestor de Palavras-passe da Google ou num gestor de palavras-passe também estão nos teus outros dispositivos. Experimenta «Entrar com passkey» lá.',
   'Another device still signed in?': 'Outro dispositivo ainda com sessão iniciada?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'Nesse, abre Definições → Conta → Adicionar outro dispositivo e introduz aqui o código com «Tenho um código».',
-  'Ask your admin': 'Pede ao teu admin',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'Quem gere o teu servidor Brilhart Fitness pode criar-te um código de recuperação no painel de administração. Introduz-o com «Tenho um código» e este dispositivo recebe uma passkey nova.',
   'Running the server yourself?': 'És tu que geres o servidor?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'Nesta app: introduz o código no teu site Brilhart Fitness num navegador e depois emparelha a app de novo em Definições → Conta lá.',
   'I have a code': 'Tenho um código',
@@ -3873,4 +3871,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "Os teus webhooks deixam de enviar enquanto «Integrações» estiver desligado. Continuam configurados.",
   "{0} of {1} modules on.": "{0} de {1} módulos ligados.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "{0} deixa de sincronizar enquanto «Saúde» estiver desligado. Nada fica desconectado, e põe-se em dia quando «Saúde» voltar.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Pede à equipa Brilhart",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "Pode criar-te um código de recuperação para o teu perfil. Introduz-o com «Tenho um código» e este dispositivo recebe uma passkey nova.",
 }

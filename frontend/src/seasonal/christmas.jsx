@@ -7,6 +7,7 @@ import { onceToday, doneToday, reducedMotion } from '../lib/seasonal.js'
 import { DOORS, LAYOUT, inAdvent, adventOf, doorState, openDoor, markDone, nextDoor } from '../lib/advent.js'
 import { MOBILE } from '../lib/mobile.js'
 import { appIconState, setAppIcon } from '../lib/app-icon.js'
+import { APP_ICON_PICKER } from '../lib/brand-flags.js'
 import { yearStats, workoutsOfYear } from '../lib/wrapped.js'
 import { bestWeightForEntry, defaultConfig } from '../lib/history.js'
 import { EXIDX } from '../lib/exercises.js'
@@ -188,7 +189,8 @@ export function Deco({ spot }) {
     case 'home-hero': return <Holly className="xm-holly-br" />
     case 'home-streak': return <PeekPresent />
     case 'streak-flame': return <span className="xm-hat" aria-hidden="true"><Hat /></span>
-    case 'home-advent': return <><IconSuggest /><AdventCard /></>
+    // Brilhart: no icon suggestion while the App icon picker is off (lib/brand-flags.js).
+    case 'home-advent': return <>{APP_ICON_PICKER && <IconSuggest />}<AdventCard /></>
     // Stats: lights along the header, two baubles in the lifetime tile, a gingerbread person
     // hanging off the activity card, holly in a corner and a snowman peeking over a card.
     case 'stats-hdr': return <Lights />
@@ -514,7 +516,7 @@ function StretchDoor({ close }) {
 function SpecialDoor() {
   const [canIcon, setCanIcon] = useState(false)
   useEffect(() => {
-    if (!MOBILE) return
+    if (!MOBILE || !APP_ICON_PICKER) return   // Brilhart: no icon offer (lib/brand-flags.js)
     let live = true
     appIconState().then(s => { if (live && s && s.name !== 'christmas') setCanIcon(true) })
     return () => { live = false }

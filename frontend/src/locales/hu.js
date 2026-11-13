@@ -2734,8 +2734,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'Az iCloud-kulcskarikában, a Google Jelszókezelőben vagy egy jelszókezelőben tárolt jelszókulcsok a többi eszközödön is ott vannak. Próbáld ott a „Bejelentkezés jelszókulccsal” lehetőséget.',
   'Another device still signed in?': 'Egy másik eszközöd még be van jelentkezve?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'Azon nyisd meg a Beállítások → Fiók → Másik eszköz hozzáadása menüt, és itt add meg a kódot a „Van kódom” gombbal.',
-  'Ask your admin': 'Kérdezd meg az adminodat',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'Aki a Brilhart Fitness-szerveredet üzemelteti, az admin felületen helyreállító kódot készíthet neked. Add meg a „Van kódom” gombbal, és ez az eszköz új jelszókulcsot kap.',
   'Running the server yourself?': 'Te üzemelteted a szervert?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'Ebben az appban: add meg a kódot a Brilhart Fitness-oldaladon egy böngészőben, aztán párosítsd újra az appot ott a Beállítások → Fiók menüben.',
   'I have a code': 'Van kódom',
@@ -3874,4 +3872,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "Amíg az „Integrációk” ki vannak kapcsolva, a webhookjaid nem küldenek semmit. Beállítva maradnak.",
   "{0} of {1} modules on.": "{1} modulból {0} bekapcsolva.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "Amíg az „Egészség” ki van kapcsolva, a(z) {0} nem szinkronizál. A kapcsolat megmarad, és mindent bepótol, amint az „Egészség” újra be van kapcsolva.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Kérdezd meg a Brilhart csapatát",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "Helyreállító kódot készíthetnek a profilodhoz. Add meg a „Van kódom” gombbal, és ez az eszköz új jelszókulcsot kap.",
 }

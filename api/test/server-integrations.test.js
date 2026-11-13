@@ -107,7 +107,7 @@ test('a webhook: refused targets, connect, a workout delivered signed, test, log
   assert.deepEqual(types, ['workout.finished', 'workout.pr']);
   for (const g of rx.got) {
     assert.equal(verifySignature(secret, g.body, g.headers['x-opengym-signature']), true);
-    assert.match(g.headers['user-agent'], /^openGym-Webhook\//);
+    assert.match(g.headers['user-agent'], /^BrilhartFitness-Webhook\//);
   }
   const fin = JSON.parse(rx.got.find(g => g.headers['x-opengym-event'] === 'workout.finished').body);
   assert.equal(fin.data.workout.exercises[0].name, 'barbell bench press');

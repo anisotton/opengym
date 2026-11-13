@@ -53,7 +53,7 @@ function RecapSheet({ period, close }) {
   const tiles = tilesOf(r, S.unit)
   const words = { title: titleOf(r), dates: datesOf(r), tiles, top: topOf(r) }
   const shareImage = () => useUI.getState().openSheet(c => <ShareCardSheet title={titleOf(r)} close={c} toast={m => useUI.getState().toast(m)}
-    name={`opengym-${r.kind}-${r.from}.png`} shareTitle={titleOf(r)} render={pref => recapCardImage(words, pref)} />)
+    name={`brilhart-${r.kind}-${r.from}.png`} shareTitle={titleOf(r)} render={pref => recapCardImage(words, pref)} />)
   const pdf = () => printReport(S, { range: 'custom', from: r.from, to: r.to, owner: user?.name || '' })
   return <>
     <div className="lbl2">{datesOf(r)}</div>

@@ -14,7 +14,8 @@ import { Button } from './ui.jsx'
 const STEPS = () => [
   ['fingerprint', t('Your passkey may be synced'), t('Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.')],
   ['qr', t('Another device still signed in?'), t('On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.')],
-  ['person', t('Ask your admin'), t('Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.')],
+  // Brilhart Fitness is run for you (no server of your own): the Brilhart team makes the code.
+  ['person', t('Ask the Brilhart team'), t('They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.')],
   // Brilhart Fitness: no "Running the server yourself?" step (docker compose … recover.js). Our
   // users don't run the server; a recovery code comes from the admin, the step above.
 ]

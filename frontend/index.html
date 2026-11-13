@@ -91,46 +91,38 @@
 </head>
 <body>
 <!-- The boot screen: painted with the HTML, before any script runs, so the gap between the
-     native splash and the first real screen is the logo loading its plates instead of a black
-     page. Same dark and lime as the native splash. lib/boot.js takes it away the moment the
-     app can draw, so it never adds a wait. -->
+     native splash and the first real screen is the Brilhart mark instead of a blank page. The
+     brand's light "papel" background, or the dark plum when the inline script above set the dark
+     theme. lib/boot.js takes it away the moment the app can draw, so it never adds a wait (it
+     reads the .db animation's clock to leave at the end of a beat). -->
 <style>
-  #boot{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;background:#0c0e12;transition:opacity .22s ease-out}
+  #boot{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;background:#FBF8F7;transition:opacity .22s ease-out}
+  :root[data-theme="dark"] #boot{background:#1C141E}
   #boot.out{opacity:0;pointer-events:none}
   #boot svg{width:112px;height:auto;overflow:visible}
-  #boot rect,#boot ellipse{transform-box:fill-box;transform-origin:center}
-  #boot .bar{animation:boot-bar .32s cubic-bezier(.3,.7,.4,1) both}
-  #boot .pl{animation:boot-plate .28s cubic-bezier(.3,.7,.4,1.3) both}
-  #boot .pr{animation:boot-plate-r .28s cubic-bezier(.3,.7,.4,1.3) both}
-  #boot .in{animation-delay:.22s}
-  #boot .outer{animation-delay:.36s}
-  #boot .db{animation:boot-rep 1.25s ease-in-out .75s infinite}
-  #boot ellipse{fill:#a3e635;opacity:.12;animation:boot-shadow 1.25s ease-in-out .75s infinite}
-  @keyframes boot-bar{from{transform:scaleX(0)}}
-  @keyframes boot-plate{from{transform:translateX(-40px);opacity:0}}
-  @keyframes boot-plate-r{from{transform:translateX(40px);opacity:0}}
-  @keyframes boot-rep{50%{transform:translateY(-26px)}}
-  @keyframes boot-shadow{50%{transform:scaleX(.72);opacity:.05}}
+  #boot .mark{animation:boot-in .36s cubic-bezier(.3,.7,.4,1) both}
+  #boot .db{transform-box:fill-box;transform-origin:center;animation:boot-rep 1.25s ease-in-out .75s infinite}
+  @keyframes boot-in{from{transform:scale(.86);opacity:0}}
+  @keyframes boot-rep{50%{transform:translateY(-8px)}}
   #boot.fail{place-items:center;padding:24px}
-  #boot.fail div{max-width:340px;font:15px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#e6e8ec;text-align:center}
+  #boot.fail div{max-width:340px;font:15px/1.4 Nunito,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#4A284D;text-align:center}
   #boot.fail .h{font-size:19px;font-weight:600;margin:0 0 8px}
-  #boot.fail code{display:block;margin:14px 0 18px;padding:10px;border-radius:10px;background:#1a1d24;color:#a9b0bc;font-size:12px;text-align:left;word-break:break-word;-webkit-user-select:text;user-select:text}
-  #boot.fail button{font:inherit;font-weight:600;color:#0c0e12;background:#a3e635;border:0;border-radius:12px;min-height:44px;padding:0 28px}
+  #boot.fail code{display:block;margin:14px 0 18px;padding:10px;border-radius:10px;background:#F1EAF0;color:#5F5560;font-size:12px;text-align:left;word-break:break-word;-webkit-user-select:text;user-select:text}
+  :root[data-theme="dark"] #boot.fail div{color:#EFE4F2}
+  :root[data-theme="dark"] #boot.fail code{background:#271C2A;color:#C9BFCC}
+  #boot.fail button{font:inherit;font-weight:700;color:#fff;background:#4A284D;border:0;border-radius:99px;min-height:44px;padding:0 28px}
   @media (prefers-reduced-motion:reduce){
-    #boot .bar,#boot .pl,#boot .pr,#boot ellipse{animation:none}
+    #boot .mark{animation:none}
     #boot .db{animation:boot-breathe 1.6s ease-in-out infinite}
     @keyframes boot-breathe{50%{opacity:.55}}
   }
 </style>
 <div id="boot" aria-hidden="true">
-  <svg viewBox="80 140 352 250">
-    <ellipse cx="256" cy="372" rx="150" ry="9"/>
-    <g class="db" fill="#a3e635">
-      <rect class="bar" x="80" y="242" width="352" height="28"/>
-      <rect class="pl in" x="131" y="169" width="47" height="174"/>
-      <rect class="pr in" x="334" y="169" width="47" height="174"/>
-      <rect class="pl outer" x="80" y="199" width="36" height="114"/>
-      <rect class="pr outer" x="396" y="199" width="36" height="114"/>
+  <!-- The Brilhart mark (public/favicon.svg), drawn bigger. -->
+  <svg class="mark" viewBox="0 0 100 100">
+    <g class="db">
+      <rect width="100" height="100" rx="22.5" fill="#4A284D"/>
+      <g transform="translate(16,16) scale(0.68)"><g fill="none" stroke-width="5.2" stroke-linecap="round" stroke-linejoin="round"><g stroke="#C9A25A"><path d="M8 13 H92"/><rect x="15" y="3" width="7" height="20" rx="2.5"/><rect x="78" y="3" width="7" height="20" rx="2.5"/><rect x="9" y="6.5" width="3.6" height="13" rx="1.6"/><rect x="87.4" y="6.5" width="3.6" height="13" rx="1.6"/></g><g stroke="#FFFFFF"><path d="M44 41 L34 14 M56 41 L66 14"/><circle cx="50" cy="31" r="6"/><path d="M44 41 H56 L53.5 57 H46.5 Z"/><path d="M31 60 C40 55.5 60 55.5 69 60 C60 63.5 40 63.5 31 60 Z"/><path d="M47 63 L50 95 L53 63"/></g></g></g>
     </g>
   </svg>
 </div>

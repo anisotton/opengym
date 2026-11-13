@@ -96,7 +96,7 @@ export function webhookProvider({ allowLan = false, transport = null, version = 
         body,
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': `openGym-Webhook/${version}`,
+          'User-Agent': `BrilhartFitness-Webhook/${version}`,
           'X-OpenGym-Event': envelope.type,
           'X-OpenGym-Delivery': envelope.id,
           'X-OpenGym-Signature': signature(secret, body),

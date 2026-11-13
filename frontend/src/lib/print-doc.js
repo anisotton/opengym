@@ -78,7 +78,9 @@ export const PRINT_CSS = `
   :root {
     --ink: #15171c; --ink-2: #3b404b; --muted: #6b7180; --faint: #9aa0ad;
     --rule: #e3e6ec; --rule-soft: #eff1f5; --tint: #f6f7f9;
-    --lime: #a3e635; --lime-ink: #4d7c0f; --lime-soft: #f1f9e1;
+    /* Brilhart's plum family (upstream's lime names kept so the rules that use them stay as they
+       are): lilac for marks, ameixa #4A284D for text, the pale lilac for soft fills. */
+    --lime: #B79AD6; --lime-ink: #4A284D; --lime-soft: #F1EAF0;
   }
   * { box-sizing: border-box; }
   html { color-scheme: light; -webkit-print-color-adjust: exact; print-color-adjust: exact; }

@@ -2751,8 +2751,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'Passkeys im iCloud-Schlüsselbund, im Google Passwortmanager oder in einem Passwortmanager sind auch auf deinen anderen Geräten. Versuch dort „Mit Passkey anmelden“.',
   'Another device still signed in?': 'Ist noch ein anderes Gerät angemeldet?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'Öffne dort Einstellungen → Konto → Weiteres Gerät hinzufügen und gib den Code hier mit „Ich habe einen Code“ ein.',
-  'Ask your admin': 'Frag deinen Admin',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'Wer deinen Brilhart Fitness-Server betreibt, kann dir im Admin-Bereich einen Wiederherstellungscode erstellen. Gib ihn mit „Ich habe einen Code“ ein, und dieses Gerät bekommt einen neuen Passkey.',
   'Running the server yourself?': 'Betreibst du den Server selbst?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'In dieser App: Gib den Code auf deiner Brilhart Fitness-Seite im Browser ein und kopple die App dann dort unter Einstellungen → Konto neu.',
   'I have a code': 'Ich habe einen Code',
@@ -3891,4 +3889,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "Deine Webhooks senden nichts, solange „Integrationen“ aus ist. Sie bleiben eingerichtet.",
   "{0} of {1} modules on.": "{0} von {1} Modulen an.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "{0} synchronisiert nicht, solange „Gesundheit“ aus ist. Nichts wird getrennt, und es holt alles nach, sobald „Gesundheit“ wieder an ist.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Frag das Brilhart-Team",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "Es kann dir einen Wiederherstellungscode für dein Profil erstellen. Gib ihn mit „Ich habe einen Code“ ein, und dieses Gerät bekommt einen neuen Passkey.",
 }

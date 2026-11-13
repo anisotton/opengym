@@ -2731,8 +2731,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'iCloud 키체인, Google 비밀번호 관리자나 비밀번호 관리 앱에 저장된 패스키는 다른 기기에도 있어요. 그 기기에서 ‘패스키로 로그인’을 해 보세요.',
   'Another device still signed in?': '아직 로그인된 다른 기기가 있나요?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': '그 기기에서 설정 → 계정 → 다른 기기 추가를 열고, 여기서 ‘코드가 있어요’로 코드를 입력하세요.',
-  'Ask your admin': '관리자에게 요청하기',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'Brilhart Fitness 서버를 운영하는 사람이 관리자 화면에서 복구 코드를 만들어 줄 수 있어요. ‘코드가 있어요’로 입력하면 이 기기에 새 패스키가 생겨요.',
   'Running the server yourself?': '서버를 직접 운영하나요?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': '이 앱에서는: 브라우저로 Brilhart Fitness 사이트에 코드를 입력한 뒤, 거기서 설정 → 계정에서 앱을 다시 페어링하세요.',
   'I have a code': '코드가 있어요',
@@ -3871,4 +3869,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "'연동'이 꺼져 있는 동안 웹훅이 전송되지 않아요. 설정은 그대로예요.",
   "{0} of {1} modules on.": "모듈 {1}개 중 {0}개 켜짐.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "'건강'이 꺼져 있는 동안 {0} 동기화가 멈춰요. 연결은 끊기지 않고, '건강'을 다시 켜면 밀린 걸 따라잡아요.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Brilhart 팀에 요청하기",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "프로필용 복구 코드를 만들어 줄 수 있어요. ‘코드가 있어요’로 입력하면 이 기기에 새 패스키가 생겨요.",
 }

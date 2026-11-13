@@ -2731,8 +2731,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'Klucze dostępu z pęku kluczy iCloud, Menedżera haseł Google lub menedżera haseł są też na twoich innych urządzeniach. Spróbuj tam „Zaloguj się kluczem dostępu”.',
   'Another device still signed in?': 'Inne urządzenie jest wciąż zalogowane?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'Tam otwórz Ustawienia → Konto → Dodaj kolejne urządzenie i wpisz kod tutaj przez „Mam kod”.',
-  'Ask your admin': 'Zapytaj administratora',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'Osoba, która prowadzi twój serwer Brilhart Fitness, może utworzyć ci kod odzyskiwania w panelu administratora. Wpisz go przez „Mam kod”, a to urządzenie dostanie nowy klucz dostępu.',
   'Running the server yourself?': 'Sam prowadzisz serwer?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'W tej aplikacji: wpisz kod na swojej stronie Brilhart Fitness w przeglądarce, a potem sparuj aplikację ponownie w Ustawienia → Konto.',
   'I have a code': 'Mam kod',
@@ -3871,4 +3869,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "Twoje webhooki nic nie wysyłają, gdy „Integracje” są wyłączone. Pozostają skonfigurowane.",
   "{0} of {1} modules on.": "Włączone moduły: {0} z {1}.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "{0} przestaje się synchronizować, gdy „Zdrowie” jest wyłączone. Nic nie zostaje odłączone, a po ponownym włączeniu wszystko się nadrobi.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Zapytaj zespół Brilhart",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "Mogą utworzyć ci kod odzyskiwania do twojego profilu. Wpisz go przez „Mam kod”, a to urządzenie dostanie nowy klucz dostępu.",
 }

@@ -33,7 +33,7 @@ export function CsvExportSheet({ close }) {
   const save = async (kind) => {
     const st = useStore.getState().S
     const text = kind === 'body' ? bodyCSV(st, r) : workoutsCSV(st, r)
-    const name = 'opengym-' + (kind === 'body' ? 'body' : 'workouts') + '-' + today + '.csv'
+    const name = 'brilhart-' + (kind === 'body' ? 'body' : 'workouts') + '-' + today + '.csv'
     close()
     try { await saveCSV(text, name); toast?.(t('CSV exported')) } catch (e) { /* share sheet dismissed */ }
   }

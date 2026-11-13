@@ -2731,8 +2731,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': '保存在 iCloud 钥匙串、Google 密码管理工具或密码管理器中的通行密钥也在你的其他设备上。在那里试试“用通行密钥登录”。',
   'Another device still signed in?': '还有其他设备处于登录状态？',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': '在那台设备上打开 设置 → 账号 → 添加其他设备，然后在这里通过“我有代码”输入代码。',
-  'Ask your admin': '询问管理员',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': '运行你的 Brilhart Fitness 服务器的人可以在管理后台为你生成恢复代码。通过“我有代码”输入后，这台设备会获得新的通行密钥。',
   'Running the server yourself?': '服务器是你自己运行的？',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': '在此应用中：先在浏览器里的 Brilhart Fitness 网站输入代码，然后在那里的 设置 → 账号 中重新配对应用。',
   'I have a code': '我有代码',
@@ -3871,4 +3869,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "“集成”关闭期间，你的 Webhook 不会发送。设置仍然保留。",
   "{0} of {1} modules on.": "已开启 {0}/{1} 个模块。",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "“健康”关闭期间，{0} 会停止同步。不会断开任何连接，“健康”重新开启后会自动补上。",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "询问 Brilhart 团队",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "他们可以为你的个人资料生成恢复代码。通过“我有代码”输入后，这台设备会获得新的通行密钥。",
 }

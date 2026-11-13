@@ -2731,8 +2731,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'iCloud Anahtar Zinciri, Google Şifre Yöneticisi ya da bir şifre yöneticisinde saklanan geçiş anahtarları diğer cihazlarında da var. Orada “Geçiş anahtarıyla giriş yap”ı dene.',
   'Another device still signed in?': 'Başka bir cihazda hâlâ oturum açık mı?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'O cihazda Ayarlar → Hesap → Başka bir cihaz ekle’yi aç, sonra kodu burada “Kodum var” ile gir.',
-  'Ask your admin': 'Yöneticine sor',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'Brilhart Fitness sunucunu yöneten kişi, yönetim panelinden sana bir kurtarma kodu oluşturabilir. Kodu “Kodum var” ile gir, bu cihaz yeni bir geçiş anahtarı alır.',
   'Running the server yourself?': 'Sunucuyu kendin mi çalıştırıyorsun?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'Bu uygulamada: kodu bir tarayıcıda Brilhart Fitness sitene gir, sonra uygulamayı oradaki Ayarlar → Hesap’tan yeniden eşleştir.',
   'I have a code': 'Kodum var',
@@ -3871,4 +3869,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "“Entegrasyonlar” kapalıyken webhook'ların bir şey göndermez. Kurulu kalırlar.",
   "{0} of {1} modules on.": "{1} modülden {0} tanesi açık.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "“Sağlık” kapalıyken {0} eşitlemeyi durdurur. Hiçbir bağlantı kesilmez, “Sağlık” geri gelince her şeyi yakalar.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Brilhart ekibine sor",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "Profilin için bir kurtarma kodu oluşturabilirler. Kodu “Kodum var” ile gir, bu cihaz yeni bir geçiş anahtarı alır.",
 }

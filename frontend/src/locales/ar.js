@@ -2786,8 +2786,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'مفاتيح المرور المحفوظة في سلسلة مفاتيح iCloud أو مدير كلمات مرور Google أو أي مدير لكلمات المرور موجودة على أجهزتك الأخرى أيضًا. جرّب «تسجيل الدخول بمفتاح المرور» هناك.',
   'Another device still signed in?': 'هل ما زال جهاز آخر مسجّل الدخول؟',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'افتح عليه الإعدادات ← الحساب ← إضافة جهاز آخر، ثم أدخل الرمز هنا عبر «لديّ رمز».',
-  'Ask your admin': 'اسأل المسؤول',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'يمكن لمن يدير خادم Brilhart Fitness الخاص بك إنشاء رمز استرداد لك من لوحة الإدارة. أدخله عبر «لديّ رمز» وسيحصل هذا الجهاز على مفتاح مرور جديد.',
   'Running the server yourself?': 'هل تشغّل الخادم بنفسك؟',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'في هذا التطبيق: أدخل الرمز في موقع Brilhart Fitness الخاص بك في متصفح، ثم أعد إقران التطبيق من الإعدادات ← الحساب هناك.',
   'I have a code': 'لديّ رمز',
@@ -3926,4 +3924,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "لا يرسل الويب هوك شيئًا ما دامت «التكاملات» متوقفة. يبقى مُعدًّا.",
   "{0} of {1} modules on.": "{0} من {1} وحدات مفعّلة.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "يتوقف {0} عن المزامنة ما دامت «الصحة» متوقفة. لا يُفصل شيء، ويلحق بكل شيء عند عودة «الصحة».",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "اسأل فريق Brilhart",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "يمكنهم إنشاء رمز استرداد لملفك الشخصي. أدخله عبر «لديّ رمز» وسيحصل هذا الجهاز على مفتاح مرور جديد.",
 }

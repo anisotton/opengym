@@ -73,7 +73,7 @@ describe('CsvExportSheet', () => {
     await flush()
     expect(close).toHaveBeenCalled()
     const [text, name] = mocks.share.mock.calls[0]
-    expect(name).toBe('opengym-workouts-' + todayISO() + '.csv')
+    expect(name).toBe('brilhart-workouts-' + todayISO() + '.csv')
     expect(text.trim().split('\r\n')).toHaveLength(3)
     expect(mocks.toast).toHaveBeenCalledWith('CSV exported')
   })
@@ -82,7 +82,7 @@ describe('CsvExportSheet', () => {
     act(() => button('Body weight & measurements (CSV)').click())
     await flush()
     const [text, name] = mocks.share.mock.calls[0]
-    expect(name).toBe('opengym-body-' + todayISO() + '.csv')
+    expect(name).toBe('brilhart-body-' + todayISO() + '.csv')
     expect(text).toContain('weight_kg')
   })
 })

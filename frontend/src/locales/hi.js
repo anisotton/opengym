@@ -2731,8 +2731,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'iCloud Keychain, Google Password Manager या किसी पासवर्ड मैनेजर में रखी पासकी आपके दूसरे डिवाइस पर भी होती हैं। वहाँ “पासकी से साइन इन करें” आज़माएँ।',
   'Another device still signed in?': 'कोई दूसरा डिवाइस अब भी साइन इन है?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'उस पर सेटिंग्स → खाता → दूसरा डिवाइस जोड़ें खोलें, फिर उसका कोड यहाँ “मेरे पास कोड है” में डालें।',
-  'Ask your admin': 'अपने एडमिन से पूछें',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'जो आपका Brilhart Fitness सर्वर चलाते हैं, वे एडमिन डैशबोर्ड में आपके लिए रिकवरी कोड बना सकते हैं। उसे “मेरे पास कोड है” में डालें, और इस डिवाइस को नई पासकी मिल जाएगी।',
   'Running the server yourself?': 'सर्वर खुद चलाते हैं?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'इस ऐप में: कोड को ब्राउज़र में अपनी Brilhart Fitness साइट पर डालें, फिर वहाँ सेटिंग्स → खाता से ऐप को फिर से पेयर करें।',
   'I have a code': 'मेरे पास कोड है',
@@ -3871,4 +3869,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "\"इंटीग्रेशन\" बंद रहने तक आपके Webhook कुछ नहीं भेजते। वे सेट रहते हैं।",
   "{0} of {1} modules on.": "{1} में से {0} मॉड्यूल चालू।",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "\"सेहत\" बंद रहने तक {0} सिंक नहीं करता। कुछ भी डिस्कनेक्ट नहीं होता, और \"सेहत\" लौटते ही सब पकड़ लेता है।",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Brilhart टीम से पूछें",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "वे आपकी प्रोफ़ाइल के लिए रिकवरी कोड बना सकते हैं। उसे “मेरे पास कोड है” में डालें, और इस डिवाइस को नई पासकी मिल जाएगी।",
 }

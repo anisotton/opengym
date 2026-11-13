@@ -2735,8 +2735,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'Ключи доступа из Связки ключей iCloud, Диспетчера паролей Google или менеджера паролей есть и на других ваших устройствах. Попробуйте там «Войти по ключу доступа».',
   'Another device still signed in?': 'Другое устройство ещё в аккаунте?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'На нём откройте Настройки → Аккаунт → Добавить другое устройство и введите код здесь через «У меня есть код».',
-  'Ask your admin': 'Спросите администратора',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'Тот, кто управляет вашим сервером Brilhart Fitness, может создать код восстановления в панели администратора. Введите его через «У меня есть код», и это устройство получит новый ключ доступа.',
   'Running the server yourself?': 'Сервер ваш собственный?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'В этом приложении: введите код на своём сайте Brilhart Fitness в браузере, затем снова выполните сопряжение приложения в Настройки → Аккаунт там.',
   'I have a code': 'У меня есть код',
@@ -3875,4 +3873,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "Пока «Интеграции» выключены, твои вебхуки ничего не отправляют. Они остаются настроенными.",
   "{0} of {1} modules on.": "Включено модулей: {0} из {1}.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "Пока «Здоровье» выключено, {0} не синхронизируется. Ничего не отключается, и всё догонится, когда «Здоровье» вернётся.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Обратитесь к команде Brilhart",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "Она может создать код восстановления для вашего профиля. Введите его через «У меня есть код», и это устройство получит новый ключ доступа.",
 }

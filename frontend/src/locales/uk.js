@@ -2728,8 +2728,6 @@ export default {
   'Passkeys kept in iCloud Keychain, Google Password Manager or a password manager are on your other devices too. Try “Sign in with passkey” there.': 'Ключі доступу зі Зв’язки ключів iCloud, Менеджера паролів Google або менеджера паролів є й на інших твоїх пристроях. Спробуй там «Увійти за ключем доступу».',
   'Another device still signed in?': 'Інший пристрій ще в акаунті?',
   'On that one, open Settings → Account → Add another device, then enter its code here with “I have a code”.': 'На ньому відкрий Налаштування → Акаунт → Додати інший пристрій і введи код тут через «У мене є код».',
-  'Ask your admin': 'Запитай адміністратора',
-  'Whoever runs your Brilhart Fitness server can make you a recovery code in the admin dashboard. Enter it with “I have a code”, and this device gets a new passkey.': 'Той, хто керує твоїм сервером Brilhart Fitness, може створити код відновлення в панелі адміністратора. Введи його через «У мене є код», і цей пристрій отримає новий ключ доступу.',
   'Running the server yourself?': 'Сервер твій власний?',
   'In this app: enter the code on your Brilhart Fitness site in a browser, then pair the app again from Settings → Account there.': 'У цьому застосунку: введи код на своєму сайті Brilhart Fitness у браузері, а потім знову спаруй застосунок у Налаштування → Акаунт там.',
   'I have a code': 'У мене є код',
@@ -3868,4 +3866,7 @@ export default {
   "Your webhooks stop sending while Integrations is off. They stay set up.": "Поки «Інтеграції» вимкнено, твої вебхуки нічого не надсилають. Вони лишаються налаштованими.",
   "{0} of {1} modules on.": "Увімкнено модулів: {0} з {1}.",
   "{0} stops syncing while Health is off. Nothing is disconnected, and it catches up once Health is back.": "Поки «Здоров'я» вимкнено, {0} не синхронізується. Нічого не від’єднується, і все наздожене, щойно «Здоров'я» повернеться.",
+  // --- LostAccess: recovery via the Brilhart team ---
+  "Ask the Brilhart team": "Звернися до команди Brilhart",
+  "They can make you a recovery code for your profile. Enter it with “I have a code”, and this device gets a new passkey.": "Вона може створити код відновлення для твого профілю. Введи його через «У мене є код», і цей пристрій отримає новий ключ доступу.",
 }

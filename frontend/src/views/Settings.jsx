@@ -125,15 +125,9 @@ const standalone = () => {
 
 // Apple devices, the iPad included (it says Macintosh): the install tip's Safari wording. Read here
 // rather than from lib/api.js, whose test mocks across the Settings suites only carry IS_ANDROID.
-// Brilhart: upstream's alternate icons carry openGym's logo — hidden until Brilhart has its own set.
-// Off, Look & Home has no App icon row and Seasonal themes no shortcut to the Halloween icon; the
-// files (components/AppIconRow.jsx, lib/app-icon*.js, public/app-icons, resources/icons) stay so
-// later upstream merges remain small.
-export const APP_ICON_PICKER = false
-// Brilhart: the accent is the brand's, fixed in index.css (plum --acc/--acc-2/--on-acc/--acc-ink),
-// as in release/0.0.0-alpha. Off: no Accent color row, no seasonal "Spooky/Festive colors"
-// switches, no search entries for them; App.jsx applies no data-accent either. lib/accent.js stays.
-export const ACCENT_PICKER = false
+// Brilhart: the App icon picker and the accent picker are off (lib/brand-flags.js).
+export { APP_ICON_PICKER, ACCENT_PICKER } from '../lib/brand-flags.js'
+import { APP_ICON_PICKER, ACCENT_PICKER } from '../lib/brand-flags.js'
 const APPLE_UA = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)
 
 export default function Settings({ page = null, find = null, via = null, entryKey = null }) {
@@ -337,7 +331,7 @@ export default function Settings({ page = null, find = null, via = null, entryKe
   // and the copy it exports is the one that has not reached the server.
   const doExport = async () => {
     const json = JSON.stringify(useStore.getState().S, null, 2)
-    const name = 'opengym-backup-' + todayISO() + '.json'
+    const name = 'brilhart-backup-' + todayISO() + '.json'
     // WKWebView can't download blob URLs — the native build hands the file to the share sheet.
     if (MOBILE) {
       try { await shareExport(json, name); toast(t('Backup exported')) } catch (e) { /* share sheet dismissed */ }
@@ -357,7 +351,7 @@ export default function Settings({ page = null, find = null, via = null, entryKe
     let out
     try { out = await exportBackupZip(st.S, { fetchOne: signedIn ? fetchToStore : null }) }
     catch { toast(t('Something went wrong')); return }
-    const name = 'opengym-backup-' + todayISO() + '.zip'
+    const name = 'brilhart-backup-' + todayISO() + '.zip'
     if (out.missing) toast(tn('{0} file could not be included', '{0} files could not be included', out.missing))
     if (MOBILE) {
       try { await shareExportBlob(out.blob, name); if (!out.missing) toast(t('Backup exported')) } catch (e) { /* share sheet dismissed */ }
@@ -1158,7 +1152,7 @@ export default function Settings({ page = null, find = null, via = null, entryKe
         <Link to="/termos">{t('Terms of Use')}</Link> · <Link to="/privacidade">{t('Privacy Policy')}</Link><br />
         {user?.termsAcceptedAt && <>{t('You accepted version {0} on {1}.', user.termsVersion, new Date(user.termsAcceptedAt).toLocaleDateString(dateLocale()))}<br /></>}
         Brilhart Fitness v{__APP_VERSION__} · {t('free & open source (AGPL v3)')}<br />
-        <a href="https://github.com/anisotton/opengym" target="_blank" rel="noopener">{t('Source code')}</a> · exercise data: openGym catalogue (ExerciseDB text, MIT)<br />
+        <a href="https://github.com/anisotton/opengym" target="_blank" rel="noopener">{t('Source code')}</a> · exercise data: ExerciseDB (MIT)<br />
         exercise media (128 exercises, incl. the port de bras ones) © Brilhart Fitness, all rights reserved
       </div>
     </>,

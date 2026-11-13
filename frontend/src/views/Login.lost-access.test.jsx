@@ -84,7 +84,7 @@ describe('LostAccessSheet', () => {
     const close = vi.fn()
     const host = mount(<LostAccessSheet close={close} />)
     const text = host.textContent
-    const order = ['Your passkey may be synced', 'Another device still signed in?', 'Ask your admin'].map(s => text.indexOf(s))
+    const order = ['Your passkey may be synced', 'Another device still signed in?', 'Ask the Brilhart team'].map(s => text.indexOf(s))
     expect(order.every(i => i >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
     expect(text).not.toContain('Running the server yourself?')

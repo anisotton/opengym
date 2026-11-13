@@ -91,7 +91,7 @@ Every delivery has the same envelope:
   (at least once, not exactly once).
 - `test: true` is added to a test event.
 
-Headers: `Content-Type: application/json`, `User-Agent: openGym-Webhook/1`,
+Headers: `Content-Type: application/json`, `User-Agent: BrilhartFitness-Webhook/1`,
 `X-OpenGym-Event` (the type), `X-OpenGym-Delivery` (the id) and `X-OpenGym-Signature`.
 
 **`workout.finished`**
