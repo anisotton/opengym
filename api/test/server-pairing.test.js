@@ -33,7 +33,7 @@ async function startServer(t) {
 
 test('logout/all invalidates the account\'s outstanding pairing codes and nobody else\'s', async t => {
   const h = await startServer(t);
-  const post = (p, headers, body) => fetch(`${h.api}${p}`, { method: 'POST', headers, body: body && JSON.stringify(body) });
+  const post = (p, headers, body) => fetch(`${h.api}${p}`, { method: 'POST', headers: body ? { ...headers, 'Content-Type': 'application/json' } : headers, body: body && JSON.stringify(body) });
   const create = async (uid, sv) => {
     const r = await post('/api/pair/create', cookie(uid, sv));
     assert.equal(r.status, 200);

@@ -42,7 +42,7 @@ async function startServer(t, subs = []) {
   };
   return h;
 }
-const post = (h, p, body, hdr = cookie) => fetch(`${h.api}${p}`, { method: 'POST', headers: hdr, body: JSON.stringify(body) });
+const post = (h, p, body, hdr = cookie) => fetch(`${h.api}${p}`, { method: 'POST', headers: { ...hdr, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const status = (h, endpoint, hdr = cookie) => fetch(`${h.api}/api/push/status?endpoint=${encodeURIComponent(endpoint)}`, { headers: hdr }).then(r => r.json());
 
 test('status tells whether the server holds the endpoint; subscribe is an upsert that keeps created and stores the device id', async t => {
@@ -96,4 +96,29 @@ test('a rest timer belongs to the device that set it: another device cancelling 
   assert.equal((await post(h, '/api/push/rest-timer', { seconds: 1 })).status, 200);
   await new Promise(r => setTimeout(r, 2500));
   assert.equal(sends(), 3, 'a legacy timer goes to every subscription of the account');
+});
+
+test('another account cannot take over a subscription without its keys; the same browser can', async t => {
+  // GHSA-568g-hg5j-h53q (openGym v1.4.2), on this fork's push_subscriptions table.
+  const h = await startServer(t);
+  const endpoint = 'https://push.example/victim';
+  const browserKeys = { p256dh: 'p-victim', auth: 'a-victim' };
+  assert.equal((await post(h, '/api/push/subscribe', { subscription: { endpoint, keys: browserKeys } })).status, 200);
+
+  // u_test_2 has learned the endpoint URL, not the keys only the browser (and this server) hold.
+  // That used to delete u_test_1's row and file the endpoint under u_test_2: u_test_1's phone
+  // went quiet, and got u_test_2's alerts instead, or nothing at all under keys of their choosing.
+  const r = await post(h, '/api/push/subscribe', { subscription: { endpoint, keys: { p256dh: 'p-mine', auth: 'a-mine' } } }, other);
+  assert.equal(r.status, 409);
+  assert.deepEqual(await r.json(), { error: 'this subscription belongs to another account' });
+  assert.deepEqual(await status(h, endpoint), { subscribed: true }, "the owner's row is untouched");
+  assert.deepEqual((await h.subs()).map(s => [s.userId, s.keys.auth]), [['u_test_1', 'a-victim']]);
+
+  // A shared browser: u_test_1 signed out (which leaves the push subscription in place), u_test_2
+  // signed in, and boot re-registers the same subscription. That browser holds the keys, so the
+  // row moves: u_test_1's reminders stop arriving on a device somebody else now uses.
+  assert.equal((await post(h, '/api/push/subscribe', { subscription: { endpoint, keys: browserKeys } }, other)).status, 200);
+  assert.deepEqual(await status(h, endpoint), { subscribed: false });
+  assert.deepEqual(await status(h, endpoint, other), { subscribed: true });
+  assert.equal((await h.subs()).length, 1);
 });

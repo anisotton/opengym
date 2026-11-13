@@ -244,3 +244,37 @@ test('an admin can raise the Coach message length past the old 1000-char default
   const status = await call('GET /api/coach/status');
   assert.equal(status.body.maxMessageLen, 1800);
 });
+
+test('the card does not run a runtime to ask its version when the privilege drop cannot be performed', async () => {
+  // `codex --version` is a child process like a job's, and without the drop it would run as this
+  // process and see ./data. The job path and the test run refused it; the card's check did not
+  // (GHSA-w724-p4hx-jfv9, openGym v1.4.2).
+  const { forcePrivilegeVerdict } = await import('../coach/adapters/spawn.js');
+  const { adapterFor } = await import('../coach/adapters/index.js');
+  const ids = ['codex', 'claude', 'fixture'];
+  const real = Object.fromEntries(ids.map(id => [id, adapterFor(id).check]));
+  let calls = 0;
+  for (const id of ids) adapterFor(id).check = async () => { calls++; return { ok: true, version: 'stubbed' }; };
+  forcePrivilegeVerdict({ ok: false, dropped: false, why: 'no `coach` user exists in this image' });
+  try {
+    const { call } = harness();
+    for (const provider of ids) {
+      fresh({ provider });
+      const r = await call('GET /api/admin/coach');
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.runtime, { ok: false, version: null, error: 'Coach jobs are disabled: no `coach` user exists in this image', needsKey: false }, provider);
+      assert.equal(r.body.unprivileged.ok, false);
+    }
+    assert.equal(calls, 0, 'no runtime check was entered, so nothing was spawned');
+
+    // With the drop available the same card asks the runtime, as before.
+    forcePrivilegeVerdict({ ok: true, dropped: false, why: 'pinned by the test suite' });
+    fresh({ provider: 'codex' });
+    const r = await call('GET /api/admin/coach');
+    assert.deepEqual(r.body.runtime, { ok: true, version: 'stubbed', error: null, needsKey: false });
+    assert.equal(calls, 1);
+  } finally {
+    forcePrivilegeVerdict(null);
+    for (const id of ids) adapterFor(id).check = real[id];
+  }
+});
