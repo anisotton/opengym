@@ -11,14 +11,21 @@
  *   - one per profile — a new one replaces the one before — good for DEVICE_LINK_TTL_MS, and gone
  *     with the first passkey made with it.
  *
+ * A recovery code (#584) is the same kind of link, made by someone else for a person who has lost
+ * every way in: an admin from the dashboard, or the server's own command (recover.js, through the
+ * local admin socket). It carries `kind: 'recovery'` and who made it, and lives a day like an
+ * admin's password reset code, because it has to reach the person first.
+ *
  * Just the code math here — generating one, and the one-way hash of it. The rows themselves are
- * PostgreSQL's `device_links` table now (store.js, ISO-1403); the routes, the throttle and the
- * audit are server.js's. */
+ * PostgreSQL's `device_links` table now (store.js, ISO-1403; `kind`/`created_by` for recovery
+ * codes, migrations/011); the routes, the throttle and the audit are server.js's. */
 import crypto from 'node:crypto';
 
 // Long enough to walk to the other device, find the camera and sign in; short enough that a code
 // photographed off a screen is dead by the time anyone could use it.
 export const DEVICE_LINK_TTL_MS = 10 * 60 * 1000;
+// A recovery code is handed over by an admin, by message or in person: a day, like a reset code.
+export const RECOVERY_TTL_MS = 24 * 3600 * 1000;
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const LENGTH = 12;
 

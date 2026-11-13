@@ -14,6 +14,7 @@ import { askAddDeviceData } from '../sheets.jsx'
 import { passwordOn, PasswordRegisterForm, passwordError, webauthnOutcome } from '../components/PasswordAuth.jsx'
 import SignupFlow from '../components/SignupFlow.jsx'
 import { openRecoverRequest } from '../components/AccountEmail.jsx'
+import { openLostAccess } from '../components/LostAccess.jsx'
 import { ageFromBirthDate, isMinor, MIN_PLAUSIBLE_AGE } from '../lib/age.js'
 import TermsCheckbox from '../components/TermsCheckbox.jsx'
 import { LEGAL_VERSION } from '../legal/version.js'
@@ -283,6 +284,8 @@ export default function Login() {
         {googleOn && <><GoogleButton label={t('Sign in with Google')} onClick={() => beginGoogleAuth('login')} /><div style={{ height: 10 }} /></>}
         {webauthnOK() && <><Button icon="person" onClick={signIn}>{t('Sign in with passkey')}</Button><div style={{ height: 10 }} /></>}
         <Button icon="sparkles" onClick={register}>{t('Create new profile')}</Button>
+        {/* Upstream's "Lost access?" (#584): a recovery code from the admin goes in here too. */}
+        <Button variant="ghost" className="dim" size="sm" onClick={openLostAccess}>{t('Lost access?')}</Button>
         {canGuest && <div style={{ height: 10 }} />}
       </> : webauthnOK() ? <>
         <Button variant="primary" icon="person" onClick={signIn}>{t('Sign in with passkey')}</Button>
@@ -295,6 +298,9 @@ export default function Login() {
             the redeem sheet by itself (App.jsx, linkCode). */}
         <div style={{ height: 14 }} />
         <Button variant="ghost" className="dim" size="sm" onClick={() => openRecoverRequest()}>{t('Lost access to your device?')}</Button>
+        {/* Upstream's "Lost access?" (#584), beside the e-mail recovery above: what to try when no
+            device signs you in, and "I have a code" for a recovery code from the admin dashboard. */}
+        <Button variant="ghost" className="dim" size="sm" onClick={openLostAccess}>{t('Lost access?')}</Button>
         {canGuest && <div style={{ height: 10 }} />}
       </> : <div className="card small muted" style={{ textAlign: 'start' }}>{canGuest
         ? t("This browser doesn't do passkeys, but you can still use Brilhart Fitness locally on this device.")

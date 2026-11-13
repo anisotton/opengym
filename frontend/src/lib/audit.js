@@ -61,6 +61,10 @@ const LABELS = {
   'auth.link.create': 'Made a one-time code for another device',
   'auth.link.ok': 'Added a device with a one-time code',
   'auth.link.fail': 'Adding a device with a code failed',
+  // Recovery codes (#584): made by an admin or by the server's own command, used on a new device.
+  'auth.recovery.ok': 'Got back in with a recovery code',
+  'admin.recovery.create': 'Made a recovery code',
+  'server.recovery.create': 'A recovery code was made on the server',
   // The owner's proof (current password or a passkey) for one of the changes below was refused.
   'auth.proof.fail': 'Confirming a change failed',
   // ISO-1480: the browser refused a passkey ceremony outright — a certificate the device does
@@ -183,6 +187,8 @@ const REASONS = {
   'link-invalid': 'wrong, used or expired device code',
   'passkey-limit': 'the profile already has as many passkeys as it can hold',
   'token-invalid': 'wrong, used or expired link',
+  // An `admin.denied` for a recovery code: only the owner makes one for an admin (#584).
+  'recovery': 'a recovery code for an admin, which only the owner can make',
   // What an `auth.throttled` pause was for.
   'password': 'wrong passwords or reset codes',
   'signup': 'wrong invite codes on password signup',
@@ -214,6 +220,7 @@ const ACTS = {
   'passkey-add': 'adding a passkey',
   'passkey-remove': 'removing a passkey',
   'device-link': 'making a one-time code for another device',
+  'pair': 'making a code to pair the phone app',
   'account-delete': 'deleting their account',
   'google-link': 'linking a Google account',
   'google-remove': 'unlinking Google'

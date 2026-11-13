@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+For people, the same map with diagrams is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What this is
 
@@ -24,6 +25,7 @@ catalogue/ the exercise database (5,632 exercises, text, muscle map, i18n) — g
            frontend/src/lib by scripts/catalogue/build.mjs. No third-party media: the fork removed
            the Gym visual/ExerciseDB pictures (ISO-1601/1603) and ships only Brilhart's own media for
            128 exercises (frontend/public/brilhart, exercises-brilhart*.js, ISO-1605/1638).
+scripts/   build, CI and release helpers (scripts/README.md).
 website/   static project site (plain HTML/CSS/JS), deployed separately.
 kubernetes/ example manifests (docs/SELF_HOSTING_KUBERNETES.md).
 docs/      guides indexed in docs/README.md (FAQ, SELF_HOSTING*, MOBILE, AI_COACH, DATA_IMPORTS, API);
@@ -40,61 +42,75 @@ docker compose up -d --build
 # Frontend dev server (hot reload), proxies /api to :3000
 cd frontend && npm install && npm run dev
 
-# Frontend tests (training logic: progression, 1RM, session read-back)
-cd frontend && npm test            # vitest run
-cd frontend && npm run test:watch
-npx vitest run src/lib/progression.test.js   # single file
-npx vitest run -t "some test name"           # single test by name
-
-# API and MCP server tests
-cd api && npm test
+# Tests (Node 22, the version CI and the Dockerfiles use)
+cd frontend && npm test                          # vitest run, the whole suite
+cd frontend && npx vitest run src/lib/progression.test.js   # one file
+cd frontend && npx vitest run -t "some test name"           # one test by name
+cd api && npm test                               # node --test
 cd mcp && npm test
 
-# Production build
+# Checks CI runs besides the suites (run `npm ci` in the repo root once, for js-yaml)
+cd frontend && node scripts/check-locales.mjs && node scripts/check-source-strings.mjs --strict
+node scripts/catalogue/build.mjs --check
+node scripts/build-coach-assets.mjs --check
+node scripts/build-api-docs.mjs --check
+
+# Builds
 cd frontend && npm run build
 cd frontend && npm run build:mobile   # + cap sync
 ```
 
-There is no linter/formatter configured (no ESLint/Prettier config in the repo) and no
-TypeScript — match the existing style by hand.
+There is no linter/formatter config and no TypeScript; match the existing style by hand.
 
 GitHub (`github.com/DuarteSantos8/openGym`) is the home of the project; `.github/workflows/mirror.yml`
-pushes `main` and `v*` tags to the GitLab mirror. Pull requests are gated by
-`.github/workflows/test.yml` on Node 22 — the same version as `web/Dockerfile` / `api/Dockerfile`
-(`node:22-alpine`): the frontend, api and MCP suites, the locale checks, and building and booting
-both api image targets. GitLab CI on the mirror (`.gitlab-ci.yml`) builds the release artifacts:
-the signed Android APK, the multi-arch images and the SBOMs. Never push or merge on GitLab
-directly; the mirror is fast-forward only.
+pushes `main` and `v*` tags to the GitLab mirror (fast-forward only, never push or merge there).
+Pull requests are gated by `.github/workflows/test.yml`; `ios.yml` compiles the iPhone app on a Mac
+runner. Release packages (APK, Play bundle, App Store IPA) are built and signed on the release
+machine, never in CI (see "Exercise media" below and docs/APP_STORES.md).
 
 ## Architecture
 
 ### Frontend (`frontend/src`)
 
-- **`store/useStore.js`** — single Zustand store holding the entire client-side app state (`S`),
+- **`store/useStore.js`**: a single Zustand store holding the client-side app state (`S`),
   persisted to `localStorage` (`gym_state_v1`) and debounce-pushed to the server when signed in
-  (`pushState`, see `lib/api.js`). On the Capacitor mobile build it's also mirrored to a file via
-  `lib/mobile.js` (`nativeSave`), since WebView storage can be evicted. `store/useUI.js` holds
-  ephemeral UI state (modals, active sheet, etc.) separately from persisted data.
-- **`lib/`** — pure, framework-free helpers, each paired with a same-directory `*.test.js`. This
-  is where the domain logic lives, most importantly:
-  - `progression.js` — the progression-rule engine (linear, Greyskull LP, double progression,
-    time-based). Rules implement a shared policy interface; adding a new one plugs in here.
-  - `onerm.js` — estimated 1RM from logged sets.
-  - `finish-workout.js` — reduces a completed session back into state (weights advance, PRs, etc).
-  - `recovery.js` / `recovery-view.js` — fatigue/muscle-recovery model.
-  - `workout-model.js`, `supersetFlow.js` — in-session workout state machine, incl. supersets.
-  - `exercises.js` / `exercises-data.js` — the exercise library (1,324 built-ins + user-defined).
-  - `api.js` — the only place that talks to the backend (`fetch` wrapper, session cookie flows).
+  (`pushState`, see `lib/api.js`). On the phones it is also mirrored to a file via `lib/mobile.js`
+  (`nativeSave`), since WebView storage can be evicted. `store/useUI.js` holds ephemeral UI state
+  (modals, active sheet, rest timer) separately from persisted data.
+- **`lib/`**: pure, framework-free helpers, each paired with a same-directory `*.test.js`. The
+  domain logic lives here, most importantly:
+  - `progression.js`: the progression-rule engine (linear, Greyskull LP, double and triple
+    progression, time-based). Rules implement a shared policy interface.
+  - `onerm.js`: estimated 1RM from logged sets (several formulas).
+  - `finish-workout.js`: reduces a completed session back into state (weights advance, PRs).
+  - `recovery.js` / `recovery-view.js`: the fatigue and muscle-recovery model.
+  - `workout-model.js`, `supersetFlow.js`: the in-session workout state machine.
+  - `sync-merge.js`: the field-by-field merge behind the 409 retry (see "Sync" below).
+  - `exercises.js` / `exercises-data.js`: the exercise library (5,632 catalogue exercises plus
+    user-defined ones). `exercises-data.js`, `instr/`, `exercise-names/` and `exercise-desc/` are
+    generated from `catalogue/` by `scripts/catalogue/build.mjs`; never edit them by hand.
+  - `api.js`: the only place that talks to the backend (`fetch` wrapper, session flows).
+  - Native bridges: `mobile.js` (the `MOBILE` flag, file persistence, notifications),
+    `channel.js` (APK or store build), `watch-sync.js`, `widgets.js`, `health-sync.js`,
+    `anim-quality.js` / `anim-packs.js` (animation sizes in the store apps).
   - CONTRIBUTING.md is explicit: **anything that decides what you lift next, or reads a logged
-    session back, is a pure helper here with a unit test beside it** — not verifiable by
-    clicking, and the progression engine has already had two bugs that only a test caught.
-- **`views/`** — one file per screen (Home, Workout, Plan, Library, Stats, History, Settings,
-  Admin, Login, RoutineEdit), routed by `react-router-dom` from `App.jsx`.
-- **`components/`** — shared UI (charts, modals, timers); `instr/` holds per-language exercise
-  instruction text; `locales/` is the i18n string catalogue (`lib/i18n.js` / `i18n-core.js`).
-- Mobile: `@capacitor/*` wraps the same web build into native shells under `frontend/android` and
-  `frontend/ios` (see `docs/MOBILE.md`); `mobile.js` in `lib/` gates native-only behavior (file
-  persistence, local notifications, wake lock) behind a `MOBILE` flag.
+    session back, is a pure helper here with a unit test beside it.**
+- **Body measurements (`lib/measurements.js`, `views/Measurements.jsx`)**: one check-in per day.
+  Built-in circumferences and legacy custom fields store cm and follow the profile's cm/in
+  display. Custom definitions may specify `unit: 'cm' | 'in' | '%' | 'kg' | 'lb' | 'none'`; that
+  display choice stays fixed when the profile switches kg/lb. Custom values store canonical cm, kg
+  (to 0.001 kg so a tenth of a pound round-trips), percent (0 to 100) or a plain number. Each
+  custom reading also carries its unit, preserving its meaning in backups without definitions.
+  Once values exist, the unit selector permits cm/in or kg/lb conversions within the recorded
+  type; a different type needs a new field. The body CSV names a custom column with its unit,
+  "Muscle ratio (%)", and the importer reads those columns back (only from our own header).
+- **`views/`**: one file per screen, routed by `react-router-dom` from `App.jsx`.
+- **`sheets.jsx`**: the bottom sheets (exercise picker, exercise config, workout detail, plan
+  import...). It is large; a new sheet can go into `components/` as its own file.
+- **`components/`**: shared UI (charts, modals, timers, media).
+- **`locales/`**: one i18n pack per language, keyed by the English string (`lib/i18n.js`,
+  `i18n-core.js`). A new `t()` string goes into every pack; pt-BR inherits from pt and has a
+  fingerprint test (`scripts/pt-br-inheritance-fingerprint.mjs`).
 
 ### API (`api/server.js`)
 
@@ -181,14 +197,29 @@ auto-generated into `data/vapid.json`) drives rest-timer-over and day-reminder n
 suite against it — every test that spawns `server.js` needs one now, not just the ones that used
 to exercise PostgreSQL directly.
 
+### Sync
+
+Each profile is one document with a server revision. A device PUTs with the revision it last saw;
+if another device wrote in between, the server answers 409 with the current document and the
+client merges (`lib/sync-merge.js`) and retries. Every change carries its own stamp, per setting
+and per field, so the newest edit of each wins and deletions stay deleted.
+
+### Code that exists twice on purpose
+
+The API image cannot import the frontend, so some rules are hand-copied. Change both sides
+together: `lib/sync-merge.js` and `api/sync-stamps.js` (parity test), `lib/glyphs.js` and
+`api/coach/core/glyphs.js` (parity test), `lib/nudge.js` and `api/nudge.js`, `lib/queue.js` and
+`api/queue.js` (mirrored test cases only, nothing compares the code). The other way round,
+`lib/coach-local.js` imports `api/coach/core/` directly so the phones run the same coach pipeline.
+
 ### MCP server (`mcp/src`)
 
-Read-only stdio MCP bridge (`@modelcontextprotocol/sdk`) that lets an LLM client read a single
-user's routines/workouts/body-weight/1RM/muscle-balance directly from the same `DATA_DIR` the API
-writes to — no network call, no extra container. `state.js` loads/derives the data, `tools.js`
-defines the exposed MCP tools (zod-validated schemas), `labels.js` maps internal keys to
-human-readable labels, `index.js` wires it together. See `mcp/README.md` for the client-config
-side (Claude Desktop / Cursor).
+Stdio MCP bridge (`@modelcontextprotocol/sdk`) that reads one user's data straight from
+`DATA_DIR`. `state.js` loads and derives the data, `tools.js` defines the read tools (zod schemas),
+`labels.js` maps keys to readable labels, `index.js` wires it together. The one write tool,
+`log_workout` (`write-tools.js`), never writes the file: it builds the workout with
+`frontend/src/lib/log-workout.js` and saves it with `PUT /api/data` over a paired-session token
+(`api-client.js`, `scripts/pair.mjs`), the way a device syncs. See `mcp/README.md`.
 
 ### Passkeys and self-hosting constraints
 
@@ -224,4 +255,5 @@ a rebuild.
   New dependencies are a hard sell either side.
 - Don't commit `data/` (gitignored).
 - Training-logic changes (progression, 1RM, session read-back) need a unit test in `src/lib`
-  beside the code, not just manual clicking-through.
+  beside the code.
+- User-facing text: plain and human, no em dashes. CHANGELOG.md is written at release time.

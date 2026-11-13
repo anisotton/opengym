@@ -17,9 +17,12 @@ mcp/       Optional read-only MCP server for LLM clients (Claude Desktop, Cursor
 website/   The static project site (upstream: opengym.ch).
 kubernetes/ Example manifests (docs/SELF_HOSTING_KUBERNETES.md).
 docs/      User and operator guides (index: docs/README.md); docs/dev/ has feature design notes.
+scripts/   Build and release helpers (scripts/README.md).
 catalogue/ The exercise catalogue: one JSON file per exercise, translations in i18n/, and the
            licensed 180 px stills and animations in media/ (catalogue/README.md).
 ```
+
+The [architecture overview](docs/ARCHITECTURE.md) explains how the pieces talk to each other.
 
 ## Running for development
 
@@ -54,10 +57,17 @@ cd mcp && npm test
   session back, belongs in a pure helper in `src/lib` with a test beside it. These rules are easy
   to get subtly wrong and nearly impossible to check by clicking; the progression engine has had
   real bugs that only a test caught.
+- **Some rules exist twice on purpose**, once in `frontend/src/lib/` and once in `api/` (sync,
+  queue, nudge, routine icons), because the API image can't import the frontend. Change both in the
+  same pull request; [the list is here](docs/ARCHITECTURE.md#code-that-exists-twice-on-purpose).
+- **Leave CHANGELOG.md alone.** Release notes are written at release time, from the merged pull
+  requests.
 - **New UI strings go into every locale** in `frontend/src/locales/`. English is the source
-  language and has no file. `node scripts/check-locales.mjs` (run in CI) flags a key that is
-  missing, blank or has lost a `{n}` placeholder. Portuguese (Brazil) inherits from Portuguese
-  (Portugal) and has its own guard test.
+  language and has no file. `cd frontend && node scripts/check-locales.mjs` (run in CI) flags a
+  key that is missing, blank or has lost a `{n}` placeholder. Portuguese (Brazil) inherits from
+  Portuguese (Portugal) and has its own guard test: a new Portuguese string either gets a Brazilian
+  override or is accepted as shared, then `node scripts/pt-br-inheritance-fingerprint.mjs` prints
+  the numbers the test expects.
 - **An applied `api/migrations/NNN_*.sql` file is immutable — never edit it, always ship a new
   one.** The runner (`db.js`) records each filename in `schema_migrations` and only ever applies
   one once; an environment that already ran `001_init.sql` never re-reads it, so editing it after
@@ -87,9 +97,11 @@ it in review.
 </picture>
 </p>
 
-A pull request runs the three test suites and builds and boots both api image targets. The APK and
-the published images come from GitLab CI on the mirror, built from `main` after the merge. If your
-change needs an APK to be judged, say so in the pull request and a maintainer will run that build.
+A pull request runs the three test suites and builds and boots both api image targets. Changes to
+the iPhone or Apple Watch app (`frontend/ios`) can run the `iOS` workflow too (build, UI tests and the
+WatchCore tests on a macOS runner); ask in the pull request if a maintainer should start it. Signed
+APKs, TestFlight and App Store builds are made by the maintainer at release time, so if your change
+needs a phone build to be judged, say so and we'll put it on TestFlight or send you an APK.
 A first-time contributor's workflows wait for a maintainer to approve them, so "no checks yet"
 just means nobody has pressed the button.
 

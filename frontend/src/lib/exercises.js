@@ -5,6 +5,7 @@ import MUSCLE_MAP from './exercise-muscle-map.json' with { type: 'json' }
 import V13_IDS from './catalogue-v13-ids.json' with { type: 'json' }
 import { USER_EXERCISE_MUSCLE_OVERRIDES, exerciseMuscleMetadataFor } from './exercise-muscle-batch-1.js'
 import { t, getVersion, exerciseNameSearchText } from './i18n-core.js'
+import { exerciseAliases, aliasSnapshot } from './exercise-aliases.js'
 
 export { EXDB }
 
@@ -59,6 +60,8 @@ const SECONDARY_ADDITIONS = {
   '0293': ['rear deltoids'], // dumbbell bent over row
   '0499': ['rear deltoids'], // inverted row
   '0861': ['rear deltoids'], // cable seated row
+  '4133': ['lower back'], // kettlebell suitcase deadlift (#693)
+  '10189': ['lower back'], // weighted plate deadlift rear lunge with overhead press (#693)
 }
 
 // Secondary muscles for an exercise, with the small conservative additions applied as an
@@ -127,6 +130,10 @@ export function registerCustom(list) {
   xs.forEach(e => { EXIDX[e.id] = e })
 }
 
+// A built-in catalogue entry itself (never a copy, a snapshot or a custom one). Those objects never
+// change while the app runs, so what is derived from them alone can be remembered (muscles.js).
+export const isBuiltinEx = ex => BUILTIN.has(ex)
+
 // Whether an exercise is one of the user's own (#378, #358). Where it lives decides, not the
 // `custom` flag alone: a plan import before 1.3.8 (a shared plan file, a plan from the AI coach)
 // stored its exercises without the flag, and those were left with no Edit, no Delete and a
@@ -173,13 +180,13 @@ function isSubsequence(needle, hay) {
 // field prefix, then word-boundary starts, then substrings (closer to the start scores
 // better), and finally typo-tolerant ordered subsequences. Fields are weighted - the name
 // dominates, target/equipment matter, muscles and description are supporting evidence.
-// 0 means no match, so matchesExerciseSearch stays a boolean filter while the picker can
-// rank results by score.
+// 0 means no match, so a filter can test `> 0` while the picker ranks results by score.
 export function searchScore(exercise, query) {
   const needle = searchableText(query).toLowerCase().trim()
   if (!needle) return 1
-  const source = exercise && typeof exercise === 'object' ? exercise : {}
-  const fields = [['n', 100], ['tg', 40], ['eq', 40], ['sm', 30], ['muscleGroups', 30], ['primaries', 30], ['secondaries', 30], ['desc', 10], ['cues', 10]]
+  const ex = exercise && typeof exercise === 'object' ? exercise : {}
+  const source = { ...ex, aliases: exerciseAliases(ex) }
+  const fields = [['n', 100], ['aliases', 100], ['tg', 40], ['eq', 40], ['sm', 30], ['muscleGroups', 30], ['primaries', 30], ['secondaries', 30], ['desc', 10], ['cues', 10]]
   // Token-level matching: every query word must match somewhere (any order), so
   // "press bench" finds "Bench Press". The score sums each token's best hit.
   const tokens = needle.split(/[^a-z0-9]+/).filter(Boolean)
@@ -203,10 +210,6 @@ export function searchScore(exercise, query) {
   return total
 }
 
-export function matchesExerciseSearch(exercise, query) {
-  return searchScore(exercise, query) > 0
-}
-
 // `import.meta.env` is undefined in plain Node; the guard keeps this module loadable
 // without Vite.
 const ENV = import.meta.env || {}
@@ -225,8 +228,27 @@ export const gifSrc = (ex, file = ex.gif) => BRILHART_BASE + file
 // Kept for callers from before the media removal: a fork's or an older build's clip may be a video.
 export const isVideoSrc = src => /\.(mp4|webm)(\?|$)/i.test(src || '')
 
+// An exercise from either its id or itself: most helpers below take both.
+export const exerciseOf = idOrEx => (typeof idOrEx === 'string' ? EXIDX[idOrEx] : idOrEx)
+
 // Cardio exercises log time + speed instead of weight × reps.
-export const isCardio = idOrEx => (typeof idOrEx === 'string' ? EXIDX[idOrEx] : idOrEx)?.bp === 'cardio'
+export const isCardio = idOrEx => exerciseOf(idOrEx)?.bp === 'cardio'
+
+// Static holds (planks, wall sits, levers, hangs): the catalogue marks the exercises that are only
+// ever held ("hold": true), so a freshly added one starts as a timed hold rather than as reps.
+export const isHold = idOrEx => !!(typeof idOrEx === 'string' ? EXIDX[idOrEx] : idOrEx)?.hd
+
+// Exercises done one arm or leg at a time, by their catalogue name: "single leg", "one arm",
+// "single-arm", "unilateral". Stretches and rollers are mobility, not sets, and a single-leg
+// push-up or plank is a two-arm exercise with a leg lifted. Like `isBodyweightEq`, this only seeds
+// a fresh config (`side: true`); the flag lives on the config, so either way can be switched.
+const ONE_LIMB = /\b(single|one)[\s-]+(arm|leg|hand)\b|\bunilateral\b/i
+const NOT_ONE_LIMB = /stretch|\broll(er|ball)?\b|two to one|single leg (push|plank)|leg push up/i
+export const isOneLimb = idOrEx => {
+  const ex = typeof idOrEx === 'string' ? EXIDX[idOrEx] : idOrEx
+  if (!ex || ex.custom || ex.bp === 'cardio') return false
+  return ONE_LIMB.test(ex.n || '') && !NOT_ONE_LIMB.test(ex.n || '')
+}
 
 // Exercises the dataset already knows carry no external load (issue #32) — a quarter of the
 // catalogue. This seeds the `bw` flag on a fresh config so a push-up never asks for a weight
@@ -237,7 +259,7 @@ export const isCardio = idOrEx => (typeof idOrEx === 'string' ? EXIDX[idOrEx] : 
 // per-exercise Bodyweight switch still overrides it either way (issue #39).
 const BODYWEIGHT_EQ = new Set(['body weight', 'band', 'resistance band'])
 export const isBodyweightEq = idOrEx =>
-  BODYWEIGHT_EQ.has((typeof idOrEx === 'string' ? EXIDX[idOrEx] : idOrEx)?.eq)
+  BODYWEIGHT_EQ.has(exerciseOf(idOrEx)?.eq)
 
 // Equipment that is a load in its own right: a bar, a bell, a stack, a sled, a weight. A set on
 // one of these logged at 0 kg is a number nobody typed in. The rest of the catalogue that is not
@@ -246,7 +268,7 @@ export const isBodyweightEq = idOrEx =>
 // reps instead (lib/progression.js).
 const LOADED_EQ = new Set(['barbell', 'ez barbell', 'olympic barbell', 'trap bar', 'dumbbell', 'kettlebell', 'clubbell', 'macebell', 'cable', 'leverage machine', 'smith machine', 'sled machine', 'weighted'])
 export const isLoadedEq = idOrEx =>
-  LOADED_EQ.has((typeof idOrEx === 'string' ? EXIDX[idOrEx] : idOrEx)?.eq)
+  LOADED_EQ.has(exerciseOf(idOrEx)?.eq)
 
 /* Assistance machines run the other way round: the stack carries part of your body weight, so
  * a smaller number is the harder set and the record (issue #232). Getting the set wrong is
@@ -332,11 +354,11 @@ const VOCAB = new Set()
 function corpusOf(e) {
   const v = getVersion()
   const hit = corpusCache.get(e)
-  if (hit && hit.v === v) return hit
+  if (hit && hit.v === v && hit.aliases === aliasSnapshot()) return hit
   const sm = Array.isArray(e?.sm) ? e.sm : []
   const name = normalizeStr(exerciseNameSearchText(e))
   const s = normalizeStr([
-    name,
+    name, ...exerciseAliases(e),
     e?.tg || '', t(e?.tg || ''),
     e?.eq || '', t(e?.eq || ''),
     e?.bp || '', t(e?.bp || ''),
@@ -348,7 +370,7 @@ function corpusOf(e) {
   // a body part and an equipment word would start matching as one.
   // The joined form only counts from the start of a name word, or "thigh" would find "sumo
   // deadlift high pull" through "deadlifthighpull".
-  const entry = { v, s, name, ...joinedOf(name), nameWords: name.split(/[\s\-‐-―()/,]+/).filter(Boolean) }
+  const entry = { v, s, name, aliases: aliasSnapshot(), ...joinedOf(name), nameWords: name.split(/[\s\-‐-―()/,]+/).filter(Boolean) }
   for (const w of entry.nameWords) VOCAB.add(w)
   corpusCache.set(e, entry)
   return entry

@@ -10,10 +10,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 import { tempData, spawnApi } from './helpers.mjs';
+import { LEGAL_VERSION } from '../legal.js';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
 const ORIGIN = 'http://localhost:8080';
-const VERSION = '2026-10-26';
+const VERSION = LEGAL_VERSION;
 const b64u = b => Buffer.from(b).toString('base64url');
 const sha = b => crypto.createHash('sha256').update(b).digest();
 

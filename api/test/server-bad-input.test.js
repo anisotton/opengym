@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 import { tempData, spawnApi } from './helpers.mjs';
+import { LEGAL_VERSION } from '../legal.js';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
 
@@ -62,7 +63,7 @@ test('malformed and non-object JSON bodies are a 400 with no stack trace, on eve
     }
   }
   // A field whose toString is not callable is valid JSON; String() on it used to throw.
-  let r = await status(h, 'POST', '/api/register/options', anon, JSON.stringify({ name: 'x', code: { toString: 1 }, termsVersion: '2026-10-26' }));
+  let r = await status(h, 'POST', '/api/register/options', anon, JSON.stringify({ name: 'x', code: { toString: 1 }, termsVersion: LEGAL_VERSION }));
   assert.notEqual(r.status, 500);
   r = await status(h, 'POST', '/api/pair/redeem', anon, JSON.stringify({ code: { toString: 1 } }));
   assert.equal(r.status, 400);

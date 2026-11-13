@@ -6,12 +6,17 @@ import { useStore } from './store/useStore.js'
 import { startMediaSync } from './lib/media-sync.js'
 import { startNativeKeyboard } from './lib/native-keyboard.js'
 import './fonts/fonts.css'
+// The Coach's and the admin dashboard's styles stay in the main stylesheet, in the place they
+// always had (before index.css), although their screens are now loaded on demand (App.jsx).
+import './admin.css'
+import './coach.css'
 import './index.css'
-import { hideBoot } from './lib/boot.js'
+import { hideBoot, handOverFromLaunchScreen } from './lib/boot.js'
 
 // App.jsx restores per-route scroll itself; the browser's own attempt races it.
 // A script that dies before the app draws would otherwise leave the boot logo lifting forever.
 window.addEventListener('error', hideBoot, { once: true })
+handOverFromLaunchScreen()
 
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
 

@@ -10,6 +10,7 @@ import { DEF, useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
 import { exercisePicker } from './sheets.jsx'
 import Library from './views/Library.jsx'
+import { registerExerciseAliases } from './lib/exercise-aliases.js'
 import { LIBRARY_CATALOGUE, searchExercises } from './lib/exercises.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -36,6 +37,7 @@ const count = host => host.querySelector('.search .search-count')
 beforeEach(() => {
   useUI.setState({ sheets: [], toastMsg: '' })
   useStore.setState({ S: structuredClone(DEF), user: null })
+  registerExerciseAliases({})
   document.body.innerHTML = ''
 })
 afterEach(() => { act(() => { mounted.splice(0).forEach(root => root.unmount()) }) })
@@ -44,12 +46,47 @@ afterEach(() => { act(() => { mounted.splice(0).forEach(root => root.unmount()) 
 // it — LIBRARY_CATALOGUE (ISO-1638), the library-visible subset Library/the picker actually
 // search, not the full EXDB.
 const matches = q => searchExercises(LIBRARY_CATALOGUE, q).length
+// Upstream aliases EXDB 1162 (barbell standing military press), which this fork hides from the
+// library and the picker (ISO-1638): the alias goes on a Brilhart exercise the screens do show.
+const ALIASED = LIBRARY_CATALOGUE.find(e => e.eq === 'barbell' && e.bp !== 'neck') || LIBRARY_CATALOGUE.find(e => e.bp !== 'neck')
+const AID = ALIASED.id, ANAME = ALIASED.n.toLowerCase(), AEQ = String(ALIASED.eq).split(' ')[0]
 
 describe('exercise search result count', () => {
   for (const [where, open] of [
     ['Library', () => mount(<MemoryRouter><Library /></MemoryRouter>)],
     ['exercise picker', () => { exercisePicker(vi.fn()); return renderTopSheet() }],
   ]) {
+    it(`${where}: finds aliases, follows edits and clears, and keeps filters`, () => {
+      const host = open()
+      const input = host.querySelector('.search input')
+      const update = fn => act(() => useStore.getState().update(fn))
+      update(s => {
+        s.exAliases = { [AID]: ['Zentara lift'] }
+        s.customEx = [{ id: 'calias', n: 'Custom shoulder press', bp: 'shoulders', eq: 'barbell', custom: true, aliases: ['Harbour lift'] }]
+      })
+      for (const query of ['Zentara lift', 'ZENTARA LIFT', 'zentara', 'lift zentara', 'zentara ' + AEQ]) {
+        act(() => type(input, query))
+        expect(count(host).textContent).toBe('1')
+        expect(host.textContent.toLowerCase()).toContain(ANAME)
+      }
+      act(() => type(input, 'Harbour lift'))
+      expect(count(host).textContent).toBe('1')
+      expect(host.textContent).toContain('Custom shoulder press')
+      act(() => type(input, 'Zentara lift'))
+      act(() => chip(host, 'neck').click())
+      expect(count(host).textContent).toBe('0')
+      act(() => chip(host, 'All').click())
+      expect(count(host).textContent).toBe('1')
+      update(s => { s.exAliases[AID] = ['Summit lift'] })
+      expect(count(host).textContent).toBe('0')
+      act(() => type(input, 'Summit lift'))
+      expect(count(host).textContent).toBe('1')
+      update(s => { s.exAliases[AID] = [] })
+      expect(count(host).textContent).toBe('0')
+      act(() => type(input, ALIASED.n))
+      expect(Number(count(host).textContent)).toBeGreaterThan(0)
+    })
+
     it(`${where}: appears with a search, follows it, and goes when the search is cleared`, () => {
       const host = open()
       const input = host.querySelector('.search input')

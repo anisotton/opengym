@@ -19,7 +19,7 @@ import { coachRoutes } from './coach/routes.js';
 import { startCadence } from './coach/cadence.js';
 import { startWarmup } from './coach/warmup.js';
 import { dayReminderPush, nudgePush, restTimerPush, testPush } from './push-messages.js';
-import { verifyError } from './verify-error.js';
+import { verifyError, isMisconfigured, originHint } from './verify-error.js';
 import {
   hashPassword, verifyPassword, needsRehash, passwordProblem, passwordLength, nameKey, BusyError,
   MIN_LENGTH, MAX_LENGTH, makeResetCode, hashResetCode, resetCodeMatches, RESET_TTL_MS, warmUp,
@@ -38,9 +38,9 @@ import {
   createSession, getSession, revokeSession,
   createInvite, getAllInvites, codeExists, inviteIsValid, consumeInvite, revokeInvite, upsertInvite,
   upsertSub, findSub, capUserSubs, getUserSubs, getUserIdsWithPush, hasPush, subStatus, deleteSub, unsubscribe,
-  createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink,
+  createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks, upsertDeviceLink, recoveryLinkOf,
   listPasskeys, getPasskeyById, countPasskeys, insertPasskey, renamePasskey, passkeyRemovalRefused,
-  removePasskey, touchPasskeyUse, upsertPasskey,
+  removePasskey, touchPasskeyUse, upsertPasskey, dropOldestPasskeyIfFull,
   insertOAuthIdentity, findOAuthIdentityBySubject, findOAuthIdentityByUser, touchOAuthIdentityUse,
   removeOAuthIdentityUnlessLast,
   createEmailToken, consumeEmailToken, claimStripeEvent, unclaimStripeEvent, insertStripeCleanup,
@@ -87,6 +87,8 @@ import {
   cancelImmediately, generateSubscriptionLink, syncSubscription, suspendCollection, resumeCollection,
   changePlanEffectiveUnix, cancellationEffectiveUnix, planSummaryForMail
 } from './billing.js';
+import { RECOVERY_TTL_MS } from './device-link.js';
+import { startAdminSocket } from './admin-socket.js';
 import { effectiveRoutineId } from './queue.js';
 import { stampPut } from './sync-stamps.js';
 import { atomicWrite as durableWrite } from './durable.js';
@@ -865,6 +867,12 @@ const SIGN_IN_ROUTES = new Set([
   'POST /api/login/password', 'POST /api/register/password', 'POST /api/login/password-reset',
   'POST /api/device-link/options', 'POST /api/device-link/verify'
 ]);
+// A verify error as the answer's body: a passkey made at an address that is not ORIGIN/RP_ID gets
+// the same `code` as the origin check's 403, so the app explains both alike.
+const verifyAnswer = e => ({
+  error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }),
+  ...(isMisconfigured(e) ? { code: 'origin-mismatch', expected: ORIGIN } : {})
+});
 const originsMatch = (a, b) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
 // Whether a Bearer is the credential that would act on this request: it verifies, and no session
 // cookie sits beside it (sessionOf takes the cookie first, so a cookie is what would act then).
@@ -1259,6 +1267,8 @@ const THROTTLED = {
   // budget: the password that may prove them counts its own failures (passwordAttempt).
   'POST /api/device-link/options': 'link', 'POST /api/device-link/verify': 'link',
   'POST /api/account/passkeys/options': null, 'POST /api/account/device-link': null,
+  // Pairing a phone: the same, for the password that may prove it.
+  'POST /api/pair/create': null,
   'DELETE /api/account/passkeys': null,
   // Self-deletion (ISO-1447): proveOwner guards it the same as every other DELETE /api/account/*
   // above, so a wrong passkey or password only spends the burst budget, not a `kind` of its own.
@@ -1965,6 +1975,23 @@ const lastAdminLeaving = async u => {
 async function hasGoogle(user) {
   return GOOGLE_LOGIN && !!(await findOAuthIdentityByUser(pool, 'google', user.id));
 }
+// Makes a recovery code for `target` (openGym #584): a device link that lives a day and says who
+// made it (`by`: the admin, or null for the server's own command, recover.js). Making it signs the
+// profile out everywhere, as a password reset does: it is asked for when the devices are lost, and
+// a lost phone should not stay signed in for the day the code is good. Pairing codes and device
+// links go too (createDeviceLink replaces any earlier link of the profile). Passkeys and the
+// password are left alone; the person removes the lost device's passkey in Settings once they are
+// back. Audited here, whoever asked. Not the e-mailed recovery link of ISO-1397 (recover/*): that
+// one the person asks for themselves; this one someone else makes for them.
+async function issueRecoveryCode(req, target, by) {
+  target.sv = await bumpSessionVersion(pool, target.id);
+  for (const [k, v] of pairings) if (v.uid === target.id) pairings.delete(k);
+  presence.delete(target.id);
+  const made = await createDeviceLink(pool, target.id, RECOVERY_TTL_MS, { kind: 'recovery', by: by ? by.id : 'server' });
+  audit(req, by ? 'admin.recovery.create' : 'server.recovery.create', { ...(by ? { user: by } : {}), target, msg: by ? null : 'recover.js' });
+  return made;
+}
+
 const passkeyState = async u => {
   const passkeys = await listPasskeys(pool, u.id);
   // `password`: whether the password can confirm an addition or a removal (proveOwner) — only
@@ -2003,7 +2030,7 @@ async function newPasskey(req, res, c, body, ev, user) {
   } catch (e) {
     // e.message can echo attacker-supplied response fields, so only the reason code is kept.
     audit(req, ev, { ok: false, user, msg: 'verify-error' });
-    json(res, 400, { error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }) });
+    json(res, 400, verifyAnswer(e));
     return null;
   }
   if (!verification.verified) {
@@ -2148,10 +2175,12 @@ const passkeyRoutes = {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'user-unavailable' });
       return json(res, 400, LINK_INVALID);
     }
-    if ((await passkeyCount(user)) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
+    // A recovery code still works on a profile full of passkeys: the oldest unused one makes room
+    // (verify below). The lost devices' passkeys are what fill it.
+    if (link.kind !== 'recovery' && (await passkeyCount(user)) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const options = await moreOptions(user);
     const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'link', lh: link.h });
-    json(res, 200, { cid, options, id: user.id, name: user.name });
+    json(res, 200, { cid, options, id: user.id, name: user.name, ...(link.kind === 'recovery' ? { recovery: true } : {}) });
   },
 
   // Step two: the new passkey is stored, the code is burned, and this device is signed in by the
@@ -2193,11 +2222,17 @@ const passkeyRoutes = {
     // request racing the same code finds nothing left to claim and never reaches insertPasskey
     // at all, rather than both requests re-checking the link is "still there" (true of both,
     // right up until whichever of them runs its own DELETE second) and both getting in.
+    //
+    // A recovery code (openGym #584) on a profile full of passkeys: the one used longest ago goes,
+    // in the same transaction, to make room for this one — rolled back with everything else if
+    // the insert fails, so a failed redemption never costs the owner a passkey.
+    const recovery = link.kind === 'recovery';
     const now = new Date().toISOString();
-    let added;
+    let added, dropped = null;
     try {
       await withTransaction(pool, async client => {
         if (!(await burnDeviceLink(client, link.h))) throw new DeviceLinkRaceError();
+        if (recovery) dropped = await dropOldestPasskeyIfFull(client, user.id);
         added = await insertPasskey(client, user.id, { ...cred, created: now, lastUsed: now });
         if (added.error) throw new HttpError(409, added.error);
       });
@@ -2212,7 +2247,7 @@ const passkeyRoutes = {
       }
       throw e;
     }
-    audit(req, 'auth.link.ok', { user, msg: added.row.name || null });
+    audit(req, recovery ? 'auth.recovery.ok' : 'auth.link.ok', { user, msg: [added.row.name, dropped && `replaced ${dropped.name || 'a passkey'}`].filter(Boolean).join(', ') || null });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': await sessionCookie(user, req.headers['user-agent']) });
   }
 };
@@ -3353,7 +3388,7 @@ const routes = {
     } catch (e) {
       // e.message can echo attacker-supplied response fields, so only the reason code is kept.
       auditFail(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'verify-error' });
-      return json(res, 400, { error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }) });
+      return json(res, 400, verifyAnswer(e));
     }
     if (!verification.verified) {
       auditFail(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'not-verified' });
@@ -3473,7 +3508,7 @@ const routes = {
       });
     } catch (e) {
       auditFail(req, 'auth.login.fail', { ok: false, user: await getUserById(pool, cred.userId), uid: cred.userId, msg: 'verify-error' });
-      return json(res, 400, { error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }) });
+      return json(res, 400, verifyAnswer(e));
     }
     if (!verification.verified) {
       auditFail(req, 'auth.login.fail', { ok: false, user: await getUserById(pool, cred.userId), uid: cred.userId, msg: 'not-verified' });
@@ -3527,16 +3562,25 @@ const routes = {
   // Stripe clean-up outbox; upstream's POST /api/account/delete is deliberately not offered.
 
   // Mobile app pairing: called from an already signed-in browser tab (Settings → "Pair the
-  // mobile app") to mint a short code the phone can redeem below.
+  // mobile app") to mint a short code the phone can redeem below. The code turns into a phone's
+  // token, which /api/me renews for as long as it is used, so it asks the proof a device link
+  // asks (proveOwner; openGym v1.4.3): a session alone
+  // may be a cookie someone walked off with, and minting a phone token is how that cookie would
+  // stop having to expire.
   'POST /api/pair/create': async (req, res) => {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const proof = await proveOwner(req, res, user, body, 'pair');
+    if (!proof) return;
+    // Awaited: a sign-out everywhere, a disable or an admin reset may have ended this session.
+    if (!(await sessionStillValid(req, user))) return json(res, 401, { error: 'not signed in' });
     // One live code per profile: the newest is the one on screen. Keeping every code minted
     // let one session grow this Map without limit for five minutes at a time.
     for (const [k, v] of pairings) if (v.uid === user.id) pairings.delete(k);
     const code = makePairCode();
     pairings.set(code, { uid: user.id, exp: Date.now() + 5 * 60000 });
-    audit(req, 'auth.pair.create', { user });
+    audit(req, 'auth.pair.create', { user, msg: proof });
     json(res, 200, { code });
   },
 
@@ -3890,13 +3934,34 @@ const routes = {
           ...(u.role === 'teacher' ? { studentCount: await countStudentsOfTeacher(pool, u.id) } : {}),
           // Only on an instance with password sign-in: whether they have one, the address a reset
           // code is redeemed with, and until when an unused reset code is good.
-        ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {})
+        ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {}),
+        // Until when an unused recovery code is good (#584), on every instance.
+        recoveryUntil: (await recoveryLinkOf(pool, u.id))?.exp || null
       },
       lastSync: lastSyncOf(u, S),
       // status/plan/dates — billingStatus is the exact same contract GET /api/billing/status
       // gives the account itself, reused rather than re-derived here.
       subscription: BILLING_ON ? await billingStatus(pool, u.id) : null
     });
+  },
+
+  // A recovery code (#584): for someone who lost every way in, on any instance, password sign-in
+  // or not. The person enters it on the sign-in screen, and the device they use gets a new passkey
+  // for the profile (POST /api/device-link/*, the same redemption a device link has). Who may make
+  // one for whom: any admin for a profile that is not an admin; the owner for an admin; nobody here
+  // for the owner, who uses the server's own command (recover.js), since no one else may take over
+  // the owner's login. Not for oneself, and not for a disabled profile. See issueRecoveryCode.
+  'POST /api/admin/user/recovery': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const u = await getUserById(pool, text(body.id));
+    if (!u) return json(res, 404, { error: 'no such user' });
+    if (u.id === admin.id) return json(res, 400, { error: 'you are signed in: add a passkey in Settings instead', code: 'self' });
+    if (isOwner(u)) return json(res, 403, { error: 'the owner recovers with the server command (recover.js)', code: 'owner' });
+    if (isAdmin(u) && !isOwner(admin)) { audit(req, 'admin.denied', { ok: false, user: admin, target: u, msg: 'recovery' }); return json(res, 403, { error: 'only the owner can make a recovery code for an admin' }); }
+    if (u.disabled) return json(res, 400, { error: 'enable the account first', code: 'disabled' });
+    const { code, link } = await issueRecoveryCode(req, u, admin);
+    json(res, 200, { ok: true, name: u.name, code, expires: link.exp });
   },
 
   'POST /api/admin/user/disable': async (req, res) => {
@@ -5268,8 +5333,10 @@ const server = http.createServer(async (req, res) => {
     // Logged, not audited: this is reachable without a session, and an audit entry per attempt
     // would let anyone fill the log. An operator who has genuinely mis-set ORIGIN needs to see
     // the mismatch, and the container log is where they will look.
-    console.warn('refused cross-origin', key, 'origin=' + req.headers.origin, 'expected=' + ORIGIN);
-    return json(res, 403, { error: 'cross-origin request refused' });
+    // The answer carries ORIGIN too (the app shows it, see passkeyError in lib/api.js): it is no
+    // secret, and a hostile page cannot read a response CORS never allowed it.
+    console.warn(originHint(key, req.headers.origin, ORIGIN, req.headers['sec-fetch-site']));
+    return json(res, 403, { error: 'cross-origin request refused', code: 'origin-mismatch', expected: ORIGIN });
   }
   // After the origin check, so a forged request spends nobody's budget. The password routes only
   // (see the sign-in throttle above).
@@ -5378,5 +5445,27 @@ async function listen() {
   // it (the tests spawn the server that way, and so does anyone running two instances on one
   // box) has no other way to learn it.
   server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
+  // After the pool exists: the command's lookups and the code it makes are both rows.
+  startAdminSocket({ handle: adminCommand });
+}
+
+// The server's own command for a locked-out owner or admin (openGym #584, recover.js): asked over
+// a local socket only this process's user can open (admin-socket.js). The code is made through the
+// same issueRecoveryCode an admin's request takes, so it is a device_links row like any other.
+// One command: a recovery code for a profile named, or picked by id when several share the name.
+const CLI_REQ = { headers: {}, socket: {} };
+async function adminCommand(msg) {
+  if (!msg || msg.cmd !== 'recover') return { error: 'unknown command' };
+  const id = typeof msg.id === 'string' ? msg.id : null;
+  const k = nameKey(typeof msg.name === 'string' ? msg.name : '');
+  const users = id || k ? await getAllUsers(pool) : [];
+  const found = id ? users.filter(u => u.id === id) : k ? users.filter(u => nameKey(u.name) === k || u.email === k) : [];
+  const row = u => ({ id: u.id, name: u.name, created: u.created || null, admin: isAdmin(u), owner: isOwner(u) });
+  if (!found.length) return { error: id ? 'no profile with that id' : 'no profile with that name' };
+  if (found.length > 1) return { error: 'several profiles have that name: pick one with --id', matches: found.map(row) };
+  const u = found[0];
+  if (u.disabled) return { error: 'that profile is disabled: enable it in the admin dashboard first' };
+  const { code, link } = await issueRecoveryCode(CLI_REQ, u, null);
+  return { ...row(u), code, expires: link.exp };
 }
 listen();

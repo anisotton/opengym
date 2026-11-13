@@ -606,11 +606,15 @@ export async function unsubscribe(pool, userId, endpoint) {
  */
 
 function rowToDeviceLink(row) {
-  return { h: row.hash, userId: row.user_id, exp: row.expires_at.getTime(), created: row.created_at.getTime() };
+  return {
+    h: row.hash, userId: row.user_id, exp: row.expires_at.getTime(), created: row.created_at.getTime(),
+    ...(row.kind === 'recovery' ? { kind: 'recovery', by: row.created_by || 'server' } : {})
+  };
 }
 
-// → { code, link }. The code is returned once and never stored — only its hash is.
-export async function createDeviceLink(pool, userId, ttlMs = DEVICE_LINK_TTL_MS) {
+// → { code, link }. The code is returned once and never stored — only its hash is. `extra` marks a
+// recovery code (openGym #584): { kind: 'recovery', by } (who made it: an admin's id, or 'server').
+export async function createDeviceLink(pool, userId, ttlMs = DEVICE_LINK_TTL_MS, extra = {}) {
   await pool.query('DELETE FROM device_links WHERE expires_at <= now()');
   await pool.query('DELETE FROM device_links WHERE user_id = $1', [userId]);
   const code = makeLinkCode();
@@ -619,11 +623,21 @@ export async function createDeviceLink(pool, userId, ttlMs = DEVICE_LINK_TTL_MS)
   const exp = new Date(now + ttlMs);
   // created_at passed explicitly rather than left to the column's own now() default, so the
   // returned link and a fresh findDeviceLink read of the same row always agree to the millisecond.
+  const recovery = extra.kind === 'recovery';
+  const by = recovery ? String(extra.by || 'server') : null;
   await pool.query(
-    'INSERT INTO device_links (hash, user_id, expires_at, created_at) VALUES ($1,$2,$3,$4)',
-    [hash, userId, exp, new Date(now)]
+    'INSERT INTO device_links (hash, user_id, expires_at, created_at, kind, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
+    [hash, userId, exp, new Date(now), recovery ? 'recovery' : null, by]
   );
-  return { code, link: { h: hash, userId, exp: exp.getTime(), created: now } };
+  return { code, link: { h: hash, userId, exp: exp.getTime(), created: now, ...(recovery ? { kind: 'recovery', by } : {}) } };
+}
+
+// The live recovery code of a profile, if any (for the admin dashboard: "recovery code until").
+export async function recoveryLinkOf(pool, userId) {
+  const { rows } = await pool.query(
+    "SELECT * FROM device_links WHERE user_id = $1 AND kind = 'recovery' AND expires_at > now() LIMIT 1", [userId]
+  );
+  return rows.length ? rowToDeviceLink(rows[0]) : null;
 }
 
 // The live link a code belongs to, or null — a wrong code, a used one and an expired one all look
@@ -661,11 +675,13 @@ export async function dropDeviceLinks(pool, userId) {
 // same as any other row — findDeviceLink's own `expires_at > now()` never returns them — rather
 // than filtered here, so this has one less thing to get right at the one moment a bug in it would
 // be hardest to notice.
-export async function upsertDeviceLink(pool, { h, userId, exp, created }) {
+export async function upsertDeviceLink(pool, { h, userId, exp, created, kind, by }) {
+  const recovery = kind === 'recovery';
   await pool.query(
-    `INSERT INTO device_links (hash, user_id, expires_at, created_at) VALUES ($1,$2,$3,$4)
-     ON CONFLICT (hash) DO UPDATE SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at`,
-    [h, userId, new Date(exp), new Date(created)]
+    `INSERT INTO device_links (hash, user_id, expires_at, created_at, kind, created_by) VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (hash) DO UPDATE SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at,
+       kind = EXCLUDED.kind, created_by = EXCLUDED.created_by`,
+    [h, userId, new Date(exp), new Date(created || exp), recovery ? 'recovery' : null, recovery ? String(by || 'server') : null]
   );
 }
 
@@ -784,6 +800,22 @@ export async function removePasskey(pool, userId, credId, passwordCounts = false
     return { ok: true, row: rowToPasskey(rows[0]) };
   };
   return withWayInLock(pool, userId, run);
+}
+
+// A recovery code redeemed on a profile already full of passkeys (openGym #584): the one used
+// longest ago goes, to make room for the new one — the lost devices' passkeys are what fill it.
+// Only ever called inside the redeeming transaction, right before insertPasskey adds the
+// replacement, so this never leaves the profile with fewer ways in than it had. → the removed
+// row, or null when the profile is not full.
+export async function dropOldestPasskeyIfFull(client, userId) {
+  if ((await countPasskeys(client, userId)) < MAX_PASSKEYS) return null;
+  const { rows } = await client.query(
+    `DELETE FROM passkeys WHERE id = (
+       SELECT id FROM passkeys WHERE user_id = $1
+       ORDER BY COALESCE(last_used_at, created_at) ASC NULLS FIRST LIMIT 1
+     ) RETURNING *`, [userId]
+  );
+  return rows.length ? rowToPasskey(rows[0]) : null;
 }
 
 // A passkey's own counter/last-use, touched by every ceremony that verifies an assertion against

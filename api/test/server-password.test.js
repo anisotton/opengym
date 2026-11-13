@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 import { hashPassword, hashResetCode } from '../password.js';
+import { LEGAL_VERSION } from '../legal.js';
 import { tempData, spawnApi } from './helpers.mjs';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
@@ -76,7 +77,7 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
     // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
     // server-terms.test.js's subject, not this file's. ISO-1521: same idea for the now-required
     // birthDate — an adult one, since the under-18 refusal is server-age-gate.test.js's subject.
-    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-26' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: LEGAL_VERSION };
     if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
@@ -274,7 +275,8 @@ test('a flood from a shared address leaves passkey sign-in, registration and pai
   assert.equal(signedIn.status, 200, 'passkey sign-in');
   assert.ok(signedIn.cookie);
   assert.equal((await h.req('POST', '/api/register/options', { body: { name: 'Cleo', email: 'cleo@example.com', code: 'goodcode' } })).status, 200, 'passkey signup');
-  const { code } = (await h.req('POST', '/api/pair/create', { cookie: signedIn.cookie })).body;
+  const pairProof = (await h.req('POST', '/api/login/options', { body: {} })).body;
+  const { code } = (await h.req('POST', '/api/pair/create', { cookie: signedIn.cookie, body: { cid: pairProof.cid, credential: key.assertion(pairProof.options.challenge) } })).body;
   assert.equal((await h.req('POST', '/api/pair/redeem', { body: { code } })).status, 200, 'pairing');
   assert.equal(h.audit().some(e => e.ev === 'auth.throttled' && e.msg !== 'password'), false);
 
