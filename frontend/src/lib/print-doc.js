@@ -81,7 +81,7 @@ export const PRINT_CSS = `
     --lime: #a3e635; --lime-ink: #4d7c0f; --lime-soft: #f1f9e1;
   }
   * { box-sizing: border-box; }
-  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html { color-scheme: light; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   body {
     margin: 0; color: var(--ink); background: #fff;
     font: 9.5pt/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Noto Sans", Helvetica, Arial, sans-serif;
@@ -125,6 +125,7 @@ export const PRINT_CSS = `
   td.num, th.num { text-align: end; padding-inline-end: 0; white-space: nowrap; }
 
   .end { margin-top: 18pt; padding-top: 7pt; border-top: 1px solid var(--rule); color: var(--faint); font-size: 7.5pt; text-align: center; }
+  .end .credit { margin-top: 3pt; font-size: 7pt; }
 
   [dir="rtl"] .facts .dot { display: inline-block; }
 `
@@ -136,8 +137,10 @@ export const PRINT_CSS = `
  *  - `kicker`  small line above the title ("Performance report")
  *  - `facts`   short strings under the title, joined with dots
  *  - `owner`   who it is for (optional); `date` the day it was made (ISO, default today)
+ *  - `credit`  a line printed under the closing line: the media licence's attribution when the
+ *              page carries catalogue pictures (lib/print-pictures.js MEDIA_CREDIT)
  */
-export function printShell({ title, kicker = '', facts = [], owner = '', date, body, css = '' }) {
+export function printShell({ title, kicker = '', facts = [], owner = '', date, body, css = '', credit = '' }) {
   const lang = getLang()
   const made = paperDate(date || new Date().toISOString().slice(0, 10))
   const meta = [owner ? `<b>${esc(owner)}</b>` : '', esc(made)].filter(Boolean).join('<br>')
@@ -156,7 +159,7 @@ ${css}</style></head>
     ${factLine ? `<div class="facts">${factLine}</div>` : ''}
   </header>
   ${body}
-  <div class="end keep">${esc(t('Made with Brilhart Fitness'))}${appOrigin() ? ` · ${esc(appOrigin())}` : ''}</div>
+  <div class="end keep">${esc(t('Made with Brilhart Fitness'))}${appOrigin() ? ` · ${esc(appOrigin())}` : ''}${credit ? `<div class="credit" lang="en" dir="ltr">${esc(credit)}</div>` : ''}</div>
 </div></body></html>`
 }
 
@@ -194,8 +197,13 @@ function printInFrame(html) {
   }
   const doc = ifr.contentWindow.document
   doc.open(); doc.write(html); doc.close()
-  // Give the iframe a tick to lay out (and its fonts to load) before printing.
-  const go = () => setTimeout(run, 150)
+  // Give the iframe a tick to lay out (and its fonts to load) before printing, and its pictures
+  // (#817, data: URLs) their decode, a few seconds at most: one that does not decode prints blank.
+  const pictures = () => Promise.race([
+    Promise.all([...(doc.images || [])].map(img => (img.decode ? img.decode().catch(() => {}) : null))),
+    new Promise(resolve => setTimeout(resolve, 3000)),
+  ])
+  const go = () => pictures().then(() => setTimeout(run, 150))
   if (doc.readyState === 'complete') go()
   else ifr.onload = go
 }

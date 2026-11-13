@@ -131,6 +131,7 @@ const TAGS = {
   meta: { title: 'Meta', side: 'Health &amp; public config' },
   auth: { title: 'Auth', side: 'Passkeys &amp; sessions' },
   pairing: { title: 'Pairing', side: 'Connect the mobile app' },
+  watch: { title: 'Watch relay', side: 'Zepp OS watches' },
   password: { title: 'Password', side: 'Optional name &amp; password (PASSWORD_LOGIN)' },
   passkeys: { title: 'Passkeys', side: 'More passkeys &amp; device links' },
   email: { title: 'E-mail', side: 'Verified e-mail &amp; recovery' },
@@ -143,6 +144,7 @@ const TAGS = {
   // spec needs a line here.
   coach: { title: 'AI Coach', side: 'Plans, reviews, debriefs' },
   billing: { title: 'Billing', side: 'Stripe Checkout, Portal &amp; webhook' },
+  integrations: { title: 'Integrations', side: 'Webhooks (INTEGRATIONS)' },
   admin: { title: 'Admin', side: 'Users, invites, audit log, Coach' },
   teacher: { title: 'Teacher', side: 'Roles, the link, assignments & notes' }
 }

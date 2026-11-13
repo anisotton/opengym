@@ -5,8 +5,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
-import dns from 'node:dns';
-import net from 'node:net';
 import { pipeline } from 'node:stream/promises';
 import {
   generateRegistrationOptions, verifyRegistrationResponse,
@@ -51,7 +49,10 @@ import {
   peekTeacherInvite, acceptTeacherInvite, getTeacherLink, getLinkForTeacher, listStudentsOfTeacher,
   endLink, setShareBodyweight, assignToStudent, getActiveAssignment, endAssignment, listAssignmentHistory,
   getPendingAndEndedAssignments, ackAssignment, listNotes, createNote, updateNote, deleteNote,
-  getAvailablePlans
+  getAvailablePlans, setWrappedPush,
+  listWatchLinkRows, editWatchLinks, findWatchLinkByHash, touchWatchLinkRow, dropAllWatchLinks,
+  getWatchBox, editWatchBox, deleteWatchBox,
+  loadIntegrationConnections, saveIntegrationConnections, loadIntegrationOutbox, saveIntegrationOutbox
 } from './store.js';
 import {
   CATEGORIES as PROGRAM_CATEGORIES, DIFFICULTIES as PROGRAM_DIFFICULTIES,
@@ -88,11 +89,19 @@ import {
   changePlanEffectiveUnix, cancellationEffectiveUnix, planSummaryForMail
 } from './billing.js';
 import { RECOVERY_TTL_MS } from './device-link.js';
+import {
+  createWatchCode, takeWatchCode, dropWatchCodes, createWatchLink, findWatchLink, touchWatchLink, listWatchLinks,
+  dropWatchLinks, watchTokenHash, boxOf, putSnapshot, pushEvents, queuedEvents, ackEvents
+} from './watch-relay.js';
 import { startAdminSocket } from './admin-socket.js';
 import { effectiveRoutineId } from './queue.js';
 import { stampPut } from './sync-stamps.js';
 import { atomicWrite as durableWrite } from './durable.js';
+import { ipv6Groups, guardedLookup, pushEndpointError, MAX_PUSH_ENDPOINT } from './net-guard.js';
+import { createIntegrations } from './integrations/index.js';
+import { integrationRoutes } from './integrations/routes.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
+import { wrappedPushYear, wrappedSummary, wrappedPushOwed, wrappedPush } from './wrapped.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -210,6 +219,18 @@ const lock = f => { try { fs.chmodSync(path.join(DATA, f), 0o600); } catch { /* 
 const secretFile = path.join(DATA, 'secret');
 if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
 const SECRET = fs.readFileSync(secretFile, 'utf8').trim();
+// Integrations (integrations/, docs/INTEGRATIONS.md): off unless INTEGRATIONS names some. Their
+// connections (secrets sealed with a key derived from SECRET) and the delivery outbox are rows in
+// PostgreSQL here (store.js, migrations/012), not files under DATA_DIR/integrations/: loaded by
+// integrations.init() in listen(), once the pool exists.
+const integrations = createIntegrations({
+  dataDir: DATA, secret: SECRET, version: '1',
+  persistence: {
+    load: async () => ({ connections: await loadIntegrationConnections(pool), outbox: await loadIntegrationOutbox(pool) }),
+    saveConnections: (uid, list) => saveIntegrationConnections(pool, uid, list),
+    saveOutbox: json => saveIntegrationOutbox(pool, json)
+  }
+});
 
 // db.json itself is only ever read once more, at boot (readBootDb below) — the one-time
 // migration of whatever an instance upgrading from before ISO-1403 still has on disk. Nothing
@@ -316,117 +337,27 @@ const PUSH_TIMEOUT_MS = 10000;
 const PUSH_CONCURRENCY = 6;
 const MAX_SUBS_PER_USER = 20;
 
-function parseAllowedPrivateIps(raw) {
-  const list = new net.BlockList();
-  for (const entry of String(raw || '').split(/[\s,]+/).filter(Boolean)) {
-    const [from, to] = entry.split('-');
-    const [addr, prefix] = entry.split('/');
-    const family = net.isIPv6(addr) || net.isIPv6(from) ? 'ipv6' : 'ipv4';
-    try {
-      if (to !== undefined) list.addRange(from, to, family);
-      else if (prefix !== undefined && /^\d{1,3}$/.test(prefix)) list.addSubnet(addr, +prefix, family);
-      else if (net.isIP(entry)) list.addAddress(entry, family);
-      else throw new Error('not an address, range or CIDR block');
-    } catch {
-      console.warn(`ALLOWED_PRIVATE_IPS entry "${entry.slice(0, 60)}" is not a valid address, range or CIDR block — ignored`);
-    }
-  }
-  return list;
-}
-const ALLOWED_PRIVATE_IPS = parseAllowedPrivateIps(process.env.ALLOWED_PRIVATE_IPS);
-
-function isAllowedPrivateAddr(v) {
-  const family = net.isIPv6(v) ? 'ipv6' : net.isIPv4(v) ? 'ipv4' : null;
-  return family !== null && ALLOWED_PRIVATE_IPS.check(v.replace(/%.*$/, ''), family);
-}
-
-function isPrivateAddr(ip) {
-  const v = String(ip).toLowerCase();
-  if (isAllowedPrivateAddr(v)) return false;
-  const m4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v);
-  if (m4) {
-    const a = +m4[1], b = +m4[2];
-    if (a === 0 || a === 10 || a === 127) return true;            // this-network, private, loopback
-    if (a === 169 && b === 254) return true;                      // link-local (cloud metadata)
-    if (a === 172 && b >= 16 && b <= 31) return true;             // private
-    if (a === 192 && b === 168) return true;                      // private
-    if (a === 192 && b === 0) return true;                        // 192.0.0.0/24, 192.0.2.0/24
-    if (a === 100 && b >= 64 && b <= 127) return true;            // CGNAT
-    if (a === 198 && (b === 18 || b === 19)) return true;         // benchmarking 198.18.0.0/15
-    if (a >= 224) return true;                                    // multicast + reserved
-    return false;
-  }
-  // IPv6 is judged on its eight groups, never on the text: the same address arrives as
-  // `::ffff:127.0.0.1` from dns.lookup, as `::ffff:7f00:1` from new URL, and in whatever
-  // spelling a caller chose, and a rule keyed to one spelling misses the others.
-  const g = ipv6Groups(v);
-  if (!g) return false;
-  if (g.slice(0, 5).every(x => x === 0) && g[5] === 0xffff) {     // IPv4-mapped IPv6
-    return isPrivateAddr(`${g[6] >> 8}.${g[6] & 255}.${g[7] >> 8}.${g[7] & 255}`);
-  }
-  if (g.slice(0, 7).every(x => x === 0) && g[7] <= 1) return true; // unspecified, loopback
-  if ((g[0] & 0xffc0) === 0xfe80) return true;                    // link-local fe80::/10
-  if ((g[0] & 0xffc0) === 0xfec0) return true;                    // site-local fec0::/10 (deprecated, still routed by some)
-  if ((g[0] & 0xfe00) === 0xfc00) return true;                    // unique local fc00::/7
-  if ((g[0] & 0xff00) === 0xff00) return true;                    // multicast ff00::/8
-  // The forms that carry an IPv4 address inside: on a host with NAT64 or a 6to4 relay they reach
-  // that IPv4 address, so they are judged by it. 64:ff9b:1::/48 is the local-use NAT64 prefix,
-  // which only ever translates into a network of the operator's own.
-  const v4 = (hi, lo) => isPrivateAddr(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
-  if (g.slice(0, 6).every(x => x === 0)) return v4(g[6], g[7]);          // IPv4-compatible ::a.b.c.d
-  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every(x => x === 0)) return v4(g[6], g[7]); // NAT64 64:ff9b::/96
-  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true;       // local-use NAT64 64:ff9b:1::/48
-  if (g[0] === 0x2002) return v4(g[1], g[2]);                            // 6to4 2002::/16
-  return false;
-}
-
-// The eight 16-bit groups of an IPv6 literal in any textual form — compressed, zero-padded,
-// upper-case, with a dotted IPv4 tail — or null when the string is not one.
-function ipv6Groups(v) {
-  if (!net.isIPv6(v)) return null;
-  let s = v.replace(/%.*$/, '');                                  // zone id
-  const m4 = /:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(s);
-  if (m4) {
-    const [a, b, c, d] = m4[1].split('.').map(Number);
-    s = s.slice(0, -m4[1].length) + ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16);
-  }
-  const [head, tail = ''] = s.split('::');
-  const groups = head ? head.split(':') : [];
-  const rest = tail ? tail.split(':') : [];
-  if (s.includes('::')) while (groups.length + rest.length < 8) groups.push('0');
-  return groups.concat(rest).map(x => parseInt(x, 16));
-}
-
-// Same shape as dns.lookup, so https.Agent can use it directly.
-function guardedLookup(hostname, options, cb) {
-  dns.lookup(hostname, options, (err, address, family) => {
-    if (err) return cb(err);
-    const list = Array.isArray(address) ? address : [{ address, family }];
-    if (list.some(a => isPrivateAddr(a.address))) {
-      return cb(Object.assign(new Error('refusing to connect to a private address: ' + hostname), { code: 'EPUSHBLOCKED' }));
-    }
-    cb(null, address, family);
-  });
-}
+// Same shape as dns.lookup (net-guard.js guardedLookup), so https.Agent can use it directly.
 const PUSH_AGENT = new https.Agent({ lookup: guardedLookup, keepAlive: false });
 
-// Cheap pre-check so a bad endpoint is refused at subscribe time with a useful message, rather
-// than silently never delivering. For a hostname PUSH_AGENT is what actually enforces the address
-// rule; for a literal address this is the check, which is why sendPush runs it again.
-function pushEndpointError(raw) {
-  let u;
-  try { u = new URL(String(raw || '')); } catch { return 'endpoint is not a valid URL'; }
-  if (u.protocol !== 'https:') return 'endpoint must be an https:// URL';
-  if (u.username || u.password) return 'endpoint must not carry credentials';
-  // A literal address is judged right here — and only here: Node hands a literal straight to
-  // connect() without consulting the Agent's lookup. Hostnames are left to PUSH_AGENT, which is
-  // the check that has to hold against rebinding.
-  const host = u.hostname.replace(/^\[|\]$/g, '');
-  if (/^[0-9.]+$/.test(host) || host.includes(':')) {
-    if (isPrivateAddr(host)) return 'endpoint must not point at a private address';
-  }
+// Real push services hand out endpoints of a few hundred characters (FCM, Mozilla, Apple are all
+// well under 1 KB) and keys of 87 (p256dh, a 65-byte point) and 22 (auth, 16 bytes) base64url
+// characters. Every admin route and every send reads these rows back, so nothing bigger is ever
+// stored (GHSA-g65f-rj2m-6wj9; upstream's reason was db.json, rewritten whole on every save).
+// MAX_PUSH_ENDPOINT comes from net-guard.js, next to the endpoint check itself.
+const MAX_PUSH_KEY = 256;
+const PUSH_KEY_RE = /^[A-Za-z0-9_\-+/]+={0,2}$/;
+function pushKeyError(v) {
+  if (typeof v !== 'string' || !v || v.length > MAX_PUSH_KEY || !PUSH_KEY_RE.test(v)) return 'invalid subscription keys';
   return null;
 }
+
+// A db.json from before these limits may still carry an oversized row: boot's one-time import
+// (listen() below) leaves it out. Only size decides: a row is never dropped for its format.
+const oversizedSub = s => {
+  const tooBig = v => typeof v === 'string' && v.length > MAX_PUSH_KEY;
+  return String(s?.endpoint ?? '').length > MAX_PUSH_ENDPOINT || tooBig(s?.keys?.p256dh) || tooBig(s?.keys?.auth);
+};
 
 // `deviceId` narrows the send to the subscriptions one browser registered (the rest-timer alert
 // belongs to the device that started the rest, #348); a subscription stored without one (an
@@ -567,6 +498,17 @@ async function nudgeTick(user, S, now) {
 // (mtime/size keyed) because parsing a multi-MB JSON file off disk on every pass was the expensive
 // part; a `SELECT state FROM user_state` does not pay that cost; Postgres, not this process, is
 // what decides how a query the size doesn't change gets served twice in a row.
+// "Your year in openGym" (wrapped.js, openGym v1.4.4): once per user and year, on Dec 1 from 18:00
+// server time. The year it went out for is written to the user row (setWrappedPush) before the
+// send, so a crash after it, a restart or the next tick cannot send it twice.
+async function wrappedTick(user, S, year) {
+  const sum = wrappedSummary(S);
+  if (!wrappedPushOwed(user, sum, year)) return;
+  console.log('wrapped push firing', user.id, year);
+  user.wrappedPush = year;
+  await setWrappedPush(pool, user.id, year);
+  sendPush(user.id, wrappedPush(sum.lang, year));
+}
 setInterval(async () => {
   // REMINDER_TICK_MS can be set well under the time listen() takes to connect, migrate and
   // backfill (tests do this deliberately, to keep the wait short) — this tick's own interval is
@@ -576,6 +518,8 @@ setInterval(async () => {
   usersCache = await getAllUsers(pool);
   ownerIdCache = ownerFrom(usersCache);
   const withPush = await getUserIdsWithPush(pool);
+  // Server time, read through Date.now() so the tests' clock moves it too.
+  const wrappedYear = wrappedPushYear(new Date(Date.now()));
   for (const user of usersCache) {
     if (user.disabled) continue;            // locked out everywhere, reminders included
     if (!withPush.has(user.id)) continue;
@@ -585,6 +529,7 @@ setInterval(async () => {
     // nobody.
     try {
       const S = await readState(user.id);
+      if (wrappedYear && S && user.wrappedPush !== wrappedYear) await wrappedTick(user, S, wrappedYear);
       if (!S?.reminder?.on) continue;
       const now = userNow(S.reminder.tz || 'UTC');
       if (!now) continue;
@@ -833,6 +778,9 @@ const clearCookie = COOKIE === LEGACY_COOKIE
 // any site sign a visitor into the attacker's account and collect what they log (login CSRF).
 const CSRF_EXEMPT = new Set([
   'POST /api/pair/redeem',
+  // The watch relay's two routes for the watch (openGym v1.4.4) are the same kind: the code in the
+  // body, or a watch token in the Authorization header, which no browser attaches on its own.
+  'POST /api/watch/redeem', 'POST /api/watch/box',
   // Each carries its own one-time credential in the body (a mailed token, or nothing at all for
   // the neutral recover/request) rather than acting on the caller's session, none of them sets a
   // session cookie, and the link that reaches account/email/verify or recover/redeem may open in
@@ -970,6 +918,33 @@ function takeReauthProof(token) {
   return p;
 }
 setInterval(() => { for (const [k, v] of reauthProofs) if (v.exp < Date.now()) reauthProofs.delete(k); }, 60000).unref();
+
+/* ---------- the watch relay (watch-relay.js, docs/ZEPP_OS.md; openGym v1.4.4) ---------- */
+// Pairing codes for watches, in memory like the phone's: hashed, one per profile, ten minutes.
+// The links and each profile's mailbox are rows in PostgreSQL (store.js, migrations/012).
+const watchCodes = new Map();
+setInterval(() => { const now = Date.now(); for (const [k, v] of watchCodes) if (v.exp <= now) watchCodes.delete(k); }, 60000).unref();
+const readBox = async uid => boxOf(await getWatchBox(pool, uid));
+// `edit(box)` changes the mailbox and says whether it did; stored under a row lock. → the box.
+const changeBox = async (uid, edit) => boxOf(await editWatchBox(pool, uid, raw => {
+  const box = boxOf(raw);
+  return edit(box) ? box : null;
+}));
+// The watch link a request carries (`Authorization: Bearer ogw_…`), or null. Never a session: an
+// account that may not sign in, or whose sessions were all ended since, has no live links either.
+async function watchLinkFor(req) {
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Bearer ')) return null;
+  const token = auth.slice(7).trim();
+  if (!token.startsWith('ogw_') || token.length > 100) return null;
+  const row = await findWatchLinkByHash(pool, watchTokenHash(token));
+  if (!row) return null;
+  const u = await getUserById(pool, row.userId);
+  // watch-relay.js still decides (idleness, the session version), on just this one row.
+  const link = findWatchLink({ watchLinks: [row] }, token, uid => (u && u.id === uid && !u.disabled ? sessionVersion(u) : null));
+  if (link && touchWatchLink(link)) await touchWatchLinkRow(pool, link.id, link.seen);
+  return link;
+}
 
 /* ---------- helpers ---------- */
 function json(res, code, obj, extraHeaders) {
@@ -1269,6 +1244,8 @@ const THROTTLED = {
   'POST /api/account/passkeys/options': null, 'POST /api/account/device-link': null,
   // Pairing a phone: the same, for the password that may prove it.
   'POST /api/pair/create': null,
+  // A watch's pairing code (watch-relay.js): a wrong one counts like a wrong device link.
+  'POST /api/watch/redeem': 'watch', 'POST /api/watch/pair': null,
   'DELETE /api/account/passkeys': null,
   // Self-deletion (ISO-1447): proveOwner guards it the same as every other DELETE /api/account/*
   // above, so a wrong passkey or password only spends the burst budget, not a `kind` of its own.
@@ -3045,6 +3022,9 @@ const mediaRoutes = {
 async function deleteAccount(target) {
   presence.delete(target.id);
   for (const [k, v] of pairings) if (v.uid === target.id) pairings.delete(k);
+  // A watch pairing code waiting in memory (openGym v1.4.4); the watch links and the mailbox are
+  // rows that go with the user row's cascade.
+  dropWatchCodes(watchCodes, target.id);
   cancelRestTimer(target.id);
   let cleanup = null;
   await withTransaction(pool, async client => {
@@ -3063,6 +3043,9 @@ async function deleteAccount(target) {
   try { coachConfig.clearProfileAuth(target.id); } catch { /* nothing stored */ }
   try { coachJobs.purgeUser(target.id); } catch (e) { console.error('coach: could not purge', target.id, e.message); }
   try { MEDIA.removeUser(target.id); } catch (e) { console.error('media: could not remove uploads of', target.id, e.message); }
+  // Their integrations (openGym v1.4.4): the connections row goes with the cascade; this drops the
+  // in-memory copy and anything still waiting in the outbox.
+  try { integrations.removeUser(target.id); } catch (e) { console.error('integrations: could not remove', target.id, e.message); }
   // Tried once, right now, outside the transaction above (which has already committed — the
   // account is gone locally either way): success clears the row on the spot, a failure (Stripe
   // down, a transient error) just leaves it for the periodic retry below.
@@ -3240,6 +3223,7 @@ const routes = {
     // holds was made for a session: without the key it cannot tell "no Coach here" from "you
     // were not signed in when you asked", and would re-ask on every sign-in on every instance
     // that has no Coach. The key's absence is that answer.
+    const signedIn = !!(await readSession(req));
     json(res, 200, {
       invite_only: INVITE_ONLY, allow_guest: ALLOW_GUEST,
       // ISO-1390: public like the two flags above — the signup screen links the texts of this
@@ -3256,7 +3240,10 @@ const routes = {
       // Public like the two flags above: the caps are not a secret, and the absence of the
       // block is how the app knows this server does not take photos and videos at all.
       ...(MEDIA_ON ? { media: mediaConfig(MEDIA_LIMITS) } : {}),
-      ...((await readSession(req)) ? { coach: coachConfig.publicConfig() } : {})
+      ...(signedIn ? { coach: coachConfig.publicConfig() } : {}),
+      // Which integrations this server offers (only to a session, like the Coach block). Absent
+      // with INTEGRATIONS unset, which is how the app knows to show the server cards as off.
+      ...(signedIn && integrations.publicConfig() ? { integrations: integrations.publicConfig() } : {})
     });
   },
 
@@ -3604,6 +3591,92 @@ const routes = {
     json(res, 200, { token: await makeSession(user, req.headers['user-agent']), user: publicUser(user) });
   },
 
+  // The watch relay (watch-relay.js, docs/ZEPP_OS.md). A signed-in device asks for a code, the
+  // Zepp app's settings page for openGym redeems it for a watch token, and from then on the page
+  // and the watch's Side Service meet in this profile's mailbox. A watch token opens the two
+  // /api/watch/box routes and nothing else, so a session is all that minting one asks; "sign out
+  // everywhere" and a new password end every watch link with the sessions (their version).
+  'POST /api/watch/pair': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const { code, exp } = createWatchCode(watchCodes, user.id);
+    audit(req, 'auth.watch.pair', { user });
+    json(res, 200, { code, exp });
+  },
+  'POST /api/watch/redeem': async (req, res) => {
+    const body = await readBody(req);
+    if (addressPaused(req, res, 'watch')) return;
+    const uid = takeWatchCode(watchCodes, text(body.code));
+    const user = uid ? await getUserById(pool, uid) : null;
+    if (!user || user.disabled) {
+      strikeAddress(req, 'watch');
+      auditFail(req, 'auth.watch.fail', { ok: false, msg: 'code-invalid' });
+      return json(res, 400, { error: 'invalid or expired code', code: 'pair-invalid' });
+    }
+    // watch-relay.js decides which least-recently-used link makes room; the rows follow.
+    const { token, link } = await editWatchLinks(pool, user.id, doc => createWatchLink(doc, user.id, sessionVersion(user), text(body.name)));
+    audit(req, 'auth.watch.ok', { user, msg: link.name });
+    json(res, 200, { token, id: link.id, name: user.name || '' });
+  },
+  'GET /api/watch/links': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    json(res, 200, { links: listWatchLinks({ watchLinks: await listWatchLinkRows(pool, user.id) }, user.id) });
+  },
+  'POST /api/watch/unlink': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const id = text(body.id) || null;
+    if (id) await editWatchLinks(pool, user.id, doc => dropWatchLinks(doc, user.id, id));
+    else await dropAllWatchLinks(pool, user.id);
+    const links = listWatchLinks({ watchLinks: await listWatchLinkRows(pool, user.id) }, user.id);
+    // The last watch gone: nothing is left to read the mailbox.
+    if (!links.length) await deleteWatchBox(pool, user.id);
+    audit(req, 'auth.watch.unlink', { user });
+    json(res, 200, { ok: true, links });
+  },
+  // The page's side: its snapshot for the watches, and what they sent.
+  'PUT /api/watch/snapshot': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    if (!(await listWatchLinkRows(pool, user.id)).length) return json(res, 409, { error: 'no watch paired', code: 'no-watch' });
+    let ok = false;
+    await changeBox(user.id, box => (ok = putSnapshot(box, body.json)));
+    if (!ok) return json(res, 400, { error: 'not a snapshot' });
+    json(res, 200, { ok: true });
+  },
+  'GET /api/watch/events': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const links = listWatchLinks({ watchLinks: await listWatchLinkRows(pool, user.id) }, user.id);
+    const seen = links.reduce((m, l) => Math.max(m, l.seen || 0), 0);
+    json(res, 200, { events: links.length ? queuedEvents(await readBox(user.id)) : [], paired: links.length, seen });
+  },
+  'POST /api/watch/ack': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    await changeBox(user.id, box => ackEvents(box, body.ids));
+    json(res, 200, { ok: true });
+  },
+  // The watch's side (its Side Service, with the watch token): the snapshot, and its events.
+  'GET /api/watch/box': async (req, res) => {
+    const link = await watchLinkFor(req);
+    if (!link) return json(res, 401, { error: 'not paired', code: 'watch-unpaired' });
+    const box = await readBox(link.userId);
+    json(res, 200, { json: box.snapshot, at: box.snapAt });
+  },
+  'POST /api/watch/box': async (req, res) => {
+    const link = await watchLinkFor(req);
+    if (!link) return json(res, 401, { error: 'not paired', code: 'watch-unpaired' });
+    const body = await readBody(req);
+    let accepted = [];
+    const box = await changeBox(link.userId, b => (accepted = pushEvents(b, body.events)).length > 0);
+    json(res, 200, { accepted, json: box.snapshot, at: box.snapAt });
+  },
+
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.
   ...(PASSWORD_LOGIN ? passwordRoutes : {}),
 
@@ -3719,7 +3792,11 @@ const routes = {
     let incoming;
     try { incoming = JSON.stringify(body.state); }
     catch (e) { if (e instanceof RangeError) return json(res, 400, { error: 'invalid state' }); throw e; }
+    // The document this write replaced, for the integrations below (the last `decide` run is the
+    // one that was written).
+    let prevState = null;
     const result = await putUserState(pool, user.id, (cur, curRev) => {
+      prevState = cur;
       if ((body.baseRev != null && body.baseRev !== curRev) ||
           (body.baseRev != null && typeof body.baseWid === 'string' && cur?._wid && body.baseWid !== cur._wid)) return { conflict: true };
       const next = JSON.parse(incoming);
@@ -3763,6 +3840,9 @@ const routes = {
     if (MEDIA_ON) {
       try { MEDIA.noteState(user.id, result.state); } catch (e) { console.error('media noteState', e); }
     }
+    // A finished workout, a record or a weigh-in the profile's integrations asked to hear about:
+    // queued for delivery (integrations/outbox.js), never sent from inside this request.
+    try { integrations.onStateWrite(user.id, prevState, result.state); } catch (e) { console.error('integrations onStateWrite', e); }
     json(res, 200, { ok: true, ts: result.state._ts || null, rev: result.told, wid: result.state._wid });
   },
 
@@ -3774,7 +3854,7 @@ const routes = {
     const body = await readBody(req);
     const sub = body.subscription;
     if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) return json(res, 400, { error: 'invalid subscription' });
-    const bad = pushEndpointError(sub.endpoint);
+    const bad = pushEndpointError(sub.endpoint) || pushKeyError(sub.keys.p256dh) || pushKeyError(sub.keys.auth);
     if (bad) return json(res, 400, { error: bad });
     // Only the two keys the push protocol needs are kept: `sub` is caller-supplied and would
     // otherwise put arbitrary fields into the row, which every admin route reads back out.
@@ -5197,6 +5277,11 @@ const routes = {
     try { await pipeline(fs.createReadStream(null, { fd }), res); } catch { res.destroy(); }
   },
 
+  /* ---------- integrations ---------- */
+  // integrations/routes.js, handed the same helpers. With INTEGRATIONS unset they answer an empty
+  // list (GET) or 404 "off", so the routes exist on every server and the app can tell.
+  ...integrationRoutes({ json, readBody, readSession, hub: integrations, audit }),
+
   /* ---------- photos & videos ---------- */
   // Absent, not refusing, when MEDIA_UPLOADS=0: a 404 is what a server from before the feature
   // answers, and the client already treats that as "this server does not store them".
@@ -5425,6 +5510,9 @@ async function listen() {
   // fails to carry over (a dangling userId nobody has, a malformed db.json entry) is not data
   // anyone can lose in a way that matters, since the client re-sends its subscription itself on
   // its next boot (lib/push.js).
+  const subsBefore = db.subs.length;
+  db.subs = db.subs.filter(s => !oversizedSub(s));
+  if (db.subs.length !== subsBefore) console.error(`push: dropped ${subsBefore - db.subs.length} oversized subscription(s)`);
   for (const s of db.subs) {
     try { await upsertSub(pool, s); } catch (e) { console.error('could not migrate push subscription into postgres', s.endpoint, e.message); }
   }
@@ -5440,6 +5528,11 @@ async function listen() {
     try { await upsertPasskey(pool, c); } catch (e) { console.error('could not migrate passkey into postgres', c.id, e.message); }
   }
   await refreshOwner();   // the users are all in now, imported ones included
+  // Integrations (openGym v1.4.4): their connections and outbox are rows, so the hub loads them
+  // now that the pool exists, and only then starts sending. Not fatal: an instance whose
+  // integrations cannot load still serves everything else, and says why in the log.
+  try { await integrations.init(); integrations.start(); }
+  catch (e) { console.error('integrations: could not load their connections and outbox', e.message); }
   // The port is read back off the listener rather than echoed from PORT, so the line states the
   // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose
   // it (the tests spawn the server that way, and so does anyone running two instances on one

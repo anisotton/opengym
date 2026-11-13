@@ -118,12 +118,11 @@ describe('Seasonal themes', () => {
     expect(mocks.S.seasonal.halloween).toBe('on')
   })
 
-  it('Spooky colors is off until switched on', () => {
+  // Brilhart Fitness: the brand's accent is fixed (Settings ACCENT_PICKER), so a seasonal theme
+  // offers no accent of its own.
+  it('has no Spooky colors switch (the accent is the brand\'s)', () => {
     mount()
-    const sw = rowOf('Spooky colors').querySelector('[role="switch"]')
-    expect(sw.getAttribute('aria-checked')).toBe('false')
-    act(() => sw.click())
-    expect(mocks.S.seasonal).toEqual({ halloweenColors: true })
+    expect(rowOf('Spooky colors')).toBeFalsy()
   })
 
   it('Also during workouts is on until switched off, and then stored', () => {

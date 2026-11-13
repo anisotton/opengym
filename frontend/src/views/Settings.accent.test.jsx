@@ -79,7 +79,18 @@ const drag = value => act(() => {
 const release = () => act(() => { picker().dispatchEvent(new Event('change', { bubbles: true })) })
 const pick = value => { drag(value); release() }
 
-describe('Settings: your own accent colour', () => {
+// Brilhart Fitness: the accent is the brand's, fixed in index.css (Settings ACCENT_PICKER = false),
+// so upstream's own-colour picker is not on the page. Its tests stay for a later merge; this one
+// pins that the row is gone.
+describe('Settings: no accent picker (Brilhart)', () => {
+  it('Look & Home has no Accent color row and no colour picker', () => {
+    mount()
+    expect(picker()).toBeFalsy()
+    expect(document.body.textContent).not.toContain('Accent color')
+  })
+})
+
+describe.skip('Settings: your own accent colour (upstream; hidden in this fork)', () => {
   it('starts as a rainbow swatch that opens the colour picker', () => {
     mount()
     expect(own().classList.contains('unset')).toBe(true)

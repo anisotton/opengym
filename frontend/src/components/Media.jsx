@@ -1,18 +1,25 @@
 import { useState } from 'react'
-import { imgSrc, gifSrc } from '../lib/exercises.js'
+import { imgSrc, gifSrc, isCustomEx } from '../lib/exercises.js'
 import { musclesOf } from '../lib/muscles.js'
 import { useStore } from '../store/useStore.js'
 import { t, exerciseNameFor } from '../lib/i18n.js'
 import Icon from './Icon.jsx'
-import CustomMedia, { CustomThumb } from './CustomMedia.jsx'
+import CustomMedia, { CustomThumb, LinkCard } from './CustomMedia.jsx'
 import BodyMap from './BodyMap.jsx'
+import { youtubeId, youtubeLinks } from '../lib/youtube.js'
 
 // An exercise's picture, wherever one shows. A custom exercise goes to CustomMedia.jsx — its own
 // photo, GIF, video or link, from the local media store — and never through imgSrc/gifSrc, which
 // name files of the shipped dataset (a stray img/gif on a custom exercise, written by a fork, is
 // ignored). The split is by component, not by branch, so each side keeps its own hooks in order.
 export default function Media(p) {
-  return p.ex?.custom ? <CustomMedia {...p} /> : <BuiltinMedia {...p} />
+  const size = useStore(s => s.S.gifSize)
+  const custom = isCustomEx(p.ex)
+  const links = youtubeLinks(p.notes).filter(url => !custom || youtubeId(url) !== youtubeId(p.ex?.url))
+  return <>
+    {custom ? <CustomMedia {...p} /> : <BuiltinMedia {...p} />}
+    {(!p.minimizable || size !== 'off') && links.map(url => <LinkCard key={url} url={url} compact={p.compact} mini={p.minimizable && size === 'mini'} />)}
+  </>
 }
 
 // A built-in exercise's own views: the Brilhart exercises carry a front/back pair (or just

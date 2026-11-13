@@ -120,6 +120,7 @@ function rowToUser(row) {
     ...(row.last_pull_at ? { lastPull: row.last_pull_at.getTime() } : {}),
     ...(row.extra?.lastReminder ? { lastReminder: row.extra.lastReminder } : {}),
     ...(row.extra?.lastNudge ? { lastNudge: row.extra.lastNudge } : {}),
+    ...(Number.isInteger(row.extra?.wrappedPush) ? { wrappedPush: row.extra.wrappedPush } : {}),
     ...(row.extra?.owner === true ? { owner: true } : {})
   };
 }
@@ -172,6 +173,7 @@ function extraOf(user) {
   return {
     ...(user.invitedBy ? { invitedBy: user.invitedBy } : {}),
     ...(user.lastReminder ? { lastReminder: user.lastReminder } : {}),
+    ...(Number.isInteger(user.wrappedPush) ? { wrappedPush: user.wrappedPush } : {}),
     ...(user.owner === true ? { owner: true } : {})
   };
 }
@@ -197,7 +199,9 @@ export async function upsertUser(pool, user) {
        session_version = EXCLUDED.session_version, password_hash = EXCLUDED.password_hash,
        password_set_at = EXCLUDED.password_set_at, password_reset_hash = EXCLUDED.password_reset_hash,
        password_reset_expires_at = EXCLUDED.password_reset_expires_at, last_pull_at = EXCLUDED.last_pull_at,
-       created_at = EXCLUDED.created_at, extra = EXCLUDED.extra`,
+       created_at = EXCLUDED.created_at,
+       -- Keys this database wrote since (wrappedPush, a newer lastReminder…) win over db.json's.
+       extra = EXCLUDED.extra || users.extra`,
     [
       user.id, user.name, user.email || null, user.admin === true, !!user.disabled,
       Number.isInteger(user.sv) ? user.sv : 0, user.pw?.h || null, user.pw?.set || null,
@@ -360,6 +364,15 @@ export async function setLastNudge(pool, id, date) {
   await pool.query(
     "UPDATE users SET extra = jsonb_set(extra, '{lastNudge}', to_jsonb($1::text)) WHERE id = $2",
     [date, id]
+  );
+}
+
+// The year "Your year in openGym" (wrapped.js, openGym v1.4.4) went out for, written before the
+// send so a restart or the next tick never sends it twice. In `extra`, like lastReminder.
+export async function setWrappedPush(pool, id, year) {
+  await pool.query(
+    "UPDATE users SET extra = jsonb_set(extra, '{wrappedPush}', to_jsonb($1::int)) WHERE id = $2",
+    [year, id]
   );
 }
 
@@ -2163,4 +2176,115 @@ export async function deleteNote(pool, teacherId, studentId, noteId) {
     'DELETE FROM teacher_notes WHERE id = $1 AND teacher_id = $2 AND student_id = $3', [noteId, teacherId, studentId]
   );
   return rowCount > 0;
+}
+
+/* ---------- the watch relay (openGym v1.4.4, watch-relay.js; migrations/012) ----------
+ * watch-relay.js keeps the pure rules (token hashing, the per-profile cap, idleness, the mailbox
+ * shape); the rows are here. A profile's links are read whole and written back whole under the
+ * per-account lock (replaceWatchLinks), so watch-relay.js's own createWatchLink can decide which
+ * least-recently-used link makes room exactly as upstream does on db.json. */
+
+function rowToWatchLink(row) {
+  return {
+    id: row.id, userId: row.user_id, sv: row.sv, h: row.hash, name: row.name,
+    created: row.created_at.getTime(), seen: row.seen_at.getTime()
+  };
+}
+
+export async function listWatchLinkRows(pool, userId) {
+  const { rows } = await pool.query('SELECT * FROM watch_links WHERE user_id = $1 ORDER BY created_at', [userId]);
+  return rows.map(rowToWatchLink);
+}
+
+// `edit(links)` changes a profile's links in place (watch-relay.js's createWatchLink /
+// dropWatchLinks on `{ watchLinks: links }`); the result replaces every row of the profile in one
+// transaction. Answers whatever `edit` answered.
+export async function editWatchLinks(pool, userId, edit) {
+  return withTransaction(pool, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['watch:' + userId]);
+    const doc = { watchLinks: await listWatchLinkRows(client, userId) };
+    const out = edit(doc);
+    await client.query('DELETE FROM watch_links WHERE user_id = $1', [userId]);
+    for (const l of doc.watchLinks.filter(x => x && x.userId === userId)) {
+      await client.query(
+        'INSERT INTO watch_links (id, user_id, sv, hash, name, created_at, seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [l.id, userId, l.sv || 0, l.h, l.name, new Date(l.created), new Date(l.seen || l.created)]
+      );
+    }
+    return out;
+  });
+}
+
+export async function findWatchLinkByHash(pool, hash) {
+  const { rows } = await pool.query('SELECT * FROM watch_links WHERE hash = $1', [hash]);
+  return rows.length ? rowToWatchLink(rows[0]) : null;
+}
+
+export async function touchWatchLinkRow(pool, id, seen) {
+  await pool.query('UPDATE watch_links SET seen_at = $2 WHERE id = $1', [id, new Date(seen)]);
+}
+
+// Every link of a profile, for the moments its sessions end and when it is deleted.
+export async function dropAllWatchLinks(pool, userId) {
+  const { rowCount } = await pool.query('DELETE FROM watch_links WHERE user_id = $1', [userId]);
+  return rowCount > 0;
+}
+
+// The mailbox, raw (watch-relay.js boxOf shapes it), or null.
+export async function getWatchBox(pool, userId) {
+  const { rows } = await pool.query('SELECT box FROM watch_boxes WHERE user_id = $1', [userId]);
+  return rows.length ? rows[0].box : null;
+}
+
+// Read-modify-write under a row lock: `edit(raw)` answers the new box to store, or null to leave
+// it as it was. Two requests on one mailbox (a watch posting while the page acknowledges) never
+// lose each other's change. Answers whatever box ends up stored (or the raw one when unchanged).
+export async function editWatchBox(pool, userId, edit) {
+  return withTransaction(pool, async client => {
+    await client.query("INSERT INTO watch_boxes (user_id, box) VALUES ($1, '{}'::jsonb) ON CONFLICT (user_id) DO NOTHING", [userId]);
+    const { rows } = await client.query('SELECT box FROM watch_boxes WHERE user_id = $1 FOR UPDATE', [userId]);
+    const next = edit(rows[0]?.box ?? null);
+    if (next) await client.query('UPDATE watch_boxes SET box = $2, updated_at = now() WHERE user_id = $1', [userId, JSON.stringify(next)]);
+    return next || rows[0]?.box || null;
+  });
+}
+
+export async function deleteWatchBox(pool, userId) {
+  await pool.query('DELETE FROM watch_boxes WHERE user_id = $1', [userId]);
+}
+
+/* ---------- integrations (openGym v1.4.4, integrations/; migrations/012) ----------
+ * integrations/store.js and outbox.js keep their in-memory working copies exactly as upstream
+ * does; these are what they persist to instead of files under DATA_DIR/integrations/. */
+
+export async function loadIntegrationConnections(pool) {
+  const { rows } = await pool.query('SELECT user_id, connections FROM integration_connections');
+  return new Map(rows.map(r => [r.user_id, Array.isArray(r.connections) ? r.connections : []]));
+}
+
+// An empty list removes the row, the way upstream removes the profile's file.
+export async function saveIntegrationConnections(pool, userId, list) {
+  if (!list || !list.length) {
+    await pool.query('DELETE FROM integration_connections WHERE user_id = $1', [userId]);
+    return;
+  }
+  await pool.query(
+    `INSERT INTO integration_connections (user_id, connections, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (user_id) DO UPDATE SET connections = EXCLUDED.connections, updated_at = now()`,
+    [userId, JSON.stringify(list)]
+  );
+}
+
+export async function loadIntegrationOutbox(pool) {
+  const { rows } = await pool.query('SELECT doc FROM integration_outbox WHERE id = 1');
+  return rows.length ? rows[0].doc : null;
+}
+
+// `json`: the outbox document already serialised (outbox.js snapshots it at the moment it changed).
+export async function saveIntegrationOutbox(pool, json) {
+  await pool.query(
+    `INSERT INTO integration_outbox (id, doc, updated_at) VALUES (1, $1, now())
+     ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc, updated_at = now()`,
+    [json]
+  );
 }

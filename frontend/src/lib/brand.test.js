@@ -13,7 +13,7 @@ const ALLOWED = [
   /github\.com|gitlab\.com|duarte-santos|opengym\.|NOTICE|LICENSE|AGPL|©|Gym visual/i,
   /opengym_plan|opengym-device|opengym-catalogue|opengym_|opengym-/,   // identifiers, never shown
   /^\s*(\/\/|\/?\*)/,                                                  // comments
-  /kurktchiev\/openGym|openGymSheet/,                                  // an upstream PR reference, a history-state key
+  /kurktchiev\/openGym|openGymSheet|openGymMenu/,                                  // an upstream PR reference, a history-state key
 ]
 const walk = dir => readdirSync(dir).flatMap(n => {
   const p = join(dir, n)

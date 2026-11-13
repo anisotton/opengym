@@ -38,7 +38,7 @@ function ResetCodeSheet({ name, email, code, expires, close }) {
   return <>
     <h3>Reset code for {name}</h3>
     <div className="adm-lead">Give them this code. They choose “Sign in with password” → “Have a reset code from your admin?”, enter their name <b>{name}</b>{email && <> (or their e-mail <b>{email}</b>)</>}, the code and a new password. It works once, until {new Date(expires).toLocaleString()}, and will not be shown again.</div>
-    <button className="adm-code" style={{ fontSize: 22, width: '100%', padding: '14px 0' }} onClick={copy} aria-label="copy code">{code}</button>
+    <button className="adm-code" style={{ fontSize: 'var(--fs-title2)', width: '100%', padding: '14px 0' }} onClick={copy} aria-label="copy code">{code}</button>
     <div style={{ height: 12 }} />
     <Button variant="primary" onClick={close}>Done</Button>
   </>
@@ -51,7 +51,7 @@ function RecoveryCodeSheet({ name, code, expires, close }) {
   return <>
     <h3>Recovery code for {name}</h3>
     <div className="adm-lead">Give them this code. On the sign-in screen they tap “Lost access?” → “I have a code” (or “Use a code from your other device”) and enter it; the device they use gets a new passkey for <b>{name}</b> and is signed in. In the phone app they do this in a browser first, then pair the app again. It works once, until {new Date(expires).toLocaleString()}, and will not be shown again.</div>
-    <button className="adm-code" style={{ fontSize: 22, width: '100%', padding: '14px 0' }} onClick={copy} aria-label="copy code">{code}</button>
+    <button className="adm-code" style={{ fontSize: 'var(--fs-title2)', width: '100%', padding: '14px 0' }} onClick={copy} aria-label="copy code">{code}</button>
     <div style={{ height: 12 }} />
     <Button variant="primary" onClick={close}>Done</Button>
   </>
@@ -146,7 +146,7 @@ function UserDetail({ id, viewerOwner, onChanged, close }) {
     </div>
     <h4 className="sec">Account</h4>
     <div className="tiles" style={{ textAlign: 'start' }}>
-      <div className="tile"><div className="l">Last sync</div><div className="v" style={{ fontSize: '.95rem' }}>{rel(d.lastSync)}</div></div>
+      <div className="tile"><div className="l">Last sync</div><div className="v" style={{ fontSize: 'var(--fs-subhead)' }}>{rel(d.lastSync)}</div></div>
     </div>
     {/* The old Plan/Status/Next charge tiles above are replaced by this panel (ISO-1619/ISO-1627)
         — a bigger payload (full subscription history + the 7 admin actions), loaded lazily
@@ -248,7 +248,7 @@ function InvitesCard({ invites, reload, inviteOnly }) {
     </> : null}
     {used.length ? <>
       <div className="adm-group-t" style={{ marginTop: open.length ? 12 : 0 }}>Already used</div>
-      {used.map(i => <div key={i.code} className="row between dim" style={{ padding: '6px 0', fontSize: '.82rem' }}>
+      {used.map(i => <div key={i.code} className="row between dim" style={{ padding: '6px 0', fontSize: 'var(--fs-footnote)' }}>
         <span style={{ fontFamily: 'ui-monospace,SFMono-Regular,Menlo,monospace', letterSpacing: '.06em' }}>{i.code}</span><span>→ {i.usedByName || 'used'}</span>
       </div>)}
     </> : null}
@@ -305,7 +305,7 @@ function AuditCard({ tick, owner }) {
             {/* a red pill, not a red row: twenty fumbled Face IDs in a row shouldn't read as an incident */}
             {!e.ok && <span className="adm-pill bad" style={{ marginInlineStart: 6 }}>failed</span>}
             {auditCat(e.ev) === 'admin' && <span className="adm-pill acc" style={{ marginInlineStart: 6 }}>admin</span>}</div>
-          {line.sub && <div className="dim" style={{ fontSize: '.72rem' }}>{line.sub}</div>}
+          {line.sub && <div className="dim" style={{ fontSize: 'var(--fs-caption2)' }}>{line.sub}</div>}
         </div>
         <span className="small muted" style={{ flex: 'none', marginInlineStart: 8 }}>{fmtWhen(e.ts, meta?.now)}</span>
       </div>
@@ -411,8 +411,8 @@ export default function Admin() {
         {(users || []).map(u => <div key={u.id} className="item" onClick={() => openUser(u.id)} style={u.disabled ? { opacity: .55 } : null}>
           <div className="grow"><div className="tt">{u.online && <Icon name="dot" style={{ fontSize: 9, color: 'var(--green)', display: 'inline-block', marginInlineEnd: 5 }} />}{u.name} {u.owner ? <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>owner</span> : u.admin && <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>admin</span>}{u.role === 'teacher' && <span className="adm-pill acc" style={{ marginInlineStart: 4 }}>teacher</span>}{u.disabled && <span className="adm-pill bad" style={{ marginInlineStart: 4 }}>disabled</span>}</div>
             <div className="ss">{u.online ? 'online' : 'last sync ' + rel(u.lastSync)}</div>
-            {u.email && <div className="ss" title="e-mail">{u.email}</div>}</div>
-          {u.hasPush && <Icon name="bell" title="push notifications on" style={{ fontSize: 15, color: 'var(--label-3)' }} />}<Icon name="chevronRight" className="chev" />
+            {u.email && <div className="ss" title="sign-in e-mail">{u.email}</div>}</div>
+          {u.hasPush && <Icon name="bell" title="push notifications on" style={{ fontSize: 'var(--fs-subhead)', color: 'var(--label-3)' }} />}<Icon name="chevronRight" className="chev" />
         </div>)}
         {users && !users.length && <div className="adm-empty">No users yet.</div>}
       </div>

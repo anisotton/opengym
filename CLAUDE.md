@@ -25,6 +25,8 @@ catalogue/ the exercise database (5,632 exercises, text, muscle map, i18n) — g
            frontend/src/lib by scripts/catalogue/build.mjs. No third-party media: the fork removed
            the Gym visual/ExerciseDB pictures (ISO-1601/1603) and ships only Brilhart's own media for
            128 exercises (frontend/public/brilhart, exercises-brilhart*.js, ISO-1605/1638).
+           android/wear is the Wear OS watch app (docs/WEAR_OS.md); garmin/ the Garmin Connect IQ
+           app (docs/GARMIN.md). Neither is built or shipped by this fork.
 scripts/   build, CI and release helpers (scripts/README.md).
 website/   static project site (plain HTML/CSS/JS), deployed separately.
 kubernetes/ example manifests (docs/SELF_HOSTING_KUBERNETES.md).
@@ -84,6 +86,9 @@ machine, never in CI (see "Exercise media" below and docs/APP_STORES.md).
   - `onerm.js`: estimated 1RM from logged sets (several formulas).
   - `finish-workout.js`: reduces a completed session back into state (weights advance, PRs).
   - `recovery.js` / `recovery-view.js`: the fatigue and muscle-recovery model.
+  - `warmup-ramp.js` (+ `warmup-snap.js`): automatic warm-ups by load, a slot's own warm-up rows,
+    rounded to the active gym (plates.js dropGrid); history.js rerampWarmups keeps them aimed.
+  - `coach-adapt.js`: applies the Coach's changes to the workout in progress (the `adapt` job).
   - `workout-model.js`, `supersetFlow.js`: the in-session workout state machine.
   - `sync-merge.js`: the field-by-field merge behind the 409 retry (see "Sync" below).
   - `exercises.js` / `exercises-data.js`: the exercise library (5,632 catalogue exercises plus
@@ -196,6 +201,8 @@ auto-generated into `data/vapid.json`) drives rest-timer-over and day-reminder n
 `api/scripts/test-with-pg.sh` (`npm run test:pg`) starts an ephemeral Postgres and runs the whole
 suite against it — every test that spawns `server.js` needs one now, not just the ones that used
 to exercise PostgreSQL directly.
+`INTEGRATIONS` (`api/integrations/`: providers, the outbound webhook; docs/INTEGRATIONS.md) gates
+the per-profile webhooks.
 
 ### Sync
 

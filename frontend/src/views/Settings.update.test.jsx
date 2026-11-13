@@ -59,7 +59,7 @@ vi.mock('../lib/update.js', () => ({
   get UPDATE_FEED() { return mocks.UPDATE_FEED },
   forgetDownloadedUpdate: (...a) => mocks.forget(...a),
 }))
-vi.mock('../lib/channel.js', () => ({ selfUpdates: () => Promise.resolve(mocks.channel === 'sideload') }))
+vi.mock('../lib/channel.js', () => ({ getChannel: () => Promise.resolve(mocks.channel), gymReminderBuilt: () => Promise.resolve(true) }))
 vi.mock('./MobileOnboarding.jsx', () => ({ ConnectSheet: () => null }))
 vi.mock('../sheets.jsx', () => ({
   starterPlanSheet: vi.fn(), confirmSheet: (...a) => mocks.confirmSheet(...a), importFromApp: vi.fn(),
@@ -204,5 +204,34 @@ describe('Settings → About: which APK this is', () => {
       await mount()
       expect(versionRow().textContent).not.toContain('APK,')
     }
+  })
+})
+
+// Google Play's payments policy: no links to pay outside Play billing for anything but a
+// registered charity, so the Play build has no coffee links, only its own rating row.
+// Brilhart Fitness: no support section anywhere (upstream's donation links and store-rating
+// rows), on the APK, the Google Play build and the web alike.
+describe('Settings: support links', () => {
+  const row = text => [...host.querySelectorAll('.lrow')].find(r => r.textContent.includes(text))
+  const none = () => {
+    for (const r of ['Buy me a coffee', 'Ko-fi', 'GitHub Sponsors', 'on Google Play', 'on the App Store']) expect(row(r)).toBeUndefined()
+    expect(host.textContent).not.toContain('A coffee keeps it that way')
+  }
+  it('the APK has none', async () => {
+    mocks.MOBILE = true
+    mocks.android = true
+    await mount()
+    none()
+  })
+  it('the Google Play build has none', async () => {
+    mocks.MOBILE = true
+    mocks.android = true
+    mocks.channel = 'play'
+    await mount()
+    none()
+  })
+  it('the web has none', async () => {
+    await mount()
+    none()
   })
 })

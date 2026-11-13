@@ -32,6 +32,9 @@ function type(el, value) {
   el.dispatchEvent(new Event('input', { bubbles: true }))
 }
 const chip = (host, text) => [...host.querySelectorAll('.chips .chip')].find(b => b.textContent.trim() === text)
+// Every body part again: the picker's "All" chip, or in the Library (one filter row since 1.4.5,
+// P7) a second tap on the chosen body part.
+const allParts = host => chip(host, 'All') || host.querySelector('.lib-filters .chip.on[aria-pressed="true"]')
 const count = host => host.querySelector('.search .search-count')
 
 beforeEach(() => {
@@ -75,7 +78,7 @@ describe('exercise search result count', () => {
       act(() => type(input, 'Zentara lift'))
       act(() => chip(host, 'neck').click())
       expect(count(host).textContent).toBe('0')
-      act(() => chip(host, 'All').click())
+      act(() => allParts(host).click())
       expect(count(host).textContent).toBe('1')
       update(s => { s.exAliases[AID] = ['Summit lift'] })
       expect(count(host).textContent).toBe('0')
@@ -113,7 +116,7 @@ describe('exercise search result count', () => {
       const neck = LIBRARY_CATALOGUE.filter(e => e.bp === 'neck').length
       expect(Number(count(host).textContent)).toBe(neck)
       const one = LIBRARY_CATALOGUE.find(e => searchExercises(LIBRARY_CATALOGUE, e.n).length === 1)
-      act(() => chip(host, 'All').click())
+      act(() => allParts(host).click())
       act(() => type(host.querySelector('.search input'), one.n))
       expect(count(host).textContent).toBe('1')
       expect(count(host).getAttribute('aria-label')).toBe('1 exercise')
