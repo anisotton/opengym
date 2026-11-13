@@ -81,16 +81,23 @@ COPY --from=build --chown=101:0 /app/frontend/dist /usr/share/nginx/html
 # ACL/umask (e.g. a shared checkout under restrictive group ACLs) hand out 660 on new files, which
 # the non-root nginx worker can't read — a silent 403 on whatever media landed in public/ last,
 # while index.html and assets/ (generated inside the container) are unaffected.
-# As root: the webroot directory itself belongs to root in the base image, so uid 101 cannot
-# chmod it; 101 is restored right after and stays the last USER.
-USER root
-RUN chmod -R a+rX /usr/share/nginx/html
-USER 101
 
 # Substitutes __APP_URL__ in the served index.html at start-up — nginx.conf.template's own
 # envsubst (20-envsubst-on-templates.sh, part of this base image) only covers /etc/nginx/templates,
 # not files already in the webroot.
 COPY --chmod=755 web/40-substitute-app-url.sh /docker-entrypoint.d/40-substitute-app-url.sh
+
+# Normalise every mode the build copied from the host, as root (the webroot directory belongs to
+# root in the base image, so uid 101 cannot chmod it), then back to 101, which stays the last USER.
+# A checkout under restrictive ACLs/umask (the Lyra one hands out 660/770) leaks its modes into
+# COPY, and not every builder honours COPY --chmod: nginx as uid 101 then cannot read the
+# template ("Permission denied", restart loop) and skips the entrypoint scripts as "not
+# executable". Explicit, so the image is the same whatever host built it.
+USER root
+RUN chmod -R a+rX /usr/share/nginx/html \
+ && chmod 644 /etc/nginx/templates/default.conf.template \
+ && chmod 755 /docker-entrypoint.d/05-check-base-path.sh /docker-entrypoint.d/40-substitute-app-url.sh
+USER 101
 
 # Set Default ENVs for nginx
 ENV NGINX_PORT=80
