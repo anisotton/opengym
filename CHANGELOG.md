@@ -62,6 +62,21 @@ tag. Write it for the people using the app: what changed for them, short, no em 
   required on both the passkey and password forms, and a minor's date disables the button with an
   explanation, in every language.
 
+**Merged openGym v1.4.3 → v1.4.4 (and main at 68dad18f8)**
+
+Everything upstream shipped in v1.4.3 and v1.4.4 is in (sections below), with these differences:
+
+- PostgreSQL holds what upstream keeps in files: recovery codes (migration 011), the watch relay,
+  webhook connections and their outbox, and the "Your year" push stamp (migration 012).
+- The accent stays Brilhart's plum (no colour picker), and the alternate app icons, routine links,
+  NFC tags, donation and store-rating rows and links to openGym's site or GitHub are hidden.
+- Only Brilhart's own exercise pictures: printed plans show them and nothing else; no figure
+  variants, animation packs or APK sizes. The Admin dashboard still shows no training data.
+- Brilhart's e-mail recovery stays; upstream's admin recovery code ("Lost access?") sits beside it,
+  without the server-command step.
+- Webhooks are off until `INTEGRATIONS=webhook` (and `INTEGRATIONS_ALLOW_LAN=1` for a home network).
+- Swedish arrives as the 19th language, with this fork's strings translated.
+
 **Merged openGym v1.3.10 → v1.4.2 (and main at 042c9ee42)**
 
 Everything upstream shipped between the fork point (v1.3.9) and v1.4.2 is in, on this fork's own
