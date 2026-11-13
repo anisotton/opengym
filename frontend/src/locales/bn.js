@@ -2758,7 +2758,7 @@ export default {
   "You already have 20 active invites. Revoke one to generate another.": "আপনার ইতিমধ্যে ২০টি সক্রিয় আমন্ত্রণ আছে। আরেকটি তৈরি করতে একটি বাতিল করুন।",
   "You already have a teacher linked. Unlink in Settings before accepting a new invite.": "আপনার ইতিমধ্যে একজন শিক্ষক যুক্ত আছেন। নতুন আমন্ত্রণ গ্রহণের আগে সেটিংসে গিয়ে যোগ বিচ্ছিন্ন করুন।",
   "You can unlink anytime, in Settings.": "সেটিংসে গিয়ে যেকোনো সময় যোগ বিচ্ছিন্ন করতে পারেন।",
-  "You no longer follow {0}.": "আপনি আর {0}-কে অনুসরণ করছেন না।",
+  "You no longer have access to this student.": "এই শিক্ষার্থীর কাছে আপনার আর অ্যাক্সেস নেই।",
   "You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.": "আপনি তাদের ওয়ার্কআউট দেখা বন্ধ করবেন। আপনার বরাদ্দ করা রুটিনগুলো তাদের কাছে থাকবে — সেগুলো তাদের হয়ে যাবে। তাদের সম্পর্কে আপনার নোটগুলো মুছে যাবে।",
   "You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.": "Brilhart Fitness-এ একজন শিক্ষক আপনাকে আমন্ত্রণ জানিয়েছেন। চালিয়ে যেতে সাইন-ইন করুন বা অ্যাকাউন্ট তৈরি করুন।",
   "Your conversations with the Coach": "কোচের সাথে আপনার কথোপকথন",

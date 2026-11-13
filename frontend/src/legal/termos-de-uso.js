@@ -44,18 +44,11 @@ export default {
     {
       heading: 'Assinatura, preços, primeiro mês e renovação',
       paragraphs: [
-        'O Brilhart Fitness é um serviço pago por assinatura. Os planos e preços atuais são:',
-        {
-          list: [
-            'Mensal: R$ 89 por mês;',
-            'Trimestral: R$ 237 a cada 3 meses;',
-            'Anual: R$ 768 por ano.',
-          ],
-        },
-        'Em qualquer plano, o primeiro mês custa R$ 1,99. Antes da primeira cobrança no valor cheio do plano escolhido, enviamos um e-mail avisando a data e o valor, para você decidir com calma se quer continuar.',
+        'O Brilhart Fitness é um serviço pago por assinatura, com os planos Mensal, Trimestral e Anual. O preço de cada plano, e de qualquer condição especial de primeiro mês, é o valor exibido no app — na tela de planos e depois no checkout — no momento em que você contrata ou troca de plano; não repetimos esse valor aqui porque ele pode mudar.',
+        'Se o plano escolhido tiver um valor reduzido só no primeiro mês, cobramos esse valor primeiro. Antes da cobrança seguinte, já no valor cheio do plano, enviamos um e-mail avisando a data e o valor, para você decidir com calma se quer continuar.',
         'O pagamento é processado pela Stripe, nossa parceira de pagamentos. Os dados do seu cartão são informados diretamente à Stripe; nós não vemos nem guardamos o número completo do cartão.',
         'A assinatura renova automaticamente ao fim de cada período (mês, trimestre ou ano), cobrando o mesmo meio de pagamento, até que você cancele. Se uma cobrança falhar, a assinatura pode ficar suspensa até que o pagamento seja concluído.',
-        'Podemos alterar os preços. Se isso acontecer, avisamos por e-mail com pelo menos 30 dias de antecedência, e o novo valor só vale a partir da renovação seguinte ao aviso. Se não concordar, basta cancelar antes dela.',
+        'Podemos mudar os preços dos planos. Quem já é assinante mantém o valor que contratou — a mudança não se aplica à assinatura em andamento. O novo valor só vale para contratações novas e para quem decidir trocar de plano, e nesse caso é o valor do novo plano exibido no app no momento da troca.',
       ],
     },
     {

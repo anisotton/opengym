@@ -88,6 +88,27 @@ jobs:
 
   api:
     runs-on: ubuntu-latest
+    # Since ISO-1403 the api keeps profile state in PostgreSQL: server.js exits at boot without
+    # DATABASE_URL, and every test that spawns it (or drives store.js directly) provisions its own
+    # database per file from TEST_DATABASE_URL — the contract api/test/helpers.mjs defines and
+    # api/scripts/test-with-pg.sh fulfils locally. This service is the CI counterpart of that
+    # script: a throwaway server whose maintenance database the tests CREATE theirs under.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: opengym
+          POSTGRES_PASSWORD: opengym
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opengym -d postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgresql://opengym:opengym@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -139,17 +160,33 @@ jobs:
 
       - name: the default image boots and serves, with no AI runtime in it
         run: |
-          docker run -d --name api-default -e DATA_DIR=/data -p 3000:3000 opengym-api:default
+          # The api exits at boot without DATABASE_URL (PostgreSQL holds profile state since
+          # ISO-1403), so the image under test gets a throwaway database on a private network —
+          # the same shape docker-compose.yml gives a real instance, minus the volume.
+          docker network create api-ci
+          docker run -d --name api-ci-pg --network api-ci \
+            -e POSTGRES_USER=opengym -e POSTGRES_PASSWORD=opengym -e POSTGRES_DB=opengym \
+            postgres:17-alpine
+          for i in $(seq 1 30); do
+            docker exec api-ci-pg pg_isready -U opengym -d opengym >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker run -d --name api-default --network api-ci -e DATA_DIR=/data \
+            -e DATABASE_URL=postgresql://opengym:opengym@api-ci-pg:5432/opengym \
+            -p 3000:3000 opengym-api:default
           for i in $(seq 1 30); do
             curl -fsS http://localhost:3000/api/config >/dev/null 2>&1 && break
             sleep 1
           done
-          curl -fsS http://localhost:3000/api/config | tee /dev/stderr | grep -q '"invite_only"'
+          # On failure the container's own last words are the diagnosis, not curl's exit code.
+          curl -fsS http://localhost:3000/api/config | tee /dev/stderr | grep -q '"invite_only"' \
+            || { echo '--- api-default logs ---' >&2; docker logs api-default >&2; exit 1; }
           # Absent by construction, not by accident: --omit=optional is the only thing keeping
           # the AI dependency out of the image an owner gets when they never asked for it.
           docker run --rm opengym-api:default node -e \
             'import("@anthropic-ai/claude-agent-sdk").then(()=>{console.error("AI runtime present in the default image");process.exit(1)},()=>process.exit(0))'
-          docker rm -f api-default
+          docker rm -f api-default api-ci-pg
+          docker network rm api-ci
 
       - name: the coach image carries a runnable Agent SDK
         run: |

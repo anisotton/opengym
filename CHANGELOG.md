@@ -15,6 +15,7 @@
   app itself.
 - 📝 Photos and videos of your own custom exercises are unaffected — that upload path
   (`/api/media/`) never touched the third-party dataset.
+
 **Security fixes ported from openGym v1.4.2**
 
 - 🔒 **The API base can no longer leave the origin** (GHSA-375x-wfvj-jf7q). A link such as

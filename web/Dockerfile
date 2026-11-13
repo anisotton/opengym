@@ -77,6 +77,11 @@ COPY --chmod=755 web/05-check-base-path.sh /docker-entrypoint.d/
 # Owned by uid 101 (not root, as the static tree would otherwise be): 40-substitute-app-url.sh
 # rewrites index.html in place at start-up, as that user, and sed needs the directory too.
 COPY --from=build --chown=101:0 /app/frontend/dist /usr/share/nginx/html
+# vite build copies frontend/public/* into dist preserving the host file's mode. Some hosts'
+# ACL/umask (e.g. a shared checkout under restrictive group ACLs) hand out 660 on new files, which
+# the non-root nginx worker can't read — a silent 403 on whatever media landed in public/ last,
+# while index.html and assets/ (generated inside the container) are unaffected.
+RUN chmod -R a+rX /usr/share/nginx/html
 
 # Substitutes __APP_URL__ in the served index.html at start-up — nginx.conf.template's own
 # envsubst (20-envsubst-on-templates.sh, part of this base image) only covers /etc/nginx/templates,

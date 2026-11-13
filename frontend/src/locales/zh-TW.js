@@ -2672,7 +2672,7 @@ export default {
   "You already have 20 active invites. Revoke one to generate another.": "你已有 20 個有效邀請。撤銷一個才能再產生。",
   "You already have a teacher linked. Unlink in Settings before accepting a new invite.": "你已連結一位教練。接受新邀請前，請先在「設定」中取消連結。",
   "You can unlink anytime, in Settings.": "你可以隨時在「設定」中取消連結。",
-  "You no longer follow {0}.": "你不再追蹤 {0}。",
+  "You no longer have access to this student.": "你不再有權限查看這位學員。",
   "You stop seeing their workouts. They keep the routines you assigned — those become theirs. Your notes about them are deleted.": "你會停止看到他們的訓練。他們會保留你指派的課表——那些課表將歸他們所有。你關於他們的筆記會被刪除。",
   "You were invited by a teacher on Brilhart Fitness. Sign in or create your account to continue.": "你受到 Brilhart Fitness 上一位教練的邀請。登入或建立你的帳號以繼續。",
   "Your conversations with the Coach": "你與教練的對話",
