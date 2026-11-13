@@ -11,19 +11,19 @@
 # The stage order matters: Docker builds the *last* stage when none is named, so `default` is
 # deliberately last and `coach` sits above it.
 
-FROM node:22-alpine AS base
+FROM node:22.23.4-alpine AS base
 
 # Declared on the base stage so both targets inherit the labels and the healthcheck.
 ARG VERSION=dev
 ARG VCS_REF=dev
 ARG BUILD_DATE=unknown
 
-LABEL maintainer="Duarte Santos https://gitlab.com/DuarteSantos8" \
+LABEL maintainer="Duarte Santos https://github.com/DuarteSantos8" \
     org.opencontainers.image.title="opengym-api" \
     org.opencontainers.image.description="Backend for Self-hosted gym & body-weight tracker — plan routines, log workouts (supersets & cardio too), track your weight and progress, passkey login. Your data, your server." \
-    org.opencontainers.image.source="https://gitlab.com/DuarteSantos8/opengym" \
-    org.opencontainers.image.url="https://gitlab.com/DuarteSantos8/opengym/container_registry" \
-    org.opencontainers.image.documentation="https://gitlab.com/DuarteSantos8/opengym#readme" \
+    org.opencontainers.image.source="https://github.com/DuarteSantos8/openGym" \
+    org.opencontainers.image.url="https://opengym.ch" \
+    org.opencontainers.image.documentation="https://github.com/DuarteSantos8/openGym#readme" \
     org.opencontainers.image.licenses="AGPL-3.0-or-later" \
     org.opencontainers.image.version=$VERSION \
     org.opencontainers.image.revision=$VCS_REF \
@@ -53,8 +53,9 @@ RUN npm ci --omit=dev --omit=optional && npm cache clean --force
 
 # Every module server.js imports from the api root has to be named here: the image carries nothing
 # else, and one that is missing only shows at boot, as ERR_MODULE_NOT_FOUND.
-COPY server.js push-messages.js verify-error.js password.js rate-limit.js passkeys-store.js device-link.js oauth-google.js media.js db.js store.js email-tokens.js mail.js billing.js legal.js programs.js teacher.js ./
+COPY server.js push-messages.js nudge.js nudge-copy.js wrapped.js wrapped-copy.js verify-error.js password.js rate-limit.js passkeys-store.js device-link.js watch-relay.js media.js queue.js sync-stamps.js durable.js admin-socket.js recover.js net-guard.js db.js store.js email-tokens.js mail.js billing.js legal.js programs.js oauth-google.js teacher.js ./
 COPY coach ./coach
+COPY integrations ./integrations
 COPY mail-templates ./mail-templates
 # db.js reads these off disk at boot (runMigrations) rather than importing them, so
 # dockerfile-copy.test.js's import walk can't see the dependency — copied here instead.
@@ -64,8 +65,12 @@ ENV PORT=3000
 EXPOSE 3000
 CMD ["node", "server.js"]
 
-HEALTHCHECK --interval=5m \
+# Every 30 s, so a fresh container reads "healthy" half a minute after it starts instead of after
+# five (TrueNAS and Portainer wait for it before they call the app running, #844).
+# wget is BusyBox's, already in the Alpine image, so nothing is added for it.
+HEALTHCHECK --interval=30s \
             --timeout=5s \
+            --start-period=20s \
             --retries=3 \
             CMD wget --spider -q "http://127.0.0.1:${PORT}/api/health" || exit 1
 
@@ -80,7 +85,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 # bubblewrap is its sandbox — a Codex requirement, which is why neither appears in the default
 # target or anywhere in this tree until now.
 RUN apk add --no-cache bubblewrap \
- && npm install -g @openai/codex \
+ && npm install -g @openai/codex@0.160.0 \
  && npm cache clean --force
 
 # Where Codex keeps its refreshable login cache. Deliberately a sibling of /data rather than a

@@ -39,13 +39,14 @@ function mount(workouts = [], routines = []) {
 const slots = () => useStore.getState().S.routines[0].ex
 // Tap the first row, then Replace on its settings sheet: the picker it opens is returned.
 function openReplace() {
-  act(() => host.querySelector('[data-routine-row] .item').click())
+  act(() => host.querySelector('[data-routine-row] .item .tap-main').click())
   const onReplace = sheets.exConfigSheet.mock.calls[0][6]
   expect(onReplace).toBeTypeOf('function')
   act(() => onReplace())
   expect(sheets.exercisePicker).toHaveBeenCalledOnce()
   const [onPick, opts] = sheets.exercisePicker.mock.calls[0]
-  expect(opts).toEqual({ title: 'Replace exercise' })
+  // #473: the picker is told what it replaces, so it opens on the same muscle.
+  expect(opts).toEqual({ title: 'Replace exercise', like: BENCH })
   return onPick
 }
 

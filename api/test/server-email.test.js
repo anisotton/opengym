@@ -13,6 +13,7 @@ import path from 'node:path';
 import pg from 'pg';
 import { hashPassword, hashResetCode, normalizeEmail, maskEmail } from '../password.js';
 import { tempData, spawnApi } from './helpers.mjs';
+import { LEGAL_VERSION } from '../legal.js';
 
 const SECRET = crypto.randomBytes(32).toString('hex');
 const ORIGIN = 'http://localhost:8080';
@@ -78,7 +79,7 @@ async function startServer(t, { env = {}, users = [], creds = [], invites = [] }
     // ISO-1390: a signup sends the LEGAL_VERSION of the app's bundle; leaving it out is
     // server-terms.test.js's subject, not this file's. ISO-1521: same idea for the now-required
     // birthDate — an adult one, since the under-18 refusal is server-age-gate.test.js's subject.
-    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: '2026-10-26' };
+    if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('termsVersion' in body)) body = { ...body, termsVersion: LEGAL_VERSION };
     if (/^\/api\/register\/(options|password)$/.test(p) && body && typeof body === 'object' && !('birthDate' in body)) body = { ...body, birthDate: '1990-05-05' };
     const r = await fetch(`${h.api}${p}`, {
       method,
@@ -291,7 +292,7 @@ test('an address is unique across profiles, case-insensitively, and never anothe
   const bea = `gymsid=${mintSession('u2')}`;
   for (const [i, email] of ['ANA@example.com', 'DJ@home.club', 'cy@example.com'].entries()) {
     const r = await setEmail(h, bea, { email, current: GOOD }, `198.51.100.${140 + i}`);
-    assert.equal(r.status, 409, email);
+    assert.equal(r.status, 409, email + ' ' + JSON.stringify(r.body));
     assert.deepEqual(r.body, { error: 'another profile already uses this e-mail address', code: 'email-taken' });
   }
   assert.equal((await h.user('u2')).email, null);
@@ -303,7 +304,7 @@ test('an address is unique across profiles, case-insensitively, and never anothe
   // Signing up with an address in use, or a name that is one, is refused the same way.
   let r = await h.req('POST', '/api/register/password', { body: { name: 'Dee', password: GOOD, email: 'Ana@Example.com' }, ip: '198.51.100.150' });
   assert.equal(r.status, 409); assert.equal(r.body.code, 'email-taken');
-  r = await h.req('POST', '/api/register/password', { body: { name: 'ana@example.com', password: GOOD }, ip: '198.51.100.151' });
+  r = await h.req('POST', '/api/register/password', { body: { name: 'ana@example.com', password: GOOD, email: 'dee@example.com' }, ip: '198.51.100.151' });
   assert.equal(r.status, 409); assert.equal(r.body.code, 'name-taken');
   r = await h.req('POST', '/api/register/password', { body: { name: 'Dee', password: GOOD, email: 'nope' }, ip: '198.51.100.152' });
   assert.equal(r.status, 400); assert.equal(r.body.code, 'email-invalid');
@@ -357,6 +358,20 @@ test('asking over and over whether an address is in use runs into a pause', asyn
   assert.equal(r.status, 409);
   // Sign-in is not what was paused.
   assert.equal((await signIn(h, { identifier: 'bea', password: GOOD }, ip)).status, 200);
+});
+
+// A name is matched against sign-in addresses too, so signing up with an address as the name
+// asked "is this address in use" with no limit at all, ahead of the hash.
+test('signing up with an address as the name counts against the address like the e-mail field', async t => {
+  const h = await startServer(t, { users: [withPassword('u1', 'Ana', { email: 'ana@example.com' })] });
+  const ip = '203.0.113.70';
+  for (let i = 0; i < 21; i++) {
+    const r = await h.req('POST', '/api/register/password', { body: { name: 'ana@example.com', password: GOOD, email: 'new@example.com' }, ip });
+    assert.equal(r.status, 409, 'try ' + i + ' ' + JSON.stringify(r.body)); assert.equal(r.body.code, 'name-taken');
+  }
+  const r = await h.req('POST', '/api/register/password', { body: { name: 'ana@example.com', password: GOOD, email: 'new@example.com' }, ip });
+  assert.equal(r.status, 429); assert.equal(r.body.code, 'locked');
+  assert.equal(leaks(h, 'example.com'), false);
 });
 
 test('a reset code is redeemed with the e-mail as well as with the name', async t => {

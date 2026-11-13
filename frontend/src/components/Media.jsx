@@ -1,18 +1,25 @@
 import { useState } from 'react'
-import { imgSrc, gifSrc } from '../lib/exercises.js'
+import { imgSrc, gifSrc, isCustomEx } from '../lib/exercises.js'
 import { musclesOf } from '../lib/muscles.js'
 import { useStore } from '../store/useStore.js'
 import { t, exerciseNameFor } from '../lib/i18n.js'
 import Icon from './Icon.jsx'
-import CustomMedia, { CustomThumb } from './CustomMedia.jsx'
+import CustomMedia, { CustomThumb, LinkCard } from './CustomMedia.jsx'
 import BodyMap from './BodyMap.jsx'
+import { youtubeId, youtubeLinks } from '../lib/youtube.js'
 
 // An exercise's picture, wherever one shows. A custom exercise goes to CustomMedia.jsx — its own
 // photo, GIF, video or link, from the local media store — and never through imgSrc/gifSrc, which
 // name files of the shipped dataset (a stray img/gif on a custom exercise, written by a fork, is
 // ignored). The split is by component, not by branch, so each side keeps its own hooks in order.
 export default function Media(p) {
-  return p.ex?.custom ? <CustomMedia {...p} /> : <BuiltinMedia {...p} />
+  const size = useStore(s => s.S.gifSize)
+  const custom = isCustomEx(p.ex)
+  const links = youtubeLinks(p.notes).filter(url => !custom || youtubeId(url) !== youtubeId(p.ex?.url))
+  return <>
+    {custom ? <CustomMedia {...p} /> : <BuiltinMedia {...p} />}
+    {(!p.minimizable || size !== 'off') && links.map(url => <LinkCard key={url} url={url} compact={p.compact} mini={p.minimizable && size === 'mini'} />)}
+  </>
 }
 
 // A built-in exercise's own views: the Brilhart exercises carry a front/back pair (or just
@@ -20,7 +27,7 @@ export default function Media(p) {
 // third-party library was pulled, ISO-1603) carries none. The single top-level img/gif a
 // Brilhart entry also has is always a copy of its front view, kept there so list thumbnails
 // (BuiltinThumb below) stay the front pose without needing to know about `views` at all.
-const viewsOf = ex => (ex.views?.length ? ex.views : ex.gif ? [{ key: 'front', img: ex.img, gif: ex.gif }] : [])
+const viewsOf = ex => (ex.views?.length ? ex.views : ex.src === 'brilhart' && ex.gif ? [{ key: 'front', img: ex.img, gif: ex.gif }] : [])
 
 // Primary/secondary legend for the muscle-map stand-in. Not BodyMapLegend's Less/More ramp —
 // that scale is training volume or fatigue, which isn't what's being shown here.
@@ -144,7 +151,9 @@ export function Thumb(p) {
   return p.ex?.custom ? <CustomThumb {...p} /> : <BuiltinThumb {...p} />
 }
 function BuiltinThumb({ ex }) {
-  const src = ex.img ? imgSrc(ex) : null
+  // Only Brilhart's own media (src 'brilhart') is a picture here: a stray img on a legacy
+  // built-in or an unflagged custom exercise (the dataset's removed files) is no picture at all.
+  const src = ex.src === 'brilhart' && ex.img ? imgSrc(ex) : null
   const [broken, setBroken] = useState(null)
   if (!src || broken === src) return <div className="thumb thumb-x" aria-label={t('No image available for this exercise')}><Icon name="dumbbell" /></div>
   return <img className="thumb" loading="lazy" decoding="async" draggable={false} src={src} alt="" onError={() => setBroken(src)} />

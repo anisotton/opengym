@@ -13,14 +13,14 @@ import { musclesOf } from './muscles.js'
 // opening, or 1RM/recovery from reading the session back the way it always did.
 describe('legacy saved state after the third-party exercise media removal', () => {
   it('the built-in catalogue no longer carries img/gif, but every id still resolves', () => {
-    expect(EXDB.length).toBe(1324)
+    expect(EXDB.length).toBeGreaterThan(1324)   // openGym's v1.4.0 catalogue: 5,632 text-only rows
     for (const ex of EXDB) {
       expect(ex).not.toHaveProperty('img')
       expect(ex).not.toHaveProperty('gif')
     }
     const barbellBenchPress = EXIDX['0025']
     expect(barbellBenchPress?.n).toBe('barbell bench press')
-    expect(barbellBenchPress?.st?.length).toBeGreaterThan(0)
+    expect(barbellBenchPress?.bp).toBe('chest')   // the steps live in the instr packs since openGym v1.4.0
   })
 
   it('opens a routine saved with only a dataset id, same as before media existed', () => {

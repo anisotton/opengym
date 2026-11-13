@@ -338,7 +338,7 @@ export default function StudentDetail() {
 
   return <>
     <div className="hdr">
-      <button className="iconbtn" onClick={() => nav('/alunos')} aria-label={t('Students')}><Icon name="chevronLeft" /></button>
+      <button className="iconbtn" data-back="/alunos" onClick={() => nav('/alunos')} aria-label={t('Students')}><Icon name="chevronLeft" /></button>
       <div style={{ flex: 1, marginInlineStart: 12 }}>
         <h1>{name || '…'}</h1>
         {acceptedAt && <div className="sub">{t('Student since {0}', fmtDate(dateOnly(acceptedAt), true))}</div>}

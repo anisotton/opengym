@@ -38,6 +38,13 @@ export async function getUserState(pool, userId) {
 // Just the revision — one narrow column, never the (possibly multi-MB) state jsonb. This is what
 // used to need the file-stat cache in server.js; a plain query here already does not pay to parse
 // the document, so the cache had nothing left to save and is gone.
+// The revision and the stored document's write id, without reading the document itself: what
+// GET /api/data/rev answers every half minute to every open client.
+export async function getUserStateWid(pool, userId) {
+  const { rows } = await pool.query("SELECT rev, state->>'_wid' AS wid FROM user_state WHERE user_id = $1", [userId]);
+  return rows.length ? { rev: Number(rows[0].rev), wid: rows[0].wid || null } : { rev: 0, wid: null };
+}
+
 export async function getUserStateRev(pool, userId) {
   const { rows } = await pool.query('SELECT rev FROM user_state WHERE user_id = $1', [userId]);
   return rows.length ? Number(rows[0].rev) : 0;
@@ -57,7 +64,10 @@ export async function putUserState(pool, userId, decide) {
     const curRev = rows.length ? Number(rows[0].rev) : 0;
     const decision = decide(cur, curRev);
     if (decision.conflict) return { conflict: true, rev: curRev, state: cur };
-    const nextRev = curRev + 1;
+    if (decision.invalid) return { invalid: true, rev: curRev, state: cur };
+    // `decide` may name the revision the row takes (PUT /api/data moves two on when it stamped
+    // something the writer left out, sync-stamps.js); otherwise the next one.
+    const nextRev = decision.rev ?? curRev + 1;
     if (rows.length) {
       const { rowCount } = await pool.query(
         'UPDATE user_state SET state = $1, rev = $2, updated_at = now() WHERE user_id = $3 AND rev = $4',
@@ -71,7 +81,8 @@ export async function putUserState(pool, userId, decide) {
       );
       if (rowCount === 0) continue; // someone else's first write beat us to it, retry against it
     }
-    return { conflict: false, rev: nextRev, state: decision.state };
+    // `told`: the revision the writer is told (PUT /api/data), when it differs from the stored one.
+    return { conflict: false, rev: nextRev, state: decision.state, told: decision.told ?? nextRev };
   }
 }
 
@@ -107,7 +118,10 @@ function rowToUser(row) {
       ? { pwReset: { h: row.password_reset_hash, exp: row.password_reset_expires_at.getTime(), by: row.password_reset_by } }
       : {}),
     ...(row.last_pull_at ? { lastPull: row.last_pull_at.getTime() } : {}),
-    ...(row.extra?.lastReminder ? { lastReminder: row.extra.lastReminder } : {})
+    ...(row.extra?.lastReminder ? { lastReminder: row.extra.lastReminder } : {}),
+    ...(row.extra?.lastNudge ? { lastNudge: row.extra.lastNudge } : {}),
+    ...(Number.isInteger(row.extra?.wrappedPush) ? { wrappedPush: row.extra.wrappedPush } : {}),
+    ...(row.extra?.owner === true ? { owner: true } : {})
   };
 }
 
@@ -136,12 +150,12 @@ export async function getAllUsers(pool) {
 export async function createUser(pool, user) {
   await pool.query(
     `INSERT INTO users (id, name, email, birth_date, password_hash, password_set_at, created_at, extra,
-       terms_accepted_version, terms_accepted_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       terms_accepted_version, terms_accepted_at, admin)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       user.id, user.name, user.email || null, user.birthDate || null,
       user.pw?.h || null, user.pw?.set || null, user.created, extraOf(user),
-      user.termsAcceptedVersion || null, user.termsAcceptedAt || null
+      user.termsAcceptedVersion || null, user.termsAcceptedAt || null, user.admin === true
     ]
   );
 }
@@ -158,7 +172,9 @@ export async function setTermsAccepted(pool, id, version, at) {
 function extraOf(user) {
   return {
     ...(user.invitedBy ? { invitedBy: user.invitedBy } : {}),
-    ...(user.lastReminder ? { lastReminder: user.lastReminder } : {})
+    ...(user.lastReminder ? { lastReminder: user.lastReminder } : {}),
+    ...(Number.isInteger(user.wrappedPush) ? { wrappedPush: user.wrappedPush } : {}),
+    ...(user.owner === true ? { owner: true } : {})
   };
 }
 
@@ -183,7 +199,9 @@ export async function upsertUser(pool, user) {
        session_version = EXCLUDED.session_version, password_hash = EXCLUDED.password_hash,
        password_set_at = EXCLUDED.password_set_at, password_reset_hash = EXCLUDED.password_reset_hash,
        password_reset_expires_at = EXCLUDED.password_reset_expires_at, last_pull_at = EXCLUDED.last_pull_at,
-       created_at = EXCLUDED.created_at, extra = EXCLUDED.extra`,
+       created_at = EXCLUDED.created_at,
+       -- Keys this database wrote since (wrappedPush, a newer lastReminder…) win over db.json's.
+       extra = EXCLUDED.extra || users.extra`,
     [
       user.id, user.name, user.email || null, user.admin === true, !!user.disabled,
       Number.isInteger(user.sv) ? user.sv : 0, user.pw?.h || null, user.pw?.set || null,
@@ -313,6 +331,49 @@ export async function setStripeCustomerId(pool, id, customerId) {
 export async function getUserIdByStripeCustomer(pool, customerId) {
   const { rows } = await pool.query('SELECT id FROM users WHERE stripe_customer_id = $1', [customerId]);
   return rows.length ? rows[0].id : null;
+}
+
+// Appoint or remove an admin (one owner, many admins — openGym v1.4.2). Revoking also drops the
+// owner mark, so a demoted owner leaves the instance to the next in line (server.js ownerFrom).
+export async function setAdminFlag(pool, id, admin) {
+  await pool.query(
+    admin ? 'UPDATE users SET admin = true WHERE id = $1'
+          : "UPDATE users SET admin = false, extra = extra - 'owner' WHERE id = $1",
+    [id]
+  );
+}
+
+// Hand the owner role on: exactly one row carries the mark afterwards.
+export async function setOwnerFlag(pool, id) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("UPDATE users SET extra = extra - 'owner' WHERE extra ? 'owner'");
+    await client.query("UPDATE users SET extra = jsonb_set(extra, '{owner}', 'true'::jsonb) WHERE id = $1", [id]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}
+
+// How many accounts exist — FIRST_USER_ADMIN's "the instance had no profiles at all" test.
+export async function countUsers(pool) {
+  const { rows } = await pool.query('SELECT count(*)::int AS n FROM users');
+  return rows[0].n;
+}
+
+export async function setLastNudge(pool, id, date) {
+  await pool.query(
+    "UPDATE users SET extra = jsonb_set(extra, '{lastNudge}', to_jsonb($1::text)) WHERE id = $2",
+    [date, id]
+  );
+}
+
+// The year "Your year in openGym" (wrapped.js, openGym v1.4.4) went out for, written before the
+// send so a restart or the next tick never sends it twice. In `extra`, like lastReminder.
+export async function setWrappedPush(pool, id, year) {
+  await pool.query(
+    "UPDATE users SET extra = jsonb_set(extra, '{wrappedPush}', to_jsonb($1::int)) WHERE id = $2",
+    [year, id]
+  );
 }
 
 export async function setLastReminder(pool, id, date) {
@@ -493,7 +554,8 @@ export async function upsertSub(pool, { userId, endpoint, keys, deviceId, create
     `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, device_id, created_at)
      VALUES ($1,$2,$3,$4,$5, COALESCE($6, now()))
      ON CONFLICT (endpoint) DO UPDATE SET
-       user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, device_id = EXCLUDED.device_id
+       user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth,
+       device_id = COALESCE(EXCLUDED.device_id, push_subscriptions.device_id)
      WHERE push_subscriptions.user_id = EXCLUDED.user_id
         OR (push_subscriptions.p256dh = EXCLUDED.p256dh AND push_subscriptions.auth = EXCLUDED.auth)`,
     [userId, endpoint, keys.p256dh, keys.auth, deviceId || null, created ? new Date(created) : null]
@@ -530,11 +592,12 @@ export async function hasPush(pool, userId) {
   return rows.length > 0;
 }
 
+// The caller's row for `endpoint` — { deviceId } — or null when this instance does not hold it.
 export async function subStatus(pool, userId, endpoint) {
   const { rows } = await pool.query(
-    'SELECT 1 FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [userId, endpoint]
+    'SELECT device_id FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [userId, endpoint]
   );
-  return rows.length > 0;
+  return rows.length ? { deviceId: rows[0].device_id || null } : null;
 }
 
 // Send-time pruning (a dead or refused endpoint) and Settings' unsubscribe both just need the
@@ -556,11 +619,15 @@ export async function unsubscribe(pool, userId, endpoint) {
  */
 
 function rowToDeviceLink(row) {
-  return { h: row.hash, userId: row.user_id, exp: row.expires_at.getTime(), created: row.created_at.getTime() };
+  return {
+    h: row.hash, userId: row.user_id, exp: row.expires_at.getTime(), created: row.created_at.getTime(),
+    ...(row.kind === 'recovery' ? { kind: 'recovery', by: row.created_by || 'server' } : {})
+  };
 }
 
-// → { code, link }. The code is returned once and never stored — only its hash is.
-export async function createDeviceLink(pool, userId, ttlMs = DEVICE_LINK_TTL_MS) {
+// → { code, link }. The code is returned once and never stored — only its hash is. `extra` marks a
+// recovery code (openGym #584): { kind: 'recovery', by } (who made it: an admin's id, or 'server').
+export async function createDeviceLink(pool, userId, ttlMs = DEVICE_LINK_TTL_MS, extra = {}) {
   await pool.query('DELETE FROM device_links WHERE expires_at <= now()');
   await pool.query('DELETE FROM device_links WHERE user_id = $1', [userId]);
   const code = makeLinkCode();
@@ -569,11 +636,21 @@ export async function createDeviceLink(pool, userId, ttlMs = DEVICE_LINK_TTL_MS)
   const exp = new Date(now + ttlMs);
   // created_at passed explicitly rather than left to the column's own now() default, so the
   // returned link and a fresh findDeviceLink read of the same row always agree to the millisecond.
+  const recovery = extra.kind === 'recovery';
+  const by = recovery ? String(extra.by || 'server') : null;
   await pool.query(
-    'INSERT INTO device_links (hash, user_id, expires_at, created_at) VALUES ($1,$2,$3,$4)',
-    [hash, userId, exp, new Date(now)]
+    'INSERT INTO device_links (hash, user_id, expires_at, created_at, kind, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
+    [hash, userId, exp, new Date(now), recovery ? 'recovery' : null, by]
   );
-  return { code, link: { h: hash, userId, exp: exp.getTime(), created: now } };
+  return { code, link: { h: hash, userId, exp: exp.getTime(), created: now, ...(recovery ? { kind: 'recovery', by } : {}) } };
+}
+
+// The live recovery code of a profile, if any (for the admin dashboard: "recovery code until").
+export async function recoveryLinkOf(pool, userId) {
+  const { rows } = await pool.query(
+    "SELECT * FROM device_links WHERE user_id = $1 AND kind = 'recovery' AND expires_at > now() LIMIT 1", [userId]
+  );
+  return rows.length ? rowToDeviceLink(rows[0]) : null;
 }
 
 // The live link a code belongs to, or null — a wrong code, a used one and an expired one all look
@@ -611,11 +688,13 @@ export async function dropDeviceLinks(pool, userId) {
 // same as any other row — findDeviceLink's own `expires_at > now()` never returns them — rather
 // than filtered here, so this has one less thing to get right at the one moment a bug in it would
 // be hardest to notice.
-export async function upsertDeviceLink(pool, { h, userId, exp, created }) {
+export async function upsertDeviceLink(pool, { h, userId, exp, created, kind, by }) {
+  const recovery = kind === 'recovery';
   await pool.query(
-    `INSERT INTO device_links (hash, user_id, expires_at, created_at) VALUES ($1,$2,$3,$4)
-     ON CONFLICT (hash) DO UPDATE SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at`,
-    [h, userId, new Date(exp), new Date(created)]
+    `INSERT INTO device_links (hash, user_id, expires_at, created_at, kind, created_by) VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (hash) DO UPDATE SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at,
+       kind = EXCLUDED.kind, created_by = EXCLUDED.created_by`,
+    [h, userId, new Date(exp), new Date(created || exp), recovery ? 'recovery' : null, recovery ? String(by || 'server') : null]
   );
 }
 
@@ -734,6 +813,22 @@ export async function removePasskey(pool, userId, credId, passwordCounts = false
     return { ok: true, row: rowToPasskey(rows[0]) };
   };
   return withWayInLock(pool, userId, run);
+}
+
+// A recovery code redeemed on a profile already full of passkeys (openGym #584): the one used
+// longest ago goes, to make room for the new one — the lost devices' passkeys are what fill it.
+// Only ever called inside the redeeming transaction, right before insertPasskey adds the
+// replacement, so this never leaves the profile with fewer ways in than it had. → the removed
+// row, or null when the profile is not full.
+export async function dropOldestPasskeyIfFull(client, userId) {
+  if ((await countPasskeys(client, userId)) < MAX_PASSKEYS) return null;
+  const { rows } = await client.query(
+    `DELETE FROM passkeys WHERE id = (
+       SELECT id FROM passkeys WHERE user_id = $1
+       ORDER BY COALESCE(last_used_at, created_at) ASC NULLS FIRST LIMIT 1
+     ) RETURNING *`, [userId]
+  );
+  return rows.length ? rowToPasskey(rows[0]) : null;
 }
 
 // A passkey's own counter/last-use, touched by every ceremony that verifies an assertion against
@@ -2081,4 +2176,115 @@ export async function deleteNote(pool, teacherId, studentId, noteId) {
     'DELETE FROM teacher_notes WHERE id = $1 AND teacher_id = $2 AND student_id = $3', [noteId, teacherId, studentId]
   );
   return rowCount > 0;
+}
+
+/* ---------- the watch relay (openGym v1.4.4, watch-relay.js; migrations/012) ----------
+ * watch-relay.js keeps the pure rules (token hashing, the per-profile cap, idleness, the mailbox
+ * shape); the rows are here. A profile's links are read whole and written back whole under the
+ * per-account lock (replaceWatchLinks), so watch-relay.js's own createWatchLink can decide which
+ * least-recently-used link makes room exactly as upstream does on db.json. */
+
+function rowToWatchLink(row) {
+  return {
+    id: row.id, userId: row.user_id, sv: row.sv, h: row.hash, name: row.name,
+    created: row.created_at.getTime(), seen: row.seen_at.getTime()
+  };
+}
+
+export async function listWatchLinkRows(pool, userId) {
+  const { rows } = await pool.query('SELECT * FROM watch_links WHERE user_id = $1 ORDER BY created_at', [userId]);
+  return rows.map(rowToWatchLink);
+}
+
+// `edit(links)` changes a profile's links in place (watch-relay.js's createWatchLink /
+// dropWatchLinks on `{ watchLinks: links }`); the result replaces every row of the profile in one
+// transaction. Answers whatever `edit` answered.
+export async function editWatchLinks(pool, userId, edit) {
+  return withTransaction(pool, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['watch:' + userId]);
+    const doc = { watchLinks: await listWatchLinkRows(client, userId) };
+    const out = edit(doc);
+    await client.query('DELETE FROM watch_links WHERE user_id = $1', [userId]);
+    for (const l of doc.watchLinks.filter(x => x && x.userId === userId)) {
+      await client.query(
+        'INSERT INTO watch_links (id, user_id, sv, hash, name, created_at, seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [l.id, userId, l.sv || 0, l.h, l.name, new Date(l.created), new Date(l.seen || l.created)]
+      );
+    }
+    return out;
+  });
+}
+
+export async function findWatchLinkByHash(pool, hash) {
+  const { rows } = await pool.query('SELECT * FROM watch_links WHERE hash = $1', [hash]);
+  return rows.length ? rowToWatchLink(rows[0]) : null;
+}
+
+export async function touchWatchLinkRow(pool, id, seen) {
+  await pool.query('UPDATE watch_links SET seen_at = $2 WHERE id = $1', [id, new Date(seen)]);
+}
+
+// Every link of a profile, for the moments its sessions end and when it is deleted.
+export async function dropAllWatchLinks(pool, userId) {
+  const { rowCount } = await pool.query('DELETE FROM watch_links WHERE user_id = $1', [userId]);
+  return rowCount > 0;
+}
+
+// The mailbox, raw (watch-relay.js boxOf shapes it), or null.
+export async function getWatchBox(pool, userId) {
+  const { rows } = await pool.query('SELECT box FROM watch_boxes WHERE user_id = $1', [userId]);
+  return rows.length ? rows[0].box : null;
+}
+
+// Read-modify-write under a row lock: `edit(raw)` answers the new box to store, or null to leave
+// it as it was. Two requests on one mailbox (a watch posting while the page acknowledges) never
+// lose each other's change. Answers whatever box ends up stored (or the raw one when unchanged).
+export async function editWatchBox(pool, userId, edit) {
+  return withTransaction(pool, async client => {
+    await client.query("INSERT INTO watch_boxes (user_id, box) VALUES ($1, '{}'::jsonb) ON CONFLICT (user_id) DO NOTHING", [userId]);
+    const { rows } = await client.query('SELECT box FROM watch_boxes WHERE user_id = $1 FOR UPDATE', [userId]);
+    const next = edit(rows[0]?.box ?? null);
+    if (next) await client.query('UPDATE watch_boxes SET box = $2, updated_at = now() WHERE user_id = $1', [userId, JSON.stringify(next)]);
+    return next || rows[0]?.box || null;
+  });
+}
+
+export async function deleteWatchBox(pool, userId) {
+  await pool.query('DELETE FROM watch_boxes WHERE user_id = $1', [userId]);
+}
+
+/* ---------- integrations (openGym v1.4.4, integrations/; migrations/012) ----------
+ * integrations/store.js and outbox.js keep their in-memory working copies exactly as upstream
+ * does; these are what they persist to instead of files under DATA_DIR/integrations/. */
+
+export async function loadIntegrationConnections(pool) {
+  const { rows } = await pool.query('SELECT user_id, connections FROM integration_connections');
+  return new Map(rows.map(r => [r.user_id, Array.isArray(r.connections) ? r.connections : []]));
+}
+
+// An empty list removes the row, the way upstream removes the profile's file.
+export async function saveIntegrationConnections(pool, userId, list) {
+  if (!list || !list.length) {
+    await pool.query('DELETE FROM integration_connections WHERE user_id = $1', [userId]);
+    return;
+  }
+  await pool.query(
+    `INSERT INTO integration_connections (user_id, connections, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (user_id) DO UPDATE SET connections = EXCLUDED.connections, updated_at = now()`,
+    [userId, JSON.stringify(list)]
+  );
+}
+
+export async function loadIntegrationOutbox(pool) {
+  const { rows } = await pool.query('SELECT doc FROM integration_outbox WHERE id = 1');
+  return rows.length ? rows[0].doc : null;
+}
+
+// `json`: the outbox document already serialised (outbox.js snapshots it at the moment it changed).
+export async function saveIntegrationOutbox(pool, json) {
+  await pool.query(
+    `INSERT INTO integration_outbox (id, doc, updated_at) VALUES (1, $1, now())
+     ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc, updated_at = now()`,
+    [json]
+  );
 }

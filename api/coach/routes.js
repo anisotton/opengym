@@ -10,28 +10,33 @@ import { computeCohort } from './cohort.js';
 import { adapterFor } from './adapters/index.js';
 import { canDropPrivileges, privilegeRefusal } from './adapters/spawn.js';
 import { DATA_CATEGORIES } from './core/payload.js';
-import { validateBaseUrl, baseUrlFor } from './core/providers.js';
+import { validateBaseUrl, validateHeaders, baseUrlFor } from './core/providers.js';
 
 // Job failures the user sees, in the app's own voice. The raw provider detail never reaches
 // them — it goes to the admin card, which is where someone can act on it (FR-47).
 const USER_ERROR = {
   off: 'the Coach is not set up on this instance',
   busy: 'the Coach is already thinking about your training',
-  cap: 'the Coach is resting — try again tomorrow',
+  cap: 'the Coach is taking a rest day, try again tomorrow',
   consent: 'the Coach needs your go-ahead first',
   // Verbatim, because it tells the user the one thing that resolves it and names who resolves
   // it. A vaguer message here turns into a support question for the person running the box.
   shared: cfgStore.SHARED_ACCOUNT_REFUSAL,
   unprivileged: 'the Coach is switched off on this instance for safety reasons'
 };
+const hostOf = url => { try { return url ? new URL(url).host : null; } catch { return null; } };
 const HTTP_FOR = { off: 503, busy: 409, cap: 429, consent: 403, shared: 409, unprivileged: 503 };
 
 export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
-  /** Every user route starts the same way: signed in, feature on, feature reachable. */
+  /** Every user route starts the same way: signed in, feature on, feature reachable. The class
+   *  goes beside the words, as enqueue's refusal sends it: the app shows its own translated line
+   *  for the class, and these English words only where it has none. */
+  // Async (Brilhart Fitness): the fork's readSession and requireAdmin read PostgreSQL, so every
+  // caller awaits them — an un-awaited one is a Promise, always truthy, never a refusal.
   const guard = async (req, res) => {
-    const user = (await readSession(req));
+    const user = await readSession(req);
     if (!user) { json(res, 401, { error: 'not signed in' }); return null; }
-    if (!cfgStore.isEnabled() || !cfgStore.isConnected()) { json(res, 503, { error: USER_ERROR.off }); return null; }
+    if (!cfgStore.isEnabled() || !cfgStore.isConnected()) { json(res, 503, { error: USER_ERROR.off, code: 'off' }); return null; }
     return user;
   };
   const failEnqueue = (res, e) => {
@@ -52,6 +57,10 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
       json(res, 200, {
         provider: cfg.provider,
         providerLabel: cfgStore.providerMeta(cfg).label,
+        // Where an HTTPS provider's requests go, host only: the app asks once per provider and
+        // host before anything is sent there, and a compatible endpoint is only nameable by it.
+        // Never the path, and the base URL cannot carry credentials (validateBaseUrl).
+        host: hostOf(baseUrlFor(cfg.provider, cfg)),
         categories: DATA_CATEGORIES,
         version: 1
       });
@@ -104,6 +113,48 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
       } catch (e) { failEnqueue(res, e); }
     },
 
+    // A question in the chat. Answered in words; nothing to apply. The running session rides
+    // along when there is one, since the server never holds it.
+    'POST /api/coach/ask': async (req, res) => {
+      const user = await guard(req, res); if (!user) return;
+      const body = await readBody(req);
+      const text = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!text) return json(res, 400, { error: 'a question is required', code: 'invalid' });
+      try {
+        const job = await jobs.enqueue(user.id, {
+          kind: 'ask',
+          lang: body.lang,
+          note: text.slice(0, cfgStore.MAX_MESSAGE_LEN_CEILING),
+          today: body.today && typeof body.today === 'object' && !Array.isArray(body.today) ? body.today : null
+        });
+        json(res, 202, { job });
+      } catch (e) { failEnqueue(res, e); }
+    },
+
+    // "Ask the Coach" on an exercise mid-workout (the `adapt` job): up to six changes to the
+    // unfinished part of the session, ticked on the phone and applied there. The running session
+    // rides along, as with a question; the server never holds it.
+    'POST /api/coach/adapt': async (req, res) => {
+      const user = await guard(req, res); if (!user) return;
+      const body = await readBody(req);
+      const today = body.today && typeof body.today === 'object' && !Array.isArray(body.today) ? body.today : null;
+      const entry = Number.isInteger(body.entry) ? body.entry : -1;
+      if (!today || !Array.isArray(today.entries) || entry < 0 || entry >= today.entries.length) {
+        return json(res, 400, { error: 'a running workout and one of its exercises are required', code: 'invalid' });
+      }
+      try {
+        const job = await jobs.enqueue(user.id, {
+          kind: 'adapt',
+          lang: body.lang,
+          note: typeof body.text === 'string' && body.text.trim() ? body.text.trim().slice(0, cfgStore.MAX_MESSAGE_LEN_CEILING) : null,
+          today,
+          focus: { entry, reason: typeof body.reason === 'string' ? body.reason.slice(0, 16) : 'other' },
+          activeId: typeof body.activeId === 'string' ? body.activeId.slice(0, 64) : null
+        });
+        json(res, 202, { job });
+      } catch (e) { failEnqueue(res, e); }
+    },
+
     /* How this profile sits against everyone else on the instance who opted in: medians only,
        at least three people, and nothing for a profile that does not share itself. */
     'GET /api/coach/cohort': async (req, res) => {
@@ -130,7 +181,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     // Consent withdrawn, or the profile turned the Coach off: drop everything held server-side
     // for them at once, without waiting for a sync to carry the news (D5).
     'POST /api/coach/forget': async (req, res) => {
-      const user = (await readSession(req));
+      const user = await readSession(req);
       if (!user) return json(res, 401, { error: 'not signed in' });
       jobs.clearUser(user.id);
       json(res, 200, { ok: true });
@@ -169,9 +220,14 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
         model: cfgStore.modelFor(cfg),
         models: cfg.models,
         baseUrl: cfgStore.providerMeta(cfg).http ? baseUrlFor(cfg.provider, cfg) : null,
+        // Extra static headers this endpoint is called with (compatible endpoints only).
+        // Values, not just names: the admin wrote them and needs to see them to edit them.
+        // Plaintext next to baseUrl — routing aids, not credentials (the key stays encrypted).
+        headers: cfgStore.providerMeta(cfg).http ? (cfgStore.optionsFor(cfg).headers || null) : null,
         knownModels: check.models || null,
         caps: cfg.caps,
         maxMessageLen: cfg.maxMessageLen,
+        maxOutputTokens: cfg.maxOutputTokens,
         community: !!cfg.community,
         runtime: { ok: !!check.ok, version: check.version || null, error: check.error || null, needsKey: !!check.needsKey },
         authMode: cfg.authMode,
@@ -231,6 +287,15 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
         if (!v.value && !cfgStore.PROVIDERS[target].defaultBase) return json(res, 400, { error: `${target} has no default endpoint, enter one` });
         patch.providerOptions = { ...current.providerOptions, [target]: { ...(current.providerOptions[target] || {}), baseUrl: v.value } };
       }
+      if (body.headers !== undefined) {
+        if (!cfgStore.PROVIDERS[target].baseUrl) return json(res, 400, { error: `${target} has a fixed endpoint` });
+        const h = validateHeaders(body.headers);
+        if (!h.ok) return json(res, 400, { error: h.error });
+        // Build on the patch, not on current: a body carrying baseUrl AND headers must keep both.
+        const next = { ...((patch.providerOptions && patch.providerOptions[target]) || current.providerOptions[target] || {}) };
+        if (h.value) next.headers = h.value; else delete next.headers;
+        patch.providerOptions = { ...current.providerOptions, ...(patch.providerOptions || {}), [target]: next };
+      }
       if (body.community !== undefined) patch.community = !!body.community;
       if (body.caps) {
         patch.caps = {
@@ -244,7 +309,22 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
           Math.min(cfgStore.MAX_MESSAGE_LEN_CEILING, +body.maxMessageLen || current.maxMessageLen)
         );
       }
-      cfgStore.save(patch);
+      if (body.maxOutputTokens !== undefined) {
+        patch.maxOutputTokens = Math.max(
+          cfgStore.MAX_OUTPUT_TOKENS_FLOOR,
+          Math.min(cfgStore.MAX_OUTPUT_TOKENS_CEILING, +body.maxOutputTokens || current.maxOutputTokens)
+        );
+      }
+      const hostOf = cfg => { try { return new URL(baseUrlFor(target, cfg) || '').host; } catch { return ''; } };
+      const before = hostOf(current);
+      const saved = cfgStore.save(patch);
+      // The stored key is never read back, and it should not leave by another door either: sent
+      // to a new host it is handed to whoever runs that host on the next model list or job. A
+      // different host for the same provider means the key is entered again.
+      if (patch.providerOptions && before && hostOf(saved) !== before && saved.auth?.[target]) {
+        cfgStore.saveAuth(target, null);
+        console.log('coach: stored key for', target, 'cleared, endpoint host changed');
+      }
       json(res, 200, { ok: true });
     },
 
@@ -314,7 +394,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     /* Whose account this profile is about to spend. Its own route because both the Coach screen
        and the admin card must state it, and neither should be inferring it from settings. */
     'GET /api/coach/account': async (req, res) => {
-      const user = (await readSession(req));
+      const user = await readSession(req);
       if (!user) return json(res, 401, { error: 'not signed in' });
       json(res, 200, cfgStore.accountFor(user.id));
     }

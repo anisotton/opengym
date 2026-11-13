@@ -116,11 +116,12 @@ test('a database that already ran 001 (with the FK) and 002 converges once 003 i
 
     // 003, 004 (ISO-1393, users.stripe_customer_id), since ISO-1447, 005 (stripe_cleanup), since
     // ISO-1390, 006 (legal_acceptance), since ISO-1485, 007 (programs), since ISO-1609, 008
-    // (teacher/student roles), since ISO-1597, 009 (oauth_identities), and since ISO-1623, 010
-    // (billing_catalog) — all unrecorded on this database, same as any migration newer than
-    // whatever Lyra already ran.
+    // (teacher/student roles), since ISO-1597, 009 (oauth_identities), since ISO-1623, 010
+    // (billing_catalog), since openGym v1.4.3, 011 (device_link_recovery), and since v1.4.4, 012
+    // (watch relay + integrations) — all unrecorded on this database, same as any migration newer
+    // than whatever Lyra already ran.
     const count = await runMigrations(pool, MIGRATIONS_DIR);
-    assert.equal(count, 8, 'everything after 002 is newly applied — 001 and 002 were already recorded');
+    assert.equal(count, 10, 'everything after 002 is newly applied — 001 and 002 were already recorded');
 
     const { rows: after } = await pool.query(`
       SELECT conname FROM pg_constraint
@@ -142,7 +143,7 @@ test('an account created before 008 reads role=\'student\' once 008 is applied',
     await pool.query("INSERT INTO users (id, name, created_at) VALUES ('legacy1', 'Legacy', now())");
 
     const count = await runMigrations(pool, MIGRATIONS_DIR);
-    assert.equal(count, 3, '008, 009 (ISO-1597, oauth_identities) and 010 (ISO-1623, billing_catalog) were left to apply');
+    assert.equal(count, 5, '008, 009 (ISO-1597, oauth_identities), 010 (ISO-1623, billing_catalog), 011 (openGym v1.4.3 recovery codes) and 012 (v1.4.4 watch relay + integrations) were left to apply');
 
     const { rows } = await pool.query('SELECT role FROM users WHERE id = $1', ['legacy1']);
     assert.equal(rows[0].role, 'student');

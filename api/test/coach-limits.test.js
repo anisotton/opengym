@@ -266,6 +266,9 @@ test('a proposal nobody has answered is not replaced by the next scheduled revie
   const first = await settle(uid);
   assert.equal(lastOutcome(uid).outcome, 'ready');
   assert.ok(first.pending, 'a proposal is waiting');
+  // Nobody asked for it, so the phone app (no web push) is told by the status it reads (Discord).
+  assert.equal(first.pending.trigger, 'scheduled');
+  assert.equal(first.last.trigger, 'scheduled');
 
   S.workouts.push(newWorkout('w2'));
   await seedProfile(uid, S);
@@ -279,4 +282,19 @@ test('a proposal nobody has answered is not replaced by the next scheduled revie
   assert.ok(jobs.status(uid).job, 'the workout since the last review is due');
   await settle(uid);
   assert.equal(jobs.readUser(uid).history.filter(h => h.outcome === 'ready').length, 2);
+
+  // One somebody asked for is not marked.
+  jobs.resolvePending(uid, { dismissed: true });
+  await jobs.enqueue(uid, { kind: 'review' });   // async on PostgreSQL (readState is a query)
+  const asked = await settle(uid);
+  assert.equal(asked.pending.trigger, undefined);
+  assert.equal(asked.last.trigger, undefined);
+});
+
+test('a rejected answer tells the admin which rule broke, without quoting the plan', async () => {
+  const { whyUnusable } = await import('../coach/jobs.js');
+  assert.equal(whyUnusable([]), null);
+  const why = whyUnusable(['routines[0].ex[1].id "0009" needs equipment the user does not have', 'routines[1].name is required']);
+  assert.ok(why.includes('needs equipment') && why.includes('routines[1].name is required'));
+  assert.ok(!why.includes('0009'), 'quoted values are cut out');
 });

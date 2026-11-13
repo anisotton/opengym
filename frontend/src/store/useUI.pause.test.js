@@ -5,7 +5,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('../lib/api.js', () => ({ api: vi.fn(() => Promise.resolve({ ok: true })) }))
 const { beep, chime } = vi.hoisted(() => ({ beep: vi.fn(), chime: vi.fn() }))
-vi.mock('../lib/sound.js', () => ({ beep, chime, vibrate: vi.fn() }))
+vi.mock('../lib/sound.js', () => ({ beep, chime, vibrate: vi.fn(), alertBuzz: vi.fn() }))
 
 import { api } from '../lib/api.js'
 import { useUI } from './useUI.js'
@@ -113,6 +113,6 @@ describe('pausing the rest timer', () => {
     useUI.getState().startWork(30, 'Plank', done)
     expect(useUI.getState().timer).toBeNull()
     vi.advanceTimersByTime(30000)
-    expect(done).toHaveBeenCalledExactlyOnceWith(30, { chimed: true })
+    expect(done).toHaveBeenCalledExactlyOnceWith(30, expect.objectContaining({ chimed: true }))
   })
 })

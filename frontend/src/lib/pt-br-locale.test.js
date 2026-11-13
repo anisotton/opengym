@@ -41,21 +41,13 @@ describe('Brazilian Portuguese locale', () => {
     // has to be taught is a number nobody reads. What the numbers stood for is asserted above.
     // If the hash fails, review the changed keys and wording before accepting a new one. From
     // frontend/: node scripts/pt-br-inheritance-fingerprint.mjs --list
-    // ISO-1398: +1 newly inherited key ('Resend' -> 'Reenviar', identical in both pt variants,
-    // reviewed — no override needed). E-mail reminder/confirmation redesign: +1 more ('Sent' ->
-    // 'Enviado', same word on both shores — reviewed, no override needed). ISO-1606: +8 more
-    // (the no-media/view-switcher/draft-badge strings — 'Front'/'Costas', 'Draft — steps
-    // pending Brilhart review'/'Rascunho — passos aguardando validação da Brilhart', etc. — same
-    // wording works on both shores, reviewed, no override needed; one of the 8, 'Back', was
-    // renamed to 'Rear' after review caught it shadowing the Coach nav button's existing 'Back'
-    // key, which is why this is a separate +1 bump rather than folded into the count above).
-    // ISO-1594/ISO-1610: +1 more ('Recommended by your teacher' -> 'Recomendado pelo seu
-    // professor', the teacher/student recommended-Program card on Home — same wording works on
-    // both shores, reviewed, no override needed; every other new string this feature added (the
-    // other 134, plus the unrelated pre-existing "People under 18..." gap it incidentally also
-    // translated) already has its own pt-BR override, so only this one moved the inherited set).
-    // See the script above for how to recompute this.
-    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('50073e5e0aa195b63faafba001abefb24ddf98ad643e04d5f05ae45512d362b1')
+    expect(fingerprint, 'pt-PT inheritance changed; review the inherited pt-BR wording').toBe('2353d31d81642b87303788bbe27e1e3481235121d82fe88e3c38c68b9bb363ac')
+  })
+
+  // pt-PT labelled Unpair 'Desfazer': Undo, in Portuguese (it is pt-BR's Undo), on the button that
+  // takes an exercise out of a superset. Neither pack may give Unpair a word either of them uses for Undo.
+  test('does not label Unpair with an Undo word in either Portuguese pack', () => {
+    for (const [name, pack] of [['pt', pt], ['pt-BR', ptBR]]) expect([pt.Undo, ptBR.Undo], name).not.toContain(pack.Unpair)
   })
 
   test('does not leak European Portuguese UI terms', () => {
@@ -67,7 +59,7 @@ describe('Brazilian Portuguese locale', () => {
     expect(ptBR.Settings).toBe('Configurações')
     expect(ptBR['Delete workout']).toBe('Excluir treino')
     expect(ptBR.Superset).toBe('Superset')
-    expect(ptBR['Guest mode — data lives only in this browser.']).toContain('visitante')
+    expect(ptBR['Guest mode: your data lives only in this browser.']).toContain('visitante')
     expect(ptBR['Sign in with passkey']).toContain('chave de acesso')
     expect(ptBR.band).toBe('elástico')
     expect(ptBR['resistance band']).toBe('faixa elástica')
@@ -77,11 +69,11 @@ describe('Brazilian Portuguese locale', () => {
     // The sign-in e-mail's strings are overridden, not inherited: pt-PT says palavra-passe and «».
     expect(ptBR['Wrong name, e-mail or password.']).toBe('Nome, e-mail ou senha incorretos.')
     expect(ptBR['Sign-in e-mail']).toBe('E-mail de login')
-    for (const key of ['Name or e-mail', 'Sign in with “{0}” instead of your name', '“{0}” is saved, but signs in only once this profile has a password.', 'Type it at “Sign in with password” instead of your profile name. Nothing is ever sent to it — a forgotten password is still reset by your admin.'])
+    for (const key of ['Name or e-mail', 'Sign in with “{0}” instead of your name', '“{0}” is saved, but signs in only once this profile has a password.', 'Type it at “Sign in with password” instead of your profile name. We never send anything to it; a forgotten password is still reset by your admin.'])
       expect(key in PT_BR_OVERRIDES, key).toBe(true)
     // So are the backup import's warning (pt-PT says cópia and registado) and the sign-in hold's
     // status (pt-PT says «À espera da tua resposta»).
-    for (const key of ['The server has 1 workout that is not in this backup, logged since it was made or on another device. Replacing deletes it.', 'The server has {0} workouts that are not in this backup, logged since it was made or on another device. Replacing deletes them.', 'Replace anyway', 'Merge them in', 'Waiting for your answer about this device’s workouts', 'Nothing syncs until you say whether this device’s workouts go into your profile — tap to answer.'])
+    for (const key of ['The server has 1 workout that is not in this backup, logged since it was made or on another device. Replacing deletes it.', 'The server has {0} workouts that are not in this backup, logged since it was made or on another device. Replacing deletes them.', 'Replace anyway', 'Merge them in', 'Waiting for your answer about this device’s workouts', 'Nothing syncs until you say whether this device’s workouts go into your profile. Tap to answer.'])
       expect(key in PT_BR_OVERRIDES, key).toBe(true)
   })
 })

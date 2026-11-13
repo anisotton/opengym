@@ -18,6 +18,7 @@ import Icon from './Icon.jsx'
 import { sheetKeyboardInsets } from '../lib/use-sheet-keyboard.js'
 import { NATIVE_KEYBOARD_EVENT } from '../lib/native-keyboard.js'
 import { t } from '../lib/i18n.js'
+import { cleanNum } from '../lib/format.js'
 
 /* ============================ text ============================ */
 
@@ -32,21 +33,30 @@ export const numWidthCh = s => Math.max(1, [...s].reduce((n, c) => n + (c === '.
 // logged 0 is a set taken to failure). Those clear back to null instead of snapping to 0.
 // `fit` sizes the field to the digits on screen instead of filling its cell — for the big
 // weight read-out, where the unit sits right beside the number.
-export function NumberField({ value, onChange, decimal = true, nullable = false, fit = false, className = '', ...rest }) {
+export function NumberField({ value, onChange, decimal = true, nullable = false, fit = false, step, className = '', ...rest }) {
   const [draft, setDraft] = useState(null)
   const committed = useRef(null)
+  // Focus selects the number so typing replaces it. In WebKit (Safari, the iOS app) the release
+  // of the tap that focused the field then moves the caret to the finger and drops that
+  // selection: 65 typed over 62.5 read 6265.5. The first mouseup after focus keeps its default
+  // off; a later tap on the focused field still places the caret to edit one digit.
+  const justFocused = useRef(false)
   // null and undefined are the same "empty" here — a nullable field's key is dropped once cleared.
   if (draft !== null && (committed.current ?? null) !== (value ?? null)) { setDraft(null); committed.current = null }
   const commit = raw => {
     let s = raw.replace(/,/g, '.').replace(/[^0-9.]/g, '')
     const i = s.indexOf('.')
-    if (i !== -1) s = decimal ? s.slice(0, i + 1) + s.slice(i + 1).replace(/\./g, '') : s.slice(0, i)
-    const n = s === '' || s === '.' ? (nullable ? null : 0) : Math.max(0, parseFloat(s))
+    if (i !== -1) s = s.slice(0, i + 1) + s.slice(i + 1).replace(/\./g, '')
+    // A whole-number field keeps what was typed after a separator on screen until blur and
+    // counts only the part before it: cutting the separator off at each keystroke read 8.5 as 85.
+    const whole = !decimal && i !== -1 ? s.slice(0, i) : s
+    const n = whole === '' || whole === '.' ? (nullable ? null : 0) : Math.max(0, parseFloat(whole))
     committed.current = n
     setDraft(s)
     onChange(n)
   }
-  const shown = draft ?? (value ?? '')
+  // Shown clean (lib/format.js cleanNum), so a stored 20.4117 never fills the field; typing replaces it.
+  const shown = draft ?? (typeof value === 'number' ? cleanNum(value, step) : (value ?? ''))
   return (
     <input
       type="text"
@@ -56,9 +66,10 @@ export function NumberField({ value, onChange, decimal = true, nullable = false,
       // `fit` hugs the digits on screen — a big read-out with its unit sitting right beside
       // it — where the default fills whatever cell the field is in.
       style={fit ? { width: numWidthCh(String(shown)) + 'ch' } : undefined}
-      onFocus={e => e.target.select()}
+      onFocus={e => { justFocused.current = true; e.target.select() }}
+      onMouseUp={e => { if (justFocused.current) { justFocused.current = false; e.preventDefault() } }}
       onChange={e => commit(e.target.value)}
-      onBlur={() => { setDraft(null); committed.current = null }}
+      onBlur={() => { setDraft(null); committed.current = null; justFocused.current = false }}
       {...rest}
     />
   )
@@ -81,7 +92,9 @@ export const SearchField = forwardRef(function SearchField({ value, onChange, on
       <Icon name="magnifier" className="lead" />
       <input ref={ref} className="field" value={value} onChange={onChange} {...rest} />
       {!!value && (
-        <button className="clear" onClick={onClear} aria-label={t('Clear')}>
+        /* type="button": inside a form the first button is what Enter presses, and that must be
+           the form's own Search, not this (the gym map's search cleared itself on Enter). */
+        <button type="button" className="clear" onClick={onClear} aria-label={t('Clear')}>
           <Icon name="xmark" />
         </button>
       )}
@@ -109,10 +122,14 @@ export function Switch({ checked, onChange, disabled, ...accessibility }) {
 /* ============================ segmented ============================ */
 
 // options: [{ value, label, icon? }]  — the selected pill slides between cells.
-export function Segmented({ options, value, onChange, className = '' }) {
+// `tour`: the app tour's anchor for this control (data-tour, lib/tour.js); likewise below.
+// `ariaLabelledby` names the choice for a screen reader by its visible label (a group of
+// pressed buttons otherwise reads as three loose words).
+export function Segmented({ options, value, onChange, className = '', tour, ariaLabelledby }) {
   const i = Math.max(0, options.findIndex(o => o.value === value))
   return (
-    <div className={'seg ' + className} style={{ '--n': options.length, '--i': i }}>
+    <div className={'seg ' + className} style={{ '--n': options.length, '--i': i }} data-tour={tour}
+      role={ariaLabelledby ? 'group' : undefined} aria-labelledby={ariaLabelledby}>
       <span className="seg-sel" aria-hidden="true" />
       {options.map(o => (
         <button
@@ -134,7 +151,7 @@ export function Segmented({ options, value, onChange, className = '' }) {
 // `min` and `max` hold for the buttons at once, but for typing only once the field is left:
 // clamped on every keystroke, a field emptied to type a new number snapped to the minimum, and
 // the digits typed next landed after it (a 48 retyped as 75 saved 175).
-export function Stepper({ value, step = 1, min = 0, max = Infinity, onChange, decimal = true, className = '', label, unit, invalid = false }) {
+export function Stepper({ value, step = 1, min = 0, max = Infinity, onChange, decimal = true, className = '', label, unit, invalid = false, disabled = false, onStep, ariaLabel, display }) {
   const clamp = v => Math.min(max, Math.max(min, v))
   const set = v => onChange(clamp(Math.round((v || 0) * 100) / 100))
   // Holding a button repeats the step; the latest value/step live in a ref so
@@ -142,7 +159,8 @@ export function Stepper({ value, step = 1, min = 0, max = Infinity, onChange, de
   const live = useRef({ value, step, set })
   live.current = { value, step, set }
   const hold = useRef({ delay: null, tick: null, count: 0, repeated: false })
-  const bump = dir => { const { value, step, set } = live.current; set((+value || 0) + dir * step) }
+  // From the number on screen (cleanNum), not a stored 44.996 behind it.
+  const bump = dir => { const { value, step, set } = live.current; const v = cleanNum(+value || 0, step); set(onStep ? onStep(v, step, dir) : v + dir * step) }
   const stopHold = () => {
     const h = hold.current
     window.clearTimeout(h.delay); window.clearInterval(h.tick)
@@ -175,12 +193,15 @@ export function Stepper({ value, step = 1, min = 0, max = Infinity, onChange, de
   })
   const inner = (
     <div className={'stp ' + className}>
-      <button {...holdProps(-1)} aria-label={t('Decrease')}><Icon name="minus" /></button>
+      <button {...holdProps(-1)} aria-label={ariaLabel ? `Decrease ${ariaLabel}` : t('Decrease')} disabled={disabled}><Icon name="minus" /></button>
       <span className="val" onBlur={() => { const v = +value || 0; if (clamp(v) !== v) onChange(clamp(v)) }}>
-        <NumberField value={value} decimal={decimal} onChange={onChange} aria-invalid={invalid ? 'true' : undefined} />
-        {unit && <i>{unit}</i>}
+        {/* `display`: a word instead of the number at a special value ("Bar" for an empty bar), the
+            +/- still step from `value`. */}
+        {display != null ? <span className="stp-word">{display}</span>
+          : <NumberField value={value} decimal={decimal} step={step} onChange={onChange} disabled={disabled} aria-invalid={invalid ? 'true' : undefined} />}
+        {display == null && unit && <i>{unit}</i>}
       </span>
-      <button {...holdProps(1)} aria-label={t('Increase')}><Icon name="plus" /></button>
+      <button {...holdProps(1)} aria-label={ariaLabel ? `Increase ${ariaLabel}` : t('Increase')} disabled={disabled}><Icon name="plus" /></button>
     </div>
   )
   if (!label) return inner
@@ -193,7 +214,7 @@ export function Stepper({ value, step = 1, min = 0, max = Infinity, onChange, de
 // pseudo-elements, which is the only way the control looks identical on every
 // platform and can pick up the accent colour.
 export const SLIDER_GRAB_PX = 22
-export function Slider({ value, min = 0, max = 100, step = 1, onChange, className = '' }) {
+export function Slider({ value, min = 0, max = 100, step = 1, onChange, className = '', disabled = false }) {
   const ref = useRef(null)
   const [drag, setDrag] = useState(false)
   // Grabbing the knob drags it relative to where the finger landed; a finger
@@ -233,6 +254,7 @@ export function Slider({ value, min = 0, max = 100, step = 1, onChange, classNam
   }, [drag, onChange, posToValue])
 
   const key = e => {
+    if (disabled) return
     // The arrow pointing at the inline-end (max) end still increases; in RTL that is Left.
     const inc = document.documentElement.dir === 'rtl' ? 'ArrowLeft' : 'ArrowRight'
     const dec = document.documentElement.dir === 'rtl' ? 'ArrowRight' : 'ArrowLeft'
@@ -248,11 +270,13 @@ export function Slider({ value, min = 0, max = 100, step = 1, onChange, classNam
       ref={ref}
       className={'sld' + (drag ? ' dragging' : '') + ' ' + className}
       role="slider"
-      tabIndex={0}
+      tabIndex={disabled ? -1 : 0}
       aria-valuenow={value} aria-valuemin={min} aria-valuemax={max}
+      aria-disabled={disabled}
       data-nodrag                                  /* keeps the sheet from swipe-dismissing */
       onKeyDown={key}
       onPointerDown={e => {
+        if (disabled) return
         e.currentTarget.setPointerCapture?.(e.pointerId)
         const r = e.currentTarget.getBoundingClientRect()
         // The knob is measured from inline-start: left in LTR, right in RTL.
@@ -273,11 +297,13 @@ export function Slider({ value, min = 0, max = 100, step = 1, onChange, classNam
 
 /* ============================ checkbox ============================ */
 
-export function Check({ checked, onChange, className = '', size }) {
+export function Check({ checked, onChange, className = '', size, label, tour }) {
   return (
     <button
+      data-tour={tour}
       role="checkbox"
       aria-checked={!!checked}
+      aria-label={label}
       className={'chk' + (checked ? ' on' : '') + ' ' + className}
       style={size ? { width: size, height: size } : null}
       onClick={() => onChange(!checked)}
@@ -292,9 +318,9 @@ export function Check({ checked, onChange, className = '', size }) {
 // The inset-grouped list is the app's main structural primitive: a titled
 // section holding rows separated by hairlines that stop short of the leading
 // edge, so the icon column reads as a continuous rail.
-export function Section({ title, footer, children, className = '' }) {
+export function Section({ title, footer, children, className = '', tour }) {
   return (
-    <section className={'sect ' + className}>
+    <section className={'sect ' + className} data-tour={tour}>
       {title && <h2 className="sect-t">{title}</h2>}
       <div className="sect-b">{children}</div>
       {footer && <p className="sect-f">{footer}</p>}
@@ -302,10 +328,10 @@ export function Section({ title, footer, children, className = '' }) {
   )
 }
 
-export function Row({ icon, iconTint, title, subtitle, value, accessory = 'none', onClick, danger, children, className = '' }) {
+export function Row({ icon, iconTint, title, subtitle, value, accessory = 'none', onClick, danger, children, className = '', tour }) {
   const Tag = onClick ? 'button' : 'div'
   return (
-    <Tag className={'lrow' + (onClick ? ' tap' : '') + (danger ? ' danger' : '') + ' ' + className} onClick={onClick}>
+    <Tag className={'lrow' + (onClick ? ' tap' : '') + (danger ? ' danger' : '') + ' ' + className} onClick={onClick} data-tour={tour}>
       {icon && <span className="lrow-i" style={iconTint ? { '--tint': iconTint } : null}><Icon name={icon} /></span>}
       <span className="lrow-m">
         <span className="lrow-t">{title}</span>
@@ -337,6 +363,24 @@ export function SelectRow({ icon, iconTint, title, value, options, onChange, she
     <Row icon={icon} iconTint={iconTint} title={title} value={cur ? cur.label : value} accessory="chevron" onClick={open}
       className={stackedValue ? 'lrow-stack-value' : ''} />
   )
+}
+
+/** The picker sheet of SelectRow on its own, for a control that is not a row (Stats' menu buttons). */
+export function openSelectSheet({ title, value, options, onChange, search }) {
+  const { openSheet } = require_ui()
+  return openSheet(close => <SelectSheet title={title} value={value} options={options} onChange={onChange} search={search} close={close} />)
+}
+
+/**
+ * A compact button that names the current choice and opens the picker sheet: for a choice that
+ * would overflow a segmented control (Stats: the chart of an exercise, the muscles' period).
+ * The accessible name says what is chosen for what ("Period: Week").
+ */
+export function MenuButton({ title, value, options, onChange, className = '' }) {
+  const cur = options.find(o => o.value === value) || options[0]
+  return <Button size="sm" trailingIcon="chevronDown" className={'menu-btn' + (className ? ' ' + className : '')}
+    aria-haspopup="dialog" aria-label={title + ': ' + (cur?.label ?? '')}
+    onClick={() => openSelectSheet({ title, value, options, onChange })}>{cur?.label}</Button>
 }
 
 function SelectSheet({ title, value, options, onChange, search, close }) {

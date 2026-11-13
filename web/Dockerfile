@@ -7,16 +7,16 @@
 # QEMU — and QEMU-emulated npm installs are known to corrupt esbuild/rollup's platform-
 # specific native binaries, which is what breaks `vite build` with unrelated-looking
 # module-resolution errors.
-FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+FROM --platform=$BUILDPLATFORM node:22.23.4-alpine AS build
 # The frontend sits at /app/frontend, not /app: the Coach's runtime-neutral core lives in
 # api/coach/core and is imported from frontend/src as ../../../api/coach/core/*, so the two
 # have to keep the same relative position they have in the repository. Copying frontend/ alone
 # is exactly what made the v1.2.15 web image fail to build.
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-# --ignore-scripts: the web image only needs `vite build`; the one heavy postinstall in this tree
-# (@capacitor/assets -> sharp, a libvips download from GitHub) is for drawing app icons and has
-# timed out on the shared runners — a lockfile-ignoring `npm install` fallback is no answer to that.
+# --ignore-scripts: the web image only needs `vite build`, and no postinstall should be able to
+# break it (@capacitor/assets' sharp download once timed out on the shared runners; the icon
+# tool is now run with npx, docs/MOBILE.md, and not installed here).
 RUN npm ci --ignore-scripts
 COPY api/coach/core/ /app/api/coach/core/
 COPY frontend/ ./
@@ -26,37 +26,71 @@ COPY frontend/ ./
 ARG APP_BUILD=""
 RUN APP_BUILD="$APP_BUILD" npm run build
 
-FROM nginx:alpine
+FROM nginxinc/nginx-unprivileged:1.30.6-alpine
 # Same reason as in api/Dockerfile: alpine fixes land faster than the nginx image is rebuilt.
-RUN apk upgrade --no-cache
+# The base's last instruction is USER 101, and apk then exits 99 — it cannot open its log as
+# that user. Upgrade as root, then switch back. 101 has to be the last USER in this file so
+# the entrypoint and the nginx master both stay uid 101. It can bind port 80 under Docker,
+# which sets net.ipv4.ip_unprivileged_port_start=0; the base image's EXPOSE 8080 is metadata,
+# and nothing here listens on it. Another runtime (most Kubernetes ones, Podman rootless)
+# needs NGINX_PORT=1024 or higher, or that sysctl: helm/ and kubernetes/ use 8080.
+#
+# An upgrade can put the packaged nginx.conf back (a `user` directive, pid under /run) and
+# recreate /var/cache/nginx as root, which is the mkdir a non-root master dies on. Restore
+# the layout the base established, still as root, and idempotently: drop a user directive
+# if one is present, point pid at /tmp/nginx.pid, and insert the /tmp temp paths only when
+# client_body_temp_path is absent — a second insert duplicates them and nginx refuses the
+# config. chown/chmod cover /var/cache/nginx and /etc/nginx only, so uid 101 can render the
+# template. The static tree keeps the default modes; uid 101 only reads it.
+USER root
+RUN apk upgrade --no-cache \
+ && sed -i '/^[[:space:]]*user[[:space:]]/d' /etc/nginx/nginx.conf \
+ && sed -i 's,\(/var\)\{0\,1\}/run/nginx.pid,/tmp/nginx.pid,' /etc/nginx/nginx.conf \
+ && if ! grep -q 'client_body_temp_path' /etc/nginx/nginx.conf; then \
+      sed -i "/^http {/a \    proxy_temp_path /tmp/proxy_temp;\n    client_body_temp_path /tmp/client_temp;\n    fastcgi_temp_path /tmp/fastcgi_temp;\n    uwsgi_temp_path /tmp/uwsgi_temp;\n    scgi_temp_path /tmp/scgi_temp;\n" /etc/nginx/nginx.conf; \
+    fi \
+ && chown -R nginx:root /var/cache/nginx /etc/nginx \
+ && chmod -R g+w /var/cache/nginx /etc/nginx \
+ && grep -Eq '^[[:space:]]*pid[[:space:]]+/tmp/nginx\.pid;' /etc/nginx/nginx.conf \
+ && ! grep -Eq '^[[:space:]]*user[[:space:]]' /etc/nginx/nginx.conf
+USER 101
 ARG VERSION=dev
 ARG VCS_REF=dev
 ARG BUILD_DATE=unknown
 
-LABEL maintainer="Duarte Santos https://gitlab.com/DuarteSantos8" \
+LABEL maintainer="Duarte Santos https://github.com/DuarteSantos8" \
     org.opencontainers.image.title="opengym-web" \
     org.opencontainers.image.description="Frontend for Self-hosted gym & body-weight tracker — plan routines, log workouts (supersets & cardio too), track your weight and progress, passkey login. Your data, your server." \
-    org.opencontainers.image.source="https://gitlab.com/DuarteSantos8/opengym" \
-    org.opencontainers.image.url="https://gitlab.com/DuarteSantos8/opengym/container_registry" \
-    org.opencontainers.image.documentation="https://gitlab.com/DuarteSantos8/opengym#readme" \
+    org.opencontainers.image.source="https://github.com/DuarteSantos8/openGym" \
+    org.opencontainers.image.url="https://opengym.ch" \
+    org.opencontainers.image.documentation="https://github.com/DuarteSantos8/openGym#readme" \
     org.opencontainers.image.licenses="AGPL-3.0-or-later" \
     org.opencontainers.image.version=$VERSION \
     org.opencontainers.image.revision=$VCS_REF \
     org.opencontainers.image.created=$BUILD_DATE
 
 COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY --from=build /app/frontend/dist /usr/share/nginx/html
+# Stops the container at start-up on a BASE_PATH the config cannot serve ("/gym/", "gym"), instead
+# of a server that 404s under the prefix. nginx's entrypoint runs these scripts in order; 05 is
+# before the template rendering at 20.
+COPY --chmod=755 web/05-check-base-path.sh /docker-entrypoint.d/
+# Owned by uid 101 (not root, as the static tree would otherwise be): 40-substitute-app-url.sh
+# rewrites index.html in place at start-up, as that user, and sed needs the directory too.
+COPY --from=build --chown=101:0 /app/frontend/dist /usr/share/nginx/html
 # vite build copies frontend/public/* into dist preserving the host file's mode. Some hosts'
 # ACL/umask (e.g. a shared checkout under restrictive group ACLs) hand out 660 on new files, which
 # the non-root nginx worker can't read — a silent 403 on whatever media landed in public/ last,
 # while index.html and assets/ (generated inside the container) are unaffected.
+# As root: the webroot directory itself belongs to root in the base image, so uid 101 cannot
+# chmod it; 101 is restored right after and stays the last USER.
+USER root
 RUN chmod -R a+rX /usr/share/nginx/html
+USER 101
 
 # Substitutes __APP_URL__ in the served index.html at start-up — nginx.conf.template's own
 # envsubst (20-envsubst-on-templates.sh, part of this base image) only covers /etc/nginx/templates,
 # not files already in the webroot.
-COPY web/40-substitute-app-url.sh /docker-entrypoint.d/40-substitute-app-url.sh
-RUN chmod +x /docker-entrypoint.d/40-substitute-app-url.sh
+COPY --chmod=755 web/40-substitute-app-url.sh /docker-entrypoint.d/40-substitute-app-url.sh
 
 # Set Default ENVs for nginx
 ENV NGINX_PORT=80
@@ -83,13 +117,26 @@ ENV BASE_PATH=""
 # Above the API's own video cap (MEDIA_VIDEO_MAX_MB, 40 by default) so the API, which says why,
 # is the one that refuses a file — raise both together.
 ENV MEDIA_UPLOAD_MAX=48m
+# Sent on every page and file. Scripts run only from this origin, plus the one inline script in
+# frontend/index.html by its hash (src/lib/csp.test.js keeps the two in step). The only frame
+# allowed is the privacy-enhanced YouTube player (youtube-nocookie.com) an exercise's video link
+# plays in, and only after a tap (the print frame, lib/print-doc.js, has no address, so frame-src
+# never applies to it). connect-src stays open to any https: and http: address: the Coach on a
+# device talks to the provider the person chose, an Ollama on their LAN included, and the update
+# check asks GitHub. Behind a proxy that injects a script of its own (analytics), set this to a
+# policy that allows it, or to "frame-ancestors 'none'" for the old header.
+ENV CONTENT_SECURITY_POLICY="default-src 'self'; script-src 'self' 'sha256-3Fapftt31e9vMhHAV7+0VZfYmdxRxt2XfD1BwKJvWf4='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; connect-src 'self' https: http:; worker-src 'self'; manifest-src 'self'; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
 # Probe the port nginx was actually told to listen on (NGINX_PORT is configurable, so a
 # hardcoded http://localhost/ breaks on any instance that changed it), and address it as
 # 127.0.0.1: envsubst rewrites the conf after the image's IPv6 script, so nginx ends up
 # listening on IPv4 only while "localhost" resolves to ::1 first.
-HEALTHCHECK --interval=5m \
+# Every 30 s, so a fresh container reads "healthy" half a minute after it starts instead of after
+# five (TrueNAS and Portainer wait for it before they call the app running, #844).
+# wget is BusyBox's, already in the Alpine image, so nothing is added for it.
+HEALTHCHECK --interval=30s \
             --timeout=5s \
+            --start-period=20s \
             --retries=3 \
             CMD wget --spider -q "http://127.0.0.1:${NGINX_PORT}/" || exit 1
 

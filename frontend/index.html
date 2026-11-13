@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <script>
   // Set direction before first paint so an Arabic profile never flashes as LTR.
   // The app re-applies this on every language change (lib/i18n.js setLang).
@@ -17,6 +17,53 @@
     document.documentElement.dataset.theme = s.theme === 'dark' || s.theme === 'light' ? s.theme
       : s.theme === 'system' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   } catch (e) {}
+  // Boot watchdog. A chunk this browser cannot parse (1.4.2's regex lookbehind on iOS 15.5 to
+  // 16.3) kills the module graph before any of the app runs, and the logo lifted forever. Here,
+  // outside the bundle and in plain old syntax, so it still runs then: a script that fails to
+  // load or parse, or no app after 10 s, puts the reason and a Reload button where the logo was.
+  // English only, as the packs are in the bundle that did not load. lib/boot.js removes #boot
+  // (message included) once the app draws, so a slow start that gets there still gets there.
+  (function () {
+    var shown = false, last = '';
+    function fail(title, detail) {
+      var b = document.getElementById('boot');
+      // Too early for the boot screen (a script in <head>): say it once the page is there.
+      if (!b && document.readyState === 'loading') return document.addEventListener('DOMContentLoaded', function () { fail(title, detail); });
+      if (shown || !b || b.getAttribute('data-leaving')) return;
+      shown = true;
+      b.className = 'fail';
+      b.removeAttribute('aria-hidden');
+      b.setAttribute('role', 'alert');
+      b.setAttribute('dir', 'ltr');
+      b.innerHTML = '';
+      var box = document.createElement('div'), h = document.createElement('p'), p = document.createElement('p');
+      h.className = 'h';
+      h.textContent = title;
+      p.textContent = 'Reloading often helps. If it keeps happening, please send us this:';
+      var c = document.createElement('code');
+      c.textContent = (detail || 'No error, it just never finished loading.') + ' (' + navigator.userAgent + ')';
+      var r = document.createElement('button');
+      r.type = 'button';
+      r.textContent = 'Reload';
+      r.onclick = function () { location.reload(); };
+      box.appendChild(h); box.appendChild(p); box.appendChild(c); box.appendChild(r);
+      b.appendChild(box);
+    }
+    window.addEventListener('error', function (e) {
+      var t = e && e.target;
+      if (t && t.tagName === 'SCRIPT') return fail('Brilhart Fitness could not start on this browser.', 'Could not load ' + (t.src || 'a script'));
+      if (!e || !e.message) return;
+      last = e.message + (e.filename ? ' at ' + e.filename.split('/').pop() + ':' + e.lineno : '');
+      if (/SyntaxError|Unexpected|Invalid regular expression/i.test(e.message)) fail('Brilhart Fitness could not start on this browser.', last);
+    }, true);
+    window.addEventListener('unhandledrejection', function (e) {
+      var r = e && e.reason;
+      if (r) last = String((r && r.message) || r);
+    });
+    setTimeout(function () {
+      fail(last ? 'Brilhart Fitness could not start on this browser.' : 'Brilhart Fitness is taking too long to start.', last);
+    }, 10000);
+  })();
 </script>
 <title>Brilhart Fitness</title>
 <meta name="description" content="Condicionamento físico para o balé">
@@ -43,6 +90,42 @@
 <meta property="og:url" content="__APP_URL__">
 </head>
 <body>
+<!-- The boot screen: painted with the HTML, before any script runs, so the gap between the
+     native splash and the first real screen is the Brilhart mark instead of a blank page. The
+     brand's light "papel" background, or the dark plum when the inline script above set the dark
+     theme. lib/boot.js takes it away the moment the app can draw, so it never adds a wait (it
+     reads the .db animation's clock to leave at the end of a beat). -->
+<style>
+  #boot{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;background:#FBF8F7;transition:opacity .22s ease-out}
+  :root[data-theme="dark"] #boot{background:#1C141E}
+  #boot.out{opacity:0;pointer-events:none}
+  #boot svg{width:112px;height:auto;overflow:visible}
+  #boot .mark{animation:boot-in .36s cubic-bezier(.3,.7,.4,1) both}
+  #boot .db{transform-box:fill-box;transform-origin:center;animation:boot-rep 1.25s ease-in-out .75s infinite}
+  @keyframes boot-in{from{transform:scale(.86);opacity:0}}
+  @keyframes boot-rep{50%{transform:translateY(-8px)}}
+  #boot.fail{place-items:center;padding:24px}
+  #boot.fail div{max-width:340px;font:15px/1.4 Nunito,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#4A284D;text-align:center}
+  #boot.fail .h{font-size:19px;font-weight:600;margin:0 0 8px}
+  #boot.fail code{display:block;margin:14px 0 18px;padding:10px;border-radius:10px;background:#F1EAF0;color:#5F5560;font-size:12px;text-align:left;word-break:break-word;-webkit-user-select:text;user-select:text}
+  :root[data-theme="dark"] #boot.fail div{color:#EFE4F2}
+  :root[data-theme="dark"] #boot.fail code{background:#271C2A;color:#C9BFCC}
+  #boot.fail button{font:inherit;font-weight:700;color:#fff;background:#4A284D;border:0;border-radius:99px;min-height:44px;padding:0 28px}
+  @media (prefers-reduced-motion:reduce){
+    #boot .mark{animation:none}
+    #boot .db{animation:boot-breathe 1.6s ease-in-out infinite}
+    @keyframes boot-breathe{50%{opacity:.55}}
+  }
+</style>
+<div id="boot" aria-hidden="true">
+  <!-- The Brilhart mark (public/favicon.svg), drawn bigger. -->
+  <svg class="mark" viewBox="0 0 100 100">
+    <g class="db">
+      <rect width="100" height="100" rx="22.5" fill="#4A284D"/>
+      <g transform="translate(16,16) scale(0.68)"><g fill="none" stroke-width="5.2" stroke-linecap="round" stroke-linejoin="round"><g stroke="#C9A25A"><path d="M8 13 H92"/><rect x="15" y="3" width="7" height="20" rx="2.5"/><rect x="78" y="3" width="7" height="20" rx="2.5"/><rect x="9" y="6.5" width="3.6" height="13" rx="1.6"/><rect x="87.4" y="6.5" width="3.6" height="13" rx="1.6"/></g><g stroke="#FFFFFF"><path d="M44 41 L34 14 M56 41 L66 14"/><circle cx="50" cy="31" r="6"/><path d="M44 41 H56 L53.5 57 H46.5 Z"/><path d="M31 60 C40 55.5 60 55.5 69 60 C60 63.5 40 63.5 31 60 Z"/><path d="M47 63 L50 95 L53 63"/></g></g></g>
+    </g>
+  </svg>
+</div>
 <div id="root"></div>
 <script type="module" src="/src/main.jsx"></script>
 </body>

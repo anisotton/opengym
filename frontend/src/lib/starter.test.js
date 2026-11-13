@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { EXIDX } from './exercises.js'
-import { buildStarterPlan, starterPlanDays, starterPlanOptions, starterRoutines } from './starter.js'
+import { ALL_EQUIPMENT, eqAvailable } from './equipment.js'
+import { buildStarterPlan, starterPlanDays, starterPlanOptions, starterRoutines, starterProgrammeOptions, buildStarterProgramme } from './starter.js'
+import { normalizeProgramme, programmeRoutineIds } from './programmes.js'
 
 // The approved prescription, written out again rather than imported: a test that reads the
 // same table as the code would pass no matter what that table said. [weekday, name, sets].
@@ -100,5 +102,111 @@ describe('starterRoutines (the demo build entry point)', () => {
     const first = starterRoutines().map(r => r.id)
     const second = starterRoutines().map(r => r.id)
     expect(new Set([...first, ...second]).size).toBe(6)
+  })
+})
+
+describe('fitting a starter plan to equipment', () => {
+  const ids = plan => plan.routines.flatMap(r => r.ex.map(e => e.id))
+
+  it('changes nothing when the equipment already covers the plan', () => {
+    const all = ALL_EQUIPMENT
+    const fitted = buildStarterPlan('ppl', all)
+    expect(fitted.routines.map(shape)).toEqual(APPROVED.ppl.map(([, , list]) => list))
+    expect(fitted.fit).toEqual({ swapped: 0, dropped: 0 })
+  })
+
+  it('has no fit report when no equipment is given', () => {
+    expect(buildStarterPlan('ppl').fit).toBeUndefined()
+  })
+
+  it('swaps only what the equipment cannot do, keeping sets and reps', () => {
+    const fitted = buildStarterPlan('ppl', ['dumbbell'])
+    const push = fitted.routines[0]
+    // dumbbell exercises stay put; the barbell bench and the cable pushdown are swapped
+    expect(push.ex.map(e => e.id)).toContain('0426')
+    expect(push.ex.map(e => e.id)).toContain('0334')
+    expect(push.ex[0].id).not.toBe('0025')
+    expect(push.ex[0].sets).toBe(4)
+    expect(push.ex[0].reps).toBe(8)
+    expect(fitted.fit.swapped).toBeGreaterThan(0)
+  })
+
+  it('only ever uses exercises the equipment allows (body weight is always allowed)', () => {
+    for (const eq of [['dumbbell'], ['barbell', 'dumbbell'], ['band'], []]) {
+      for (const { id } of starterPlanOptions()) {
+        const fitted = buildStarterPlan(id, eq)
+        for (const exId of ids(fitted)) expect(eqAvailable(eq, EXIDX[exId])).toBe(true)
+      }
+    }
+  })
+
+  it('never repeats an exercise inside one routine', () => {
+    for (const eq of [['dumbbell'], ['band'], []]) {
+      for (const { id } of starterPlanOptions()) {
+        for (const r of buildStarterPlan(id, eq).routines) {
+          const own = r.ex.map(e => e.id)
+          expect(new Set(own).size).toBe(own.length)
+        }
+      }
+    }
+  })
+
+  it('never stands in with a stretch, a hold or a drill that needs a ball nobody ticked', () => {
+    const bad = /stretch|isometric|squeeze|yoga|toe touch|exercise ball|bosu/i
+    for (const eq of [['dumbbell'], ['dumbbell'], ['band'], []]) {
+      for (const { id } of starterPlanOptions()) {
+        for (const exId of ids(buildStarterPlan(id, eq))) expect(EXIDX[exId].n).not.toMatch(bad)
+      }
+    }
+  })
+
+  it('prefers a loaded exercise over a body-weight drill for a loaded lift', () => {
+    // leg extension has no dumbbell twin, so the nearest same-muscle options include plain
+    // body-weight drills; a loaded leg exercise still wins
+    const legs = buildStarterPlan('ppl', ['dumbbell']).routines.find(r => r.name === 'Leg Day')
+    const swappedIn = legs.ex[3]
+    expect(swappedIn.id).not.toBe('0585')
+    expect(EXIDX[swappedIn.id].eq).toBe('dumbbell')
+    expect(EXIDX[swappedIn.id].bp).toBe('upper legs')
+  })
+
+  it('swaps a barbell bench press for chest work with the same kit, not a push-up', () => {
+    const push = buildStarterPlan('ppl', ['dumbbell']).routines[0]
+    expect(EXIDX[push.ex[0].id].eq).toBe('dumbbell')
+    expect(EXIDX[push.ex[0].id].bp).toBe('chest')
+  })
+
+  it('is deterministic', () => {
+    const a = buildStarterPlan('upper-lower', ['dumbbell']).routines.map(shape)
+    const b = buildStarterPlan('upper-lower', ['dumbbell']).routines.map(shape)
+    expect(a).toEqual(b)
+  })
+
+  it('keeps every scheduled day pointing at a routine that exists', () => {
+    const fitted = buildStarterPlan('5x5', [])
+    const have = new Set(fitted.routines.map(r => r.id))
+    for (const { routineId } of fitted.schedule) expect(have.has(routineId)).toBe(true)
+  })
+})
+
+describe('starter programmes (#159)', () => {
+  it('each builds routines and a programme over every one of them', () => {
+    const opts = starterProgrammeOptions()
+    expect(opts.map(o => o.id)).toEqual(['strength-4', 'hypertrophy-6', 'linear-12'])
+    for (const { id, weeks } of opts) {
+      const { routines, programme } = buildStarterProgramme(id, 'X', 5)
+      const p = normalizeProgramme(programme)
+      expect(p.weeks).toHaveLength(weeks)
+      expect(p).toMatchObject({ name: 'X', at: 5, src: id })
+      expect(programmeRoutineIds({ routines }, p).sort()).toEqual(routines.map(r => r.id).sort())
+      // Every week as written is a week the model keeps unchanged.
+      expect(p.weeks).toEqual(programme.weeks)
+    }
+    expect(buildStarterProgramme('nope', 'X')).toBeNull()
+  })
+  it('only names exercises its routines hold', () => {
+    const { routines, programme } = buildStarterProgramme('strength-4', 'X')
+    const ids = new Set(routines.flatMap(r => r.ex.map(e => e.id)))
+    for (const w of programme.weeks) for (const k of Object.keys(w.t || {})) expect(ids.has(k)).toBe(true)
   })
 })

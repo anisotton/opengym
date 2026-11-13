@@ -23,6 +23,7 @@ import { runPipeline } from './core/pipeline.js';
 import { extractJSON } from './core/parse.js';
 import { hashPlan } from './core/plan-hash.js';
 import { buildPrompt } from './core/prompt.js';
+import { waitingProposal } from './core/pending.js';
 import { handleFor } from './handle.js';
 import { fetchFor } from './node-fetch.js';
 import { privilegeRefusal, unprivilegedIds } from './adapters/spawn.js';
@@ -173,7 +174,7 @@ export function status(uid) {
 }
 function lastOutcome(rec) {
   const h = (rec.history || []).at(-1);
-  return h ? { id: h.id, kind: h.kind, outcome: h.outcome, errorClass: h.errorClass || null, at: h.at, ...(h.reading ? { reading: h.reading } : {}) } : null;
+  return h ? { id: h.id, kind: h.kind, outcome: h.outcome, errorClass: h.errorClass || null, at: h.at, ...(h.trigger === 'scheduled' ? { trigger: 'scheduled' } : {}), ...(h.reading ? { reading: h.reading } : {}) } : null;
 }
 function archive(uid, rec, outcome) {
   const history = [...(rec.history || []), {
@@ -264,12 +265,19 @@ export async function enqueue(uid, opts) {
       id: crypto.randomBytes(8).toString('hex'),
       uid,
       forgetSeq: forgetSeq.get(uid) || 0,
-      kind: opts.kind,                                  // 'create' | 'review' | 'debrief'
+      kind: opts.kind,                                  // 'create' | 'review' | 'debrief' | 'ask' | 'adapt'
       trigger: opts.trigger || 'manual',                // 'manual' | 'scheduled'
       workoutId: opts.workoutId ? String(opts.workoutId).slice(0, 40) : null,
       intake: opts.intake || null,
       note: clampMessage(opts.note),
       refine: clampMessage(opts.refine),
+      // A question's running session, sent by the phone (the server never holds `active`). Kept on
+      // the in-memory job only, never in the user's file; the payload builder bounds it.
+      today: (opts.kind === 'ask' || opts.kind === 'adapt') && opts.today && typeof opts.today === 'object' ? opts.today : null,
+      // An adapt job's exercise and reason, and the session it belongs to (so the phone can tell a
+      // proposal for this workout from one for a workout that has ended).
+      focus: opts.kind === 'adapt' && opts.focus && typeof opts.focus === 'object' ? { entry: opts.focus.entry, reason: opts.focus.reason } : null,
+      activeId: opts.kind === 'adapt' && typeof opts.activeId === 'string' ? opts.activeId.slice(0, 64) : null,
       lang: payloadLib.langTag(opts.lang),              // the language the app was showing (#303)
       state: 'queued',
       startedAt: Date.now()
@@ -292,6 +300,15 @@ function pump() {
       .catch(e => { console.error('coach job crashed', job.id, e); finish(job, { outcome: 'failed', errorClass: 'internal' }); })
       .finally(() => { running--; inflight.delete(job.uid); pump(); });
   }
+}
+
+/* Why an answer was rejected, for the admin card. "Couldn't use" with no reason left people
+   guessing whether the model, the key or the app was at fault. The validator's own lines say
+   which rule broke; quoted values are cut out, because they can carry a routine name or other
+   words from the person's plan, and the instance log carries outcomes, not content (FR-12/42). */
+export function whyUnusable(errors) {
+  if (!Array.isArray(errors) || !errors.length) return null;
+  return errors.slice(0, 3).map(e => String(e).replace(/"[^"]*"/g, '"…"')).join('; ').slice(0, 300);
 }
 
 function finish(job, result) {
@@ -366,6 +383,8 @@ async function execute(job) {
     refine: job.refine,
     previous: pendingCreate?.bundle || null,
     workoutId: job.workoutId,
+    today: job.today,
+    focus: job.focus,
     // The app says which language it is in. A scheduled review has no app behind it: a profile
     // that never picked a language then gets the instance's DEFAULT_LANG, like its screens do.
     lang: job.lang || (S.langAuto === true ? payloadLib.langTag(process.env.DEFAULT_LANG) : null),
@@ -392,12 +411,12 @@ async function execute(job) {
       adapter, cfg, kind: job.kind, payload, model: cfgStore.modelFor(cfg), timeoutMs: TIMEOUT_MS,
       // The HTTP adapters take the fetch and the abort signal they are given; the runtime
       // adapters ignore both.
-      invokeOpts: { jobDir, env, fetch: fetchFor(TIMEOUT_MS), signal: ctl.signal }
+      invokeOpts: { jobDir, env, fetch: fetchFor(TIMEOUT_MS), signal: ctl.signal, maxTokens: cfg.maxOutputTokens }
     });
     if (!attempt.ok) {
       // Cancelled by a forget, not failed by the provider: the log must not blame the job budget.
       const errorClass = ctl.signal.aborted ? 'forgotten' : attempt.errorClass;
-      return finish(job, { outcome: 'failed', errorClass, detail: attempt.detail });
+      return finish(job, { outcome: 'failed', errorClass, detail: attempt.detail || whyUnusable(attempt.errors) });
     }
     if (attempt.nochange) {
       return finish(job, { outcome: 'nochange', pending: null, detail: null, reading: attempt.reading });
@@ -409,8 +428,13 @@ async function execute(job) {
       expiresAt: Date.now() + PENDING_DAYS * 86400000,
       planHash: hashPlan(payloadLib.canonicalPlan(S)),
       iteration: job.refine ? (pendingCreate?.iteration || 1) + 1 : 1,
+      // Nobody asked for a scheduled one, so nobody is watching for it: a phone app has no web
+      // push, and says so itself when it next comes to the foreground (lib/coach-schedule.js).
+      ...(job.trigger === 'scheduled' ? { trigger: 'scheduled' } : {}),
       // A debrief names the session it read, so the card can show it after the fact.
       ...(job.kind === 'debrief' ? { workout: payloadLib.workoutMeta(S, job.workoutId) } : {}),
+      ...(job.kind === 'ask' || job.kind === 'adapt' ? { prev: waitingProposal(readUser(job.uid).pending) } : {}),
+      ...(job.kind === 'adapt' ? { activeId: job.activeId, focus: payload.focus } : {}),
       ...attempt.result
     };
     return finish(job, { outcome: 'ready', pending });
@@ -431,9 +455,12 @@ export function resolvePending(uid, { accepted = [], rejected = [], dismissed = 
     outcome: dismissed ? 'dismissed' : 'applied',
     accepted: accepted.length, rejected: rejected.length, at: Date.now()
   }].slice(-HISTORY_MAX);
-  writeUser(uid, { ...rec, pending: null, history });
+  // A read answer gives back the proposal it was asked beside (core/pending.js).
+  const back = rec.pending.kind === 'ask' || rec.pending.kind === 'adapt' ? waitingProposal(rec.pending.prev) : null;
+  writeUser(uid, { ...rec, pending: back, history });
   return { ok: true };
 }
+
 
 /* ---------- admin test + boot recovery ---------- */
 

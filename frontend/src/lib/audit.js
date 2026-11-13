@@ -21,11 +21,17 @@ const LABELS = {
   'auth.register.denied': 'Signup refused',
   'auth.logout': 'Signed out',
   'auth.logout.all': 'Signed out everywhere',
+  // Settings → "Delete my account": the profile removed itself and everything of theirs.
+  'auth.account.delete': 'Deleted their own account',
   // Device pairing (Settings → "Pair the mobile app"): the code is minted in a signed-in browser
   // tab and redeemed by the app, so "ok" is the phone coming online, not a sign-in.
   'auth.pair.create': 'Created a pairing code',
   'auth.pair.ok': 'Paired a phone',
   'auth.pair.fail': 'Pairing failed',
+  'auth.watch.pair': 'Created a watch pairing code',
+  'auth.watch.ok': 'Paired a Zepp OS watch',
+  'auth.watch.fail': 'Watch pairing failed',
+  'auth.watch.unlink': 'Unpaired a watch',
   // Password sign-in (#118), where the instance offers it.
   'auth.password.ok': 'Signed in with a password',
   'auth.password.fail': 'Password sign-in failed',
@@ -59,6 +65,10 @@ const LABELS = {
   'auth.link.create': 'Made a one-time code for another device',
   'auth.link.ok': 'Added a device with a one-time code',
   'auth.link.fail': 'Adding a device with a code failed',
+  // Recovery codes (#584): made by an admin or by the server's own command, used on a new device.
+  'auth.recovery.ok': 'Got back in with a recovery code',
+  'admin.recovery.create': 'Made a recovery code',
+  'server.recovery.create': 'A recovery code was made on the server',
   // The owner's proof (current password or a passkey) for one of the changes below was refused.
   'auth.proof.fail': 'Confirming a change failed',
   // ISO-1480: the browser refused a passkey ceremony outright — a certificate the device does
@@ -77,10 +87,15 @@ const LABELS = {
   'account.delete': 'Deleted their own account',
   'account.terms.accept': 'Accepted the Terms of Use and Privacy Policy',
   'admin.password.reset': 'Issued a password reset code',
+  'admin.role.grant': 'Made someone an admin',
+  'admin.role.revoke': 'Removed someone as admin',
+  'admin.owner.transfer': 'Handed the owner role on',
   'admin.invite.create': 'Created an invite code',
   'admin.invite.revoke': 'Revoked an invite code',
   'admin.audit.clear': 'Cleared the activity log',
-  'admin.denied': 'Blocked from the admin dashboard',
+  // FIRST_USER_ADMIN=1: the first profile on a fresh instance is made admin as it signs up.
+  'admin.first-user': 'Became admin as the first profile',
+  'admin.denied': 'Blocked from an admin action',
   // ISO-1485: the training program catalog. `msg`/`target` name the program; `publish`/
   // `unpublish` are their own events (not folded into `update`) since they're the one change
   // that affects whether it's visible to anyone outside the admin dashboard.
@@ -176,6 +191,8 @@ const REASONS = {
   'link-invalid': 'wrong, used or expired device code',
   'passkey-limit': 'the profile already has as many passkeys as it can hold',
   'token-invalid': 'wrong, used or expired link',
+  // An `admin.denied` for a recovery code: only the owner makes one for an admin (#584).
+  'recovery': 'a recovery code for an admin, which only the owner can make',
   // What an `auth.throttled` pause was for.
   'password': 'wrong passwords or reset codes',
   'signup': 'wrong invite codes on password signup',
@@ -207,7 +224,8 @@ const ACTS = {
   'passkey-add': 'adding a passkey',
   'passkey-remove': 'removing a passkey',
   'device-link': 'making a one-time code for another device',
-  'account-delete': 'deleting the account',
+  'pair': 'making a code to pair the phone app',
+  'account-delete': 'deleting their account',
   'google-link': 'linking a Google account',
   'google-remove': 'unlinking Google'
 }

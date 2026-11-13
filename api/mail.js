@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 
 const MAIL_PROVIDER = String(process.env.MAIL_PROVIDER || '').trim().toLowerCase();
 const MAIL_API_KEY = process.env.MAIL_API_KEY || '';
-const MAIL_FROM = process.env.MAIL_FROM || 'openGym <no-reply@localhost>';
+const MAIL_FROM = process.env.MAIL_FROM || 'Brilhart Fitness <no-reply@localhost>';
 const SMTP_HOST = process.env.SMTP_HOST || '';
 const SMTP_PORT = Number(process.env.SMTP_PORT) || 25;
 const SMTP_SECURE = process.env.SMTP_SECURE === '1';   // implicit TLS (port 465 style); Mailpit itself is plaintext

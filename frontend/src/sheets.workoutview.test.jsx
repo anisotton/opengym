@@ -6,6 +6,7 @@ import { useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
 import { beginWorkout, logPastWorkoutSheet } from './sheets.jsx'
 import { todayISO } from './lib/format.js'
+import { pickDate } from './components/DateField.test-util.js'
 
 // beginWorkout / beginBackfill snapshot S.workoutView onto s.active so the header ⋮ can
 // re-lay-out the running session without touching the saved default.
@@ -36,9 +37,9 @@ describe('workout view is snapshot onto the active session', () => {
   afterEach(() => { act(() => { mounted.splice(0).forEach(root => root.unmount()) }) })
 
   it('beginWorkout copies the current default onto s.active', () => {
-    useStore.setState(s => ({ S: { ...s.S, workoutView: 'compact' } }))
+    useStore.setState(s => ({ S: { ...s.S, workoutView: 'focus' } }))
     act(() => beginWorkout(null, null))
-    expect(useStore.getState().S.active.workoutView).toBe('compact')
+    expect(useStore.getState().S.active.workoutView).toBe('focus')
   })
 
   it('beginWorkout falls back to cards when the default is unset', () => {
@@ -55,11 +56,11 @@ describe('workout view is snapshot onto the active session', () => {
   })
 
   it('a backfilled session snapshots it too', () => {
-    useStore.setState(s => ({ S: { ...s.S, workoutView: 'list' } }))
+    useStore.setState(s => ({ S: { ...s.S, workoutView: 'focus' } }))
     logPastWorkoutSheet()
     const host = mountTopSheet()
-    act(() => { type(host.querySelector('input[type=date]'), '2020-01-02') })
+    pickDate(host.querySelector('[data-datefield]'), '2020-01-02')
     act(() => { button(host, 'Continue').click() })
-    expect(useStore.getState().S.active.workoutView).toBe('list')
+    expect(useStore.getState().S.active.workoutView).toBe('focus')
   })
 })

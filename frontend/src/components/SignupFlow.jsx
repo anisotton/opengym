@@ -92,7 +92,7 @@ export default function SignupFlow({ name, setName, code, setCode, inviteOnly, c
       <div style={{ height: 10 }} />
       <input className="input" placeholder={t('Invite code')} maxLength={40} value={code}
         onChange={e => setCode(e.target.value.toUpperCase())} style={{ letterSpacing: '.14em', fontWeight: 600, textAlign: 'center' }} />
-      <div className="dim small" style={{ marginTop: 6 }}>{t('This app is invite-only — enter the code you were given.')}</div>
+      <div className="dim small" style={{ marginTop: 6 }}>{t('This app is invite-only. Enter the code you were given.')}</div>
     </>}
     <TermsCheckbox checked={terms} onChange={setTerms} />
     {err && <div className="small" role="alert" style={errStyle}>{err}</div>}

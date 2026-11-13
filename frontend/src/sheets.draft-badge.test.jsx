@@ -54,7 +54,7 @@ describe('exercise detail — draft instructions badge', () => {
   })
 
   it('never shows for one of the 1,324 built-in exercises', () => {
-    const ex = EXDB.find(e => e.st?.length > 0)
+    const ex = EXDB[0]   // any built-in: the badge is `draft` only
     exerciseDetailSheet(ex)
     const host = renderTop()
     expect(host.querySelector('.exdraft')).toBeNull()

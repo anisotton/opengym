@@ -4,7 +4,7 @@ import { decodeSource } from '../lib/scan-web.js'
 import { Button } from '../components/ui.jsx'
 
 // Live camera scanner for the browser/PWA (the app build uses ML Kit's own UI instead — see
-// lib/scan.js). Opens the rear camera into a <video>, decodes a frame every ~150 ms until a QR
+// lib/scan.js). Opens the rear camera into a <video>, decodes a frame every ~150 ms until a code
 // shows up, then hands { value, fmt } to onFound. Cancel (or unmount) stops the camera.
 //
 // Errors are shown in place rather than thrown: a denied permission or a browser without
@@ -53,8 +53,8 @@ export default function CameraScan({ onFound, onCancel }) {
     {error
       ? <div className="muted small" style={{ marginBottom: 16, lineHeight: 1.5 }}>
           {error === 'denied'
-            ? t('Camera access was denied — allow it in your browser and try again.')
-            : t('Camera is not available here — import a photo or type the code instead.')}
+            ? t('Camera access was denied. Allow it in your browser and try again.')
+            : t('No camera available here. Import a photo or type the code instead.')}
         </div>
       : <>
           <div className="cam-wrap">

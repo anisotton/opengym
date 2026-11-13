@@ -15,7 +15,7 @@ import { usePasskeys } from '../components/Passkeys.jsx'
 
 const nameOf = d => d?.['pt-BR']?.name || d?.en?.name || '(untitled)'
 const periodOf = (interval, count) => interval === 'year' ? '/ year' : count === 1 ? '/ month' : `/ ${count} months`
-const dayOf = iso => (iso ? fmtDate(iso.slice(0, 10), true, true) : '—')
+const dayOf = iso => (iso ? fmtDate(iso.slice(0, 10), true, true) : '–')
 const uuid = () => crypto.randomUUID()
 
 // A plan's own id is a Stripe-safe slug (api/billing.js validPlanId: ^[a-z][a-z0-9-]{1,39}$),
@@ -704,7 +704,7 @@ export function SubscriptionPanel({ userId }) {
       {legacy.length ? <div className="list">
         {legacy.map(s => <div key={s.id} className="row between" style={{ padding: '6px 2px', borderBottom: 'var(--hair) solid var(--sep)' }}>
           <span className="small">{s.planDisplay ? nameOf(s.planDisplay) : s.plan || 'unknown'} · {fmtCentsBRL(s.priceAmountCents)} — {s.status}</span>
-          <span className="small muted">{dayOf(s.createdAt)} → {s.currentPeriodEnd ? dayOf(s.currentPeriodEnd) : '—'}</span>
+          <span className="small muted">{dayOf(s.createdAt)} → {s.currentPeriodEnd ? dayOf(s.currentPeriodEnd) : '–'}</span>
         </div>)}
       </div> : <div className="adm-empty">Nothing here.</div>}
     </HistoryFold>

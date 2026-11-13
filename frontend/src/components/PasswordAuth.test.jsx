@@ -108,8 +108,8 @@ describe('passwordError', () => {
     expect(passwordError(fail(400, { code: 'too-common' }))).toMatch(/too easy to guess/)
     expect(passwordError(fail(400, { code: 'too-short' }))).toBe('Use at least 10 characters.')
     expect(passwordError(fail(409, { code: 'last-way-in' }))).toMatch(/only way into your profile/)
-    expect(passwordError(fail(429, { code: 'locked', retryAfter: 120 }))).toBe('Too many attempts — try again in 2 minutes.')
-    expect(passwordError(fail(429, { code: 'locked', retryAfter: 30 }))).toBe('Too many attempts — try again in 30 seconds.')
+    expect(passwordError(fail(429, { code: 'locked', retryAfter: 120 }))).toBe('Too many attempts. Try again in 2 minutes.')
+    expect(passwordError(fail(429, { code: 'locked', retryAfter: 30 }))).toBe('Too many attempts. Try again in 30 seconds.')
     // ISO-1390: a signup refused over the terms — both mean "update the app", never raw English.
     expect(passwordError(fail(400, { error: 'terms version is stale', code: 'terms-version-stale' }))).toBe('Update the app to accept the new terms.')
     expect(passwordError(fail(400, { error: 'update the app to accept the terms', code: 'terms-required' }))).toBe('Update the app to accept the new terms.')
@@ -181,7 +181,7 @@ describe('PasswordSignInSheet', () => {
   it('the one field takes an e-mail as well as a name, long enough for either, and sends it as typed', async () => {
     mocks.passwordLogin.mockResolvedValue({ id: 'u1', name: 'Ana' })
     const host = mount(<PasswordSignInSheet close={() => {}} />)
-    expect(host.textContent).toContain('Use your profile name — or the e-mail you added to it — and your password.')
+    expect(host.textContent).toContain('Use your profile name (or the e-mail you added to it) and your password.')
     const field = byPlaceholder(host, 'Name or e-mail')
     // Not type="email": that would refuse a plain name.
     expect(field.type).toBe('text')
@@ -383,7 +383,7 @@ describe('Settings → Password', () => {
     expect(mocks.calls.at(-1)).toEqual({ path: '/api/account/password', method: 'POST', body: { next: 'correct horse battery', cid: 'c1', credential: { id: 'k1' } } })
     expect(close).toHaveBeenCalled()
     expect(done).toHaveBeenCalled()
-    expect(mocks.toast).toHaveBeenCalledWith('Password saved — you are signed out everywhere else.')
+    expect(mocks.toast).toHaveBeenCalledWith('Password saved. You’re now signed out everywhere else.')
   })
 
   it('a change sends the current password; a wrong one is said on the sheet', async () => {
@@ -463,7 +463,7 @@ describe('Settings → Password → Remove', () => {
     expect(alertText(sheet)).toBe('This password is the only way into your profile, so it cannot be removed.')
     mocks.answers['DELETE /api/account/password'] = fail(429, { code: 'locked', retryAfter: 60 })
     await submit(sheet)
-    expect(alertText(sheet)).toMatch(/^Too many attempts — try again /)
+    expect(alertText(sheet)).toMatch(/^Too many attempts. Try again /)
     expect(close).not.toHaveBeenCalled()
     expect(done).not.toHaveBeenCalled()
     expect(mocks.toast).not.toHaveBeenCalled()

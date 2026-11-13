@@ -99,13 +99,15 @@ describe('muscle names in the rows and tags (QA C9)', () => {
   // The dataset's cardio target "cardiovascular system" is both a map id and a translated key
   // of its own. Routing it through MUSCLE_NAME must not cost it its translation: the 29
   // built-in cardio exercises read "Herz-Kreislauf" in German, never "Cardiovascular system".
-  it('keeps the cardio target translated (burpee, de)', () => {
+  // (Upstream moved to marching on the spot, since burpees count reps now, #717; this fork's
+  // picker only lists Brilhart's exercises (ISO-1638), so the mountain climber, a cardio one.)
+  it('keeps the cardio target translated (mountain climber, de)', () => {
     _setLangState('de', de, null, null)
     exercisePicker(vi.fn())
     const host = renderTop()
-    act(() => type(host.querySelector('input.input'), 'burpee'))
-    expect(rowFor(host, 'burpee').querySelector('.ss').textContent).toBe('Herz-Kreislauf · Körpergewicht')
-    exConfigSheet(EXIDX['1160'], null, vi.fn())
+    act(() => type(host.querySelector('input.input'), 'mountain climber'))
+    expect(rowFor(host, 'mountain climber').querySelector('.ss').textContent).toBe('Herz-Kreislauf · Körpergewicht')
+    exConfigSheet(EXIDX['0630'], null, vi.fn())
     const tags = [...renderTop().querySelectorAll('.tag')].map(e => e.textContent.trim())
     expect(tags).toEqual(['Cardio', 'Herz-Kreislauf', 'Körpergewicht'])
   })

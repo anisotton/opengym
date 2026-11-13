@@ -2,6 +2,7 @@ package ch.duartesantos.opengym;
 
 import android.content.Context;
 import android.content.Intent;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -15,8 +16,11 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  * Usage from JS:
  *   import { registerPlugin } from '@capacitor/core';
  *   const RestAlert = registerPlugin('RestAlert');
- *   await RestAlert.schedule({ id, at, title, sound, vibrate, channelId, visibility, importance, localOnly });
+ *   await RestAlert.schedule({ id, at, title, sound, tone, classic, vibrate, channelId, visibility, importance, localOnly });
  *   await RestAlert.cancel({ id });
+ *   await RestAlert.buzz({ pattern: [200, 100, 200] });   // navigator.vibrate's shape, as an alarm
+ *   await RestAlert.speak({ text, lang, rate, flush });   // a spoken cue, music ducks (SpeechCue)
+ *   await RestAlert.hush();
  */
 @CapacitorPlugin(name = "RestAlert")
 public class RestAlertPlugin extends Plugin {
@@ -82,14 +86,85 @@ public class RestAlertPlugin extends Plugin {
                 (int) number(call, "id", RestAlert.NOTIFICATION_ID),
                 call.getString("title", "Rest over"),
                 !Boolean.FALSE.equals(call.getBoolean("sound", Boolean.TRUE)),
+                // Settings → Sound (#306): the sound by name; a page from before it sends only `classic`.
+                call.getString("tone", Boolean.TRUE.equals(call.getBoolean("classic", Boolean.FALSE)) ? "classic" : "chime"),
                 !Boolean.FALSE.equals(call.getBoolean("vibrate", Boolean.TRUE)),
+                Boolean.TRUE.equals(call.getBoolean("alarmBuzz", Boolean.FALSE)),
                 call.getString("channelId", RestAlert.CHANNEL_ID),
                 call.getString("visibility", "public"),
                 call.getString("importance", "high"),
                 Boolean.TRUE.equals(call.getBoolean("localOnly", Boolean.FALSE)),
                 call.getString("countdownTitle", "Rest"),
-                number(call, "totalMs", 0)
+                number(call, "totalMs", 0),
+                // Timed holds that run themselves: the alerts after this one, and whether this one
+                // shows the rest's countdown card (a count-in or a hold does not).
+                cuesOf(call),
+                !Boolean.FALSE.equals(call.getBoolean("countdown", Boolean.TRUE))
         );
+        call.resolve();
+    }
+
+    /**
+     * The page's end-of-rest or end-of-hold buzz with Settings → "Vibrate when the phone is on
+     * silent" on (#375). `pattern` is navigator.vibrate's (on, off, on…); Android's waveform starts
+     * with an off, so a 0 goes in front.
+     */
+    @PluginMethod
+    public void buzz(PluginCall call) {
+        Context ctx = getContext();
+        if (ctx == null) {
+            call.reject("no context");
+            return;
+        }
+        long[] pattern = new long[] {0, 200, 100, 200};
+        JSArray given = call.getArray("pattern");
+        if (given != null && given.length() > 0 && given.length() <= 20) {
+            long[] p = new long[given.length() + 1];
+            boolean ok = true;
+            for (int i = 0; i < given.length(); i++) {
+                long v = given.optLong(i, -1);
+                if (v < 0 || v > 10_000) { ok = false; break; }
+                p[i + 1] = v;
+            }
+            if (ok) pattern = p;
+        }
+        RestAlert.buzz(ctx.getApplicationContext(), pattern);
+        call.resolve();
+    }
+
+    /** The end tone now, over whatever plays, which ducks for it (see RestAlert.playNow). */
+    @PluginMethod
+    public void tone(PluginCall call) {
+        Context ctx = getContext();
+        if (ctx == null) {
+            call.reject("no context");
+            return;
+        }
+        RestAlert.playNow(ctx.getApplicationContext(), call.getString("kind", "chime"));
+        call.resolve();
+    }
+
+    /**
+     * A spoken cue in the phone's voice (lib/spoken-cues.js): { text, lang, rate, flush }. Music
+     * ducks for it and comes back up (SpeechCue). Rejected when the phone has no voice to use.
+     */
+    @PluginMethod
+    public void speak(PluginCall call) {
+        Context ctx = getContext();
+        String text = call.getString("text", "");
+        if (ctx == null || text == null || text.isEmpty()) {
+            call.reject("nothing to say");
+            return;
+        }
+        Double rate = call.getDouble("rate");
+        boolean ok = SpeechCue.speak(ctx, text, call.getString("lang", ""), rate == null ? 1f : rate.floatValue(), Boolean.TRUE.equals(call.getBoolean("flush", false)));
+        if (ok) call.resolve();
+        else call.reject("no voice");
+    }
+
+    @PluginMethod
+    public void hush(PluginCall call) {
+        SpeechCue.hush();
         call.resolve();
     }
 
@@ -140,6 +215,13 @@ public class RestAlertPlugin extends Plugin {
             try { ctx.startService(i); } catch (Exception ignored) { /* no rest running */ }
         }
         call.resolve();
+    }
+
+    /** The `cues` array ({ dt, title }) as JSON for the alarm's intent, or "" for none. */
+    private static String cuesOf(PluginCall call) {
+        JSArray cues = call.getArray("cues");
+        if (cues == null || cues.length() == 0) return "";
+        return cues.toString();
     }
 
     // PluginCall.getLong only accepts a Long, and a JS timestamp often arrives as a Double

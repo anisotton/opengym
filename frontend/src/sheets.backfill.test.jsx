@@ -8,6 +8,7 @@ import { useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
 import { logPastWorkoutSheet } from './sheets.jsx'
 import { todayISO } from './lib/format.js'
+import { pickDate } from './components/DateField.test-util.js'
 
 const mounted = []
 function type(el, value) {
@@ -29,11 +30,15 @@ const cssSource = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8')
 describe('log a past workout', () => {
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    // Late in the evening, so the default 18:00 start on today's date is already over: a past
+    // session has to have ended before now.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 7, 26, 21, 0))
     useUI.setState({ sheets: [], toasts: [] })
     useStore.setState(s => ({ S: { ...s.S, active: null, routines: [], workouts: [{ id: 'old', d: todayISO(), start: 1, end: 2, name: 'Old', entries: [], prs: [] }] } }))
     document.body.innerHTML = ''
   })
-  afterEach(() => { act(() => { mounted.splice(0).forEach(root => root.unmount()) }) })
+  afterEach(() => { act(() => { mounted.splice(0).forEach(root => root.unmount()) }); vi.useRealTimers() })
 
   it('refuses while a workout is running', () => {
     const toast = vi.fn()
@@ -48,7 +53,7 @@ describe('log a past workout', () => {
     logPastWorkoutSheet()
     const host = mountTopSheet()
     expect(host.querySelector('h3').textContent).toBe('Log a past workout')
-    act(() => { type(host.querySelector('input[type=date]'), todayISO()) })
+    pickDate(host.querySelector('[data-datefield]'), todayISO())
     act(() => { button(host, 'Continue').click() })
     const prompt = mountTopSheet()
     expect(prompt.textContent).toContain('There is already a workout on that day.')
@@ -60,13 +65,13 @@ describe('log a past workout', () => {
     const ref = n => ({ kind: 'image', hash: String(n).repeat(64), mime: 'image/webp', size: 10, width: 8, height: 6, at: 1 })
     logPastWorkoutSheet()
     let host = mountTopSheet()
-    act(() => { type(host.querySelector('input[type=date]'), todayISO()) })
+    pickDate(host.querySelector('[data-datefield]'), todayISO())
     act(() => { button(host, 'Continue').click() })
     expect(mountTopSheet().textContent).not.toContain('new workout.')
     useStore.setState(s => ({ S: { ...s.S, workouts: [{ ...s.S.workouts[0], media: [ref(1), ref(2)] }] } }))
     logPastWorkoutSheet()
     host = mountTopSheet()
-    act(() => { type(host.querySelector('input[type=date]'), todayISO()) })
+    pickDate(host.querySelector('[data-datefield]'), todayISO())
     act(() => { button(host, 'Continue').click() })
     expect(mountTopSheet().textContent).toContain('Its 2 photos or videos move to the new workout.')
   })
@@ -79,8 +84,9 @@ describe('log a past workout', () => {
   it('gives the date and time fields a title column that can shrink', () => {
     logPastWorkoutSheet()
     const host = mountTopSheet()
-    const fields = [...host.querySelectorAll('.lrow input.timef')]
-    expect(fields.map(i => i.type)).toEqual(['date', 'time'])
+    const fields = [...host.querySelectorAll('.lrow .timef')]
+    // the date is openGym's own field now (#809), the time is still the system one
+    expect(fields.map(i => i.tagName + (i.type ? ':' + i.type : ''))).toEqual(['BUTTON:button', 'INPUT:time'])
     for (const field of fields) expect(field.closest('.lrow').querySelectorAll('.lrow-v')).toHaveLength(0)
     const rule = cssSource.match(/^\.lrow-m\{([^}]*)\}/m)
     expect(rule?.[1]).toContain('min-width:auto')
@@ -94,7 +100,7 @@ describe('log a past workout', () => {
   it('starts a backfilled session straight away on a free day', () => {
     logPastWorkoutSheet()
     const host = mountTopSheet()
-    act(() => { type(host.querySelector('input[type=date]'), '2020-01-02') })
+    pickDate(host.querySelector('[data-datefield]'), '2020-01-02')
     act(() => { button(host, 'Continue').click() })
     const A = useStore.getState().S.active
     expect(A.d).toBe('2020-01-02')
@@ -106,7 +112,7 @@ describe('log a past workout', () => {
   it('lets the duration be emptied and retyped, and never starts a session of no length', () => {
     logPastWorkoutSheet()
     const host = mountTopSheet()
-    act(() => { type(host.querySelector('input[type=date]'), '2020-01-02') })
+    pickDate(host.querySelector('[data-datefield]'), '2020-01-02')
     const field = host.querySelector('input.num')
     act(() => { type(field, '') })
     expect(field.value).toBe('')
@@ -120,13 +126,35 @@ describe('log a past workout', () => {
   it('an emptied duration starts nothing and asks for a length', () => {
     logPastWorkoutSheet()
     const host = mountTopSheet()
-    act(() => { type(host.querySelector('input[type=date]'), '2020-01-02') })
+    pickDate(host.querySelector('[data-datefield]'), '2020-01-02')
     act(() => { type(host.querySelector('input.num'), '') })
-    expect(host.textContent).toContain('Enter how long it took — at least 1 minute.')
+    expect(host.textContent).toContain('Enter how long it took (at least 1 minute).')
     act(() => { button(host, 'Continue').click() })
     expect(useStore.getState().S.active).toBeFalsy()
     act(() => { type(host.querySelector('input.num'), '1') })
     act(() => { button(host, 'Continue').click() })
     expect(useStore.getState().S.active.backfill.durationMin).toBe(1)
+  })
+
+  it('refuses a session that would still be running now, and one longer than a day', () => {
+    useUI.setState({ toast: vi.fn() })
+    vi.setSystemTime(new Date(2026, 7, 26, 1, 42))
+    {
+      logPastWorkoutSheet()
+      const host = mountTopSheet()
+      pickDate(host.querySelector('[data-datefield]'), '2026-08-26')
+      act(() => { type(host.querySelector('input[type=time]'), '23:30') })
+      act(() => { button(host, 'Continue').click() })
+      expect(useStore.getState().S.active).toBeFalsy()
+      expect(useUI.getState().toast).toHaveBeenLastCalledWith('That’s still in the future. Try an earlier start.')
+      pickDate(host.querySelector('[data-datefield]'), '2026-08-20')
+      act(() => { type(host.querySelector('input.num'), '99999') })
+      expect(host.textContent).toContain('That’s more than a day. Keep it to 24 hours or less.')
+      act(() => { button(host, 'Continue').click() })
+      expect(useStore.getState().S.active).toBeFalsy()
+      act(() => { type(host.querySelector('input.num'), '90') })
+      act(() => { button(host, 'Continue').click() })
+      expect(useStore.getState().S.active.d).toBe('2026-08-20')
+    }
   })
 })

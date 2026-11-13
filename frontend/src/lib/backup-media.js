@@ -22,7 +22,9 @@ import { referencedFiles, normalizeMediaRef, workoutMediaOf, cleanUrl, MEDIA_MIM
 import { sniffKind } from './media-sniff.js'
 import { sha256Hex } from './sha256.js'
 import { mediaStore } from './media-store.js'
+import { setVideosOf } from './set-videos.js'
 import { DEFAULT_LIMITS, MB } from './media-limits.js'
+import { t } from './i18n-core.js'
 
 export const BACKUP_JSON = 'opengym-backup.json'
 const MEDIA_ENTRY = /^media\/([0-9a-f]{64})\.(jpg|png|webp|gif|mp4|mov|webm)$/
@@ -35,12 +37,12 @@ media/               the photos, GIFs and videos of your own exercises and of yo
                      workouts, each named by its SHA-256, plus the small previews
                      shown in lists.
 
-To bring it back: Brilhart Fitness -> Settings -> Import backup, and pick this .zip as it is.
+To bring it back: Brilhart Fitness -> Settings -> Data & backup -> Import backup, and pick this .zip as it is.
 Do not unpack and re-zip it: the app reads zips that are stored, not compressed.
 `
 
 /** The media refs and links of an imported state — each custom exercise's picture and link, each
- *  logged workout's photos and videos — kept only where they pass the same checks as anywhere
+ *  logged workout's photos and videos, each set's form video — kept only where they pass the same checks as anywhere
  *  else (a workout's list also deduplicated, but not capped: workoutMediaOf caps what shows);
  *  the rest of the state is left as it is. Mutates and returns it. */
 export function sanitizeCustomMedia(state) {
@@ -50,7 +52,16 @@ export function sanitizeCustomMedia(state) {
     if ('url' in c) { const u = cleanUrl(c.url); if (u) c.url = u; else delete c.url }
   }
   for (const w of Array.isArray(state?.workouts) ? state.workouts : []) {
-    if (!w || typeof w !== 'object' || !('media' in w)) continue
+    if (!w || typeof w !== 'object') continue
+    // A set's form video (lib/set-videos.js): the same checks, one video per set.
+    for (const e of Array.isArray(w.entries) ? w.entries : []) {
+      for (const st of Array.isArray(e?.sets) ? e.sets : []) {
+        if (!st || typeof st !== 'object' || !('media' in st)) continue
+        const v = setVideosOf(st)
+        if (v.length) st.media = v; else delete st.media
+      }
+    }
+    if (!('media' in w)) continue
     // Every ref that passes, not only the ones shown: a file with more than the cap keeps them
     // all, and the workout shows the first WORKOUT_MEDIA_MAX as it would anywhere else.
     const list = workoutMediaOf(w, Infinity)
@@ -82,6 +93,18 @@ export async function exportBackupZip(S, { media = mediaStore, fetchOne = null, 
 
 const isBackup = d => !!d && typeof d === 'object' && !Array.isArray(d) && Array.isArray(d.workouts) && Array.isArray(d.routines)
 
+const notBackup = () => Object.assign(new Error('not a Brilhart Fitness backup'), { code: 'not-backup' })
+
+/**
+ * What to tell someone whose pick did not import, in their language. The thrown messages are for
+ * a developer ('not-zip', a JSON.parse complaint) and used to be toasted as they were.
+ */
+export function backupImportError(e) {
+  if (e?.code === 'compressed') return t('That zip was repacked. Import the original backup file.')
+  if (e?.code === 'not-backup' || e?.code === 'not-zip' || e?.code === 'encrypted' || e instanceof SyntaxError) return t('That file isn’t a Brilhart Fitness backup.')
+  return t('Couldn’t read that file.')
+}
+
 /**
  * Reads a picked backup, .json or .zip (told apart by its first bytes, not its name):
  * { state, files: [{ hash, entry }], zip }. `files` are the zip's media entries the state refers
@@ -94,9 +117,9 @@ export async function readBackupFile(file) {
   if (zip) {
     const entries = await readZip(file)
     const json = entries.find(e => e.name === BACKUP_JSON)
-    if (!json) throw new Error('not a Brilhart Fitness backup')
+    if (!json) throw notBackup()
     state = JSON.parse(await json.blob.text())
-    if (!isBackup(state)) throw new Error('not a Brilhart Fitness backup')
+    if (!isBackup(state)) throw notBackup()
     const wanted = new Set(referencedFiles(state).map(f => f.hash))
     const seen = new Set()
     for (const e of entries) {
@@ -107,7 +130,7 @@ export async function readBackupFile(file) {
     }
   } else {
     state = JSON.parse(await file.text())
-    if (!isBackup(state)) throw new Error('not a Brilhart Fitness backup')
+    if (!isBackup(state)) throw notBackup()
   }
   return { state: sanitizeCustomMedia(state), files, zip }
 }

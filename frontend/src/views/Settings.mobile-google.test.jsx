@@ -77,7 +77,7 @@ afterEach(() => { act(() => { mounted.splice(0).forEach(({ root, host }) => { ro
 describe('Settings on the Capacitor build (MOBILE): "Ways to sign in" with Google', () => {
   it('a profile that already linked Google from the browser still sees it, read-only', async () => {
     mocks.user = { id: 'u1', name: 'andi', google: { email: 'ana@gmail.com', linkedAt: '2026-10-18T00:00:00.000Z' } }
-    const page = mount(<Settings />)
+    const page = mount(<Settings page="account" />)
     await settle()
     const ways = section(page, 'Ways to sign in')
     expect(ways).toBeTruthy()
@@ -89,7 +89,7 @@ describe('Settings on the Capacitor build (MOBILE): "Ways to sign in" with Googl
 
   it('a profile that never linked Google has nothing to show there, and the section is gone', async () => {
     mocks.user = { id: 'u1', name: 'andi', google: null }
-    const page = mount(<Settings />)
+    const page = mount(<Settings page="account" />)
     await settle()
     expect(section(page, 'Ways to sign in')).toBeUndefined()
   })
@@ -97,7 +97,7 @@ describe('Settings on the Capacitor build (MOBILE): "Ways to sign in" with Googl
   it('a link that exists but whose instance turned google_login back off shows nothing either', async () => {
     mocks.user = { id: 'u1', name: 'andi', google: { email: 'ana@gmail.com', linkedAt: '2026-10-18T00:00:00.000Z' } }
     mocks.config = { password_login: true, google_login: false }
-    const page = mount(<Settings />)
+    const page = mount(<Settings page="account" />)
     await settle()
     expect(section(page, 'Ways to sign in')).toBeUndefined()
   })

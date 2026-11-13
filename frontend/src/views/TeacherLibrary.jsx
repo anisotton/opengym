@@ -107,7 +107,7 @@ export default function TeacherLibrary() {
 
   return <>
     <div className="hdr">
-      <button className="iconbtn" onClick={() => nav('/alunos')} aria-label={t('Students')}><Icon name="chevronLeft" /></button>
+      <button className="iconbtn" data-back="/alunos" onClick={() => nav('/alunos')} aria-label={t('Students')}><Icon name="chevronLeft" /></button>
       <div style={{ flex: 1, marginInlineStart: 12 }}><h1>{t('My library')}</h1>
         <div className="sub">{lib.length === 1 ? t('1 routine') : t('{0} routines', lib.length)}</div></div>
       <Button size="sm" variant="primary" icon="plus" onClick={newRoutine}>{t('New routine')}</Button>

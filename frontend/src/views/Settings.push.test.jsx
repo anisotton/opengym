@@ -74,7 +74,7 @@ afterEach(() => {
   host.remove()
 })
 
-const mount = async () => { await act(async () => { root.render(<Settings />) }) }
+const mount = async () => { await act(async () => { root.render(<Settings page="reminders" />) }) }
 const rowTitled = title => [...host.querySelectorAll('.lrow')].find(r => r.querySelector('.lrow-t')?.textContent === title)
 const switchIn = row => row.querySelector('[role="switch"]') || row.querySelector('input[type="checkbox"]') || row.querySelector('button')
 

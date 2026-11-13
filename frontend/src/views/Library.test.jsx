@@ -66,7 +66,9 @@ describe('Library favourites', () => {
   it('keeps the header button reachable without shredding the title', () => {
     expect(cssSource).toContain('.hdr>div{min-width:0}')
     expect(cssSource).toContain('.hdr>.btn{flex:none}')
-    expect(cssSource).toMatch(/@media \(max-width:420px\)\{\.hdr h1\{font-size:30px\}\}/)
+    // the page title is --fs-large, which drops from 34 to 30 px on phone widths (P1 type scale)
+    expect(cssSource).toMatch(/\.hdr h1\{font-size:var\(--fs-large\)/)
+    expect(cssSource).toMatch(/@media \(max-width:420px\)\{:root\{--fs-large:1\.875rem\}\}/)
     const h1 = cssSource.match(/^\.hdr h1\{([^}]*)\}/m)
     expect(h1?.[1]).toContain('overflow-wrap:break-word')
     expect(h1[1]).not.toContain('overflow-wrap:anywhere')
@@ -104,6 +106,8 @@ describe('Library exercise-name casing per language', () => {
     it(`${lang}: every translated row is ${CASED_NAME_LANGS.includes(lang) ? 'left in its own casing' : 'title-cased'}`, () => {
       const pack = packs[`../exercise-names/${lang}.js`]
       _setLangState(lang, {}, null, pack)
+      // Starred so they render on the first page: a partial pack may not cover the first rows.
+      mocks.S.favEx = Object.keys(pack).slice(0, 3)
       const rows = [...render().querySelectorAll('.item .tt')].slice(1)   // drop "Create your own"
       expect(rows.length).toBeGreaterThan(0)
       const translated = rows.filter(el => Object.values(pack).some(n => el.textContent.startsWith(n)))
@@ -112,4 +116,68 @@ describe('Library exercise-name casing per language', () => {
       for (const el of translated) expect(el.classList.contains('capitalize'), `${lang}: ${el.textContent}`).toBe(!CASED_NAME_LANGS.includes(lang))
     })
   }
+})
+
+// The header counts what the library shows — the curated Brilhart set (ISO-1638) plus your own
+// exercises (upstream counted the whole dataset "with animations"; this fork has one plain count).
+describe('Library header count', () => {
+  const sub = host => host.querySelector('.hdr .sub').textContent
+  const own = n => Array.from({ length: n }, (_, i) => ({ id: 'c' + i, n: 'my move ' + i, bp: 'chest', eq: '', custom: true }))
+  afterEach(() => _setLangState('en', {}, null, null))
+
+  it('shows only the catalogue while you have no exercises of your own', () => {
+    expect(sub(render())).toBe(`${LIBRARY_CATALOGUE.length} exercises`)
+  })
+
+  it('adds "+ 1 of your own" for a single custom exercise', () => {
+    mocks.S.customEx = own(1)
+    expect(sub(render())).toBe(`${LIBRARY_CATALOGUE.length + 1} exercises`)
+  })
+
+  it('adds the count for several custom exercises', () => {
+    mocks.S.customEx = own(5)
+    expect(sub(render())).toBe(`${LIBRARY_CATALOGUE.length + 5} exercises`)
+  })
+
+
+  it('keeps the subtitle on one line on wider screens, clipping with an ellipsis', () => {
+    expect(sub(render())).toBeTruthy()
+    const rule = cssSource.match(/^\.hdr\.lib-hdr>\.sub\.lib-count\{([^}]*)\}/m)?.[1] || ''
+    expect(rule).toContain('white-space:nowrap')
+    expect(rule).toContain('overflow:hidden')
+    expect(rule).toContain('text-overflow:ellipsis')
+    expect(rule).toContain('flex:1 0 100%')
+    expect(cssSource).toMatch(/^\.hdr\.lib-hdr\{[^}]*flex-wrap:wrap/m)
+  })
+
+  it('lets the subtitle wrap on narrow phones so nothing is cut at 320 px', () => {
+    const narrow = cssSource.match(/@media \(max-width:360px\)\{\.hdr\.lib-hdr>\.sub\.lib-count\{([^}]*)\}\}/)?.[1] || ''
+    expect(narrow).toContain('white-space:normal')
+    expect(narrow).toContain('overflow:visible')
+  })
+})
+
+describe('Library similar exercises', () => {
+  const search = (host, text) => {
+    const input = host.querySelector('.search input')
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    act(() => { setter.call(input, text); input.dispatchEvent(new Event('input', { bubbles: true })) })
+  }
+  const label = host => host.querySelector('.similar-label')?.textContent || null
+
+  it('offers what comes close instead of "No match" when nothing matches exactly', () => {
+    const host = render()
+    search(host, 'sit up qwxz')
+    expect(label(host)).toBe('No exact match. These come close:')
+    expect(host.textContent).not.toContain('No match')
+    expect(names(host).slice(0, 5).some(n => /sit.?up/i.test(n))).toBe(true)
+  })
+
+  it('lists similar ones under a short result list, without repeating a result', () => {
+    const host = render()
+    search(host, 'side bend')   // one exact match in the curated set, a handful that come close
+    expect(label(host)).toBe('Similar exercises')
+    const all = names(host)
+    expect(new Set(all).size).toBe(all.length)
+  })
 })

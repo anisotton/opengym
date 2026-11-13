@@ -5,6 +5,7 @@ import { SCHEMAS } from '../coach/core/schemas.js';
 import { build, FULL_DETAIL_SESSIONS } from '../coach/core/payload.js';
 import { chatCompletionsSpec } from '../coach/core/adapters/openai.js';
 import { validatePlan } from '../coach/core/validate.js';
+import { D as fixtureDay } from './helpers.mjs';
 
 const S = (workouts = []) => ({
   lang: 'en', unit: 'kg', routines: [{ id: 'r1', name: 'A', ex: [{ id: '0001', sets: 3, reps: 8 }] }],

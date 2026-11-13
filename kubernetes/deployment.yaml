@@ -21,8 +21,8 @@ spec:
           # Pin both images to one release and move them together: a tag names what you run and
           # what you roll back to, where :latest changes under a pod whenever it is rescheduled.
           # The API and the web image of one version belong together. The published tags are
-          # the version (1.3.9) and its minor line (1.3); see the release notes before a bump.
-          image: ghcr.io/duartesantos8/opengym-api:1.3.9
+          # the version (1.4.3) and its minor line (1.4); see the release notes before a bump.
+          image: ghcr.io/duartesantos8/opengym-api:1.4.3
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -33,8 +33,10 @@ spec:
               value: opengym.example.com
             - name: ORIGIN
               value: https://opengym.example.com
-            # Everything else in .env.example (INVITE_ONLY, ADMIN_UIDS, ALLOW_GUEST,
-            # DEFAULT_LANG, PASSWORD_LOGIN, the push keys, ...) goes here the same way.
+            # Everything else in .env.example (INVITE_ONLY, ADMIN_UIDS, FIRST_USER_ADMIN,
+            # ALLOW_GUEST, DEFAULT_LANG, PASSWORD_LOGIN, the push keys, ...) goes here the
+            # same way. FIRST_USER_ADMIN="1" makes the first profile created on an empty
+            # instance its admin (off by default).
             # TRUST_PROXY is left off on purpose: the web container overwrites X-Forwarded-For
             # with the address it was reached from, which here is the gateway's pod, so turning
             # it on changes nothing for the sign-in throttle — while any pod in the cluster that
@@ -62,11 +64,14 @@ spec:
             limits:
               memory: 512Mi
         - name: web
-          image: ghcr.io/duartesantos8/opengym-web:1.3.9   # same version as the api container
+          image: ghcr.io/duartesantos8/opengym-web:1.4.3   # same version as the api container
           imagePullPolicy: IfNotPresent
           env:
+            # Not the image's default 80: the image runs as uid 101, which can bind a port below
+            # 1024 only where the runtime sets net.ipv4.ip_unprivileged_port_start=0 (Docker
+            # does, most Kubernetes runtimes do not). The Service targets this port by name.
             - name: NGINX_PORT
-              value: "80"
+              value: "8080"
             # Both containers share the pod's network, so the API is on localhost. An IP here
             # also means nginx never needs RESOLVER (Docker's DNS by default) to find it.
             - name: BACKEND
@@ -74,17 +79,17 @@ spec:
             - name: PORT
               value: "3000"
           ports:
-            - containerPort: 80
+            - containerPort: 8080
               name: web
               protocol: TCP
           readinessProbe:
             httpGet:
               path: /
-              port: 80
+              port: web
           livenessProbe:
             httpGet:
               path: /
-              port: 80
+              port: web
             initialDelaySeconds: 30
           resources:
             requests:

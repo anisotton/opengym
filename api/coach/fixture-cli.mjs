@@ -81,7 +81,7 @@ if (kind === 'create') {
     // carried its predecessor from one that silently sent `previous: null`.
     basedOn: P.refine?.previous
       ? 'Refined from the plan you were shown.'
-      : 'No training history yet — starting conservatively.',
+      : 'No training history yet, so starting conservatively.',
     week: { 1: 'r1', 3: 'r2', 5: 'r1' },
     routines: [
       {
@@ -117,6 +117,22 @@ if (kind === 'debrief') {
     watch: (P.previous || []).length ? [] : ['First time this routine was logged — nothing to compare against yet.'],
     nextTime: ['Keep the same loads and add one rep where the last set had reps in reserve.']
   });
+}
+
+// adapt: a change to the workout in progress, built from the exercise asked about so a test can
+// check the session, the focus and the library all arrived. Pain takes weight off and swaps to the
+// first library candidate; anything else trims a set.
+if (kind === 'adapt') {
+  const f = P.focus || {};
+  const en = (P.today?.entries || [])[f.entry];
+  if (!en) out({ coach_contract: 1, nochange: true, reading: 'No exercise to look at.' });
+  const open = (en.sets || []).filter(s => !s.warmup && !s.done).length;
+  const swapTo = (P.library || []).find(e => !(P.today.entries || []).some(x => x.id === e.id));
+  const changes = f.reason === 'pain' && swapTo
+    ? [{ type: 'swap', entry: f.entry, exId: en.id, to: swapTo.id, why: 'It hurts, so the sets left go to a movement that spares it.' }]
+    : [{ type: 'sets', entry: f.entry, exId: en.id, sets: Math.max(0, open - 1), why: 'One set less keeps the session doable today.' }];
+  if (f.reason === 'pain' && open) changes.push({ type: 'rest', entry: f.entry === 0 ? 1 : 0, rest: 120, why: 'A longer break before the next one.' });
+  out({ coach_contract: 1, summary: `For ${en.name || en.id}: ${changes.length} change(s).`, changes: changes.filter(c => (P.today.entries[c.entry]?.sets || []).some(s => !s.warmup && !s.done)) });
 }
 
 // review

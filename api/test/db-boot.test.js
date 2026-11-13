@@ -44,7 +44,7 @@ test('connects, migrates and serves /api/health when DATABASE_URL is set', async
   assert.match(log, /postgres ready \(\d+ migrations? applied\)/);
   const health = await fetch(`http://127.0.0.1:${port}/api/health`);
   assert.equal(health.status, 200);
-  assert.deepEqual(await health.json(), { ok: true, db: 'ok' });
+  assert.deepEqual(await health.json(), { ok: true, db: 'ok', writable: true });
 });
 
 test('a second boot against the same database applies zero new migrations', async t => {

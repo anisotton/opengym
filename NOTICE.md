@@ -79,26 +79,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## Exercise data & media
+## Exercise text (names, muscles, descriptions, instructions)
 
-openGym obtains both through
-[**hasaneyldrm/exercises-dataset**](https://github.com/hasaneyldrm/exercises-dataset), which
-licenses them differently. Neither is covered by openGym's AGPL license.
-
-That dataset is itself a redistribution: the content originates from
-[**ExerciseDB v1**](https://exercisedb.dev/) by **AscendAPI**. This is verifiable from openGym's
-own data — the stored media filenames embed ExerciseDB's `exerciseId` (openGym's `0001` is
-`0001-2gPfomN.jpg`; `2gPfomN` is ExerciseDB's id for "3/4 sit-up"), every metadata field matches,
-and the instruction sentences are identical apart from stripped `Step:N ` prefixes. See
-[issue #5](https://github.com/hasaneyldrm/exercises-dataset/issues/5) on that dataset.
-
-### Metadata & instruction text
-
-The exercise names, attributes and instructions (English in `frontend/src/lib/exercises-data.js`,
-other languages in `frontend/src/instr/`, regenerated via `scripts/build-instructions.mjs`)
-originate from ExerciseDB v1 and reach openGym through the dataset above, which distributes them
-under the MIT license reproduced below. The translations into languages other than English are
-openGym's own derivative work and are covered by openGym's AGPL.
+The catalogue in `catalogue/` is openGym's own and is edited by its community (see
+`catalogue/README.md`). Entries marked `"textSource": "exercisedb"` (the 1,324 exercises openGym
+shipped before v1.4.0) keep names, muscles and instructions that originate from
+[**ExerciseDB v1**](https://exercisedb.dev/) by AscendAPI and reached openGym through
+[**hasaneyldrm/exercises-dataset**](https://github.com/hasaneyldrm/exercises-dataset), under the MIT
+licence reproduced below. Everything else in the catalogue (the newer exercises, every description,
+the muscle-map corrections and all translations) was written for openGym and is covered by
+openGym's AGPL.
 
 ```
 MIT License
@@ -157,23 +147,23 @@ at runtime. None of that happens anymore.
 If you want to reuse the media yourself — in openGym or anywhere else, commercially or not —
 **clear it with the rights holder first**, and keep any attribution that accompanies it intact.
 
-Brazilian Portuguese exercise instructions under
-`scripts/instruction-sources/pt-BR.json` and exercise names under
-`scripts/exercise-name-sources/pt-BR.json` are original translations of that
+Brazilian Portuguese exercise instructions and names (now in `catalogue/i18n/pt-BR.json`) are original translations of that
 English source produced with OpenAI Codex and Anthropic Claude Code
 language-model assistance. They are not copied from a separate Portuguese
 dataset. Their review status and translation policy are documented alongside
 the source files.
 
-## Gym check-in QR codes
+## Gym check-in QR codes and barcodes
 
-The gym check-in feature (a saved membership code shown as a QR code on the phone, added by
-typing, importing a photo, or scanning with the camera) uses three third-party packages. All are
+The gym check-in feature (a saved membership code shown as a QR code or barcode on the phone,
+added by importing a photo or scanning with the camera) uses three third-party packages. All are
 permissively licensed and compatible with openGym's AGPL, and all load on demand: the QR renderer
 and the browser decoder only when a card is shown or scanned, the ML Kit plugin only in the
-Android/iOS app.
+Android/iOS app. Barcodes (Code 128, Code 39, EAN-13, EAN-8, UPC-A) are drawn, and read in
+browsers without a native `BarcodeDetector`, by openGym's own code (`frontend/src/lib/barcode.js`),
+under openGym's license.
 
-### QR/barcode rendering — `lean-qr`
+### QR rendering — `lean-qr`
 
 openGym renders each saved code on the phone with [**lean-qr**](https://github.com/davidje13/lean-qr)
 by David Evans, used under the **MIT License** and reproduced below. Only the code's stored value
@@ -209,7 +199,8 @@ SOFTWARE.
 In a browser (including the installed PWA), reading a code from the camera or from an imported
 photo uses [**jsQR**](https://github.com/cozmo/jsQR) by Cosmo Wolfe, under the **Apache License
 2.0** (text at <https://www.apache.org/licenses/LICENSE-2.0> and in the package's own `LICENSE`).
-Where the browser has a native `BarcodeDetector`, that is tried first and jsQR is the fallback.
+Where the browser has a native `BarcodeDetector`, that is tried first and jsQR is the fallback
+(with openGym's own reader for barcodes).
 Video frames are decoded in memory and never uploaded or stored.
 
 ### Camera scan & photo decode in the app — `@capacitor-mlkit/barcode-scanning`
